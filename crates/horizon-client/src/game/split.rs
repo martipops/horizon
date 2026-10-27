@@ -169,8 +169,11 @@ pub(super) struct Split<'a> {
     /// Players switching profile from the controller: its pad and where it played, to choose
     /// again there once it has left.
     rejoin: Vec<(Option<PadId>, Screen)>,
-    /// Since when P1 holds Select (P1 hosts: it leaves from the pause menu).
+    /// P1's controller: since when Select is held, the pad as last read, and whether "remove
+    /// it from P1?" is asked (P1 hosts: it leaves from the pause menu, but its controller can go).
     p1_select: Option<Instant>,
+    p1_last: PadState,
+    p1_asking: bool,
     /// Pads whose buttons still count as the press that joined them: released first.
     fresh: Vec<PadId>,
     /// The game's window and its compositor first, then monitors' and players' own.
@@ -229,6 +232,8 @@ impl<'a> Split<'a> {
             offers: Vec::new(),
             rejoin: Vec::new(),
             p1_select: None,
+            p1_last: PadState::default(),
+            p1_asking: false,
             fresh: Vec::new(),
             surfaces,
             applied: Vec::new(),
@@ -561,19 +566,49 @@ impl<'a> Split<'a> {
         }
     }
 
-    /// P1 holding Select 2 s, as the others do to leave: P1 hosts the world, so it is told how.
+    /// P1 holding Select 2 s, as the others do to leave: P1 hosts the world (it ends splitscreen
+    /// from the pause menu), but its controller can go: A takes it from P1 (keyboard and mouse
+    /// stay), and in a world a button on it then offers to join as a new player; B keeps it.
     fn p1_holds_select(&mut self) {
-        if self.players() < 2 || !self.host.pad.state.held(Button::Select) {
-            self.p1_select = None;
+        let raw = self.p1_pad.map(|p| self.pads.state(p));
+        let mut pad = self.host.pad.state;
+        if let Some(raw) = raw {
+            pad = pad.merge(&raw);
+        }
+        let last = std::mem::replace(&mut self.p1_last, pad);
+        let pressed = |b: Button| pad.held(b) && !last.held(b);
+        let toast = |title: &str, message: &str| {
+            Some(horizon_client::toasts::SystemToast::new(
+                title.to_owned(),
+                Some(message.to_owned()),
+            ))
+        };
+        if self.p1_asking {
+            if pressed(Button::South) {
+                self.p1_asking = false;
+                if let Some(id) = self.p1_pad.take() {
+                    self.fresh.retain(|&p| p != id);
+                }
+                self.host.split_tag = toast(
+                    "Controller removed",
+                    "Press a button on it to join as a new player",
+                );
+            } else if pressed(Button::East) {
+                self.p1_asking = false;
+                self.host.split_tag = None;
+            } else if self.host.split_tag.is_none() {
+                self.host.split_tag = toast("P1's controller", "A: remove it from P1   B: keep it");
+            }
             return;
         }
-        let since = *self.p1_select.get_or_insert_with(Instant::now);
-        if since.elapsed() >= Duration::from_secs(2) {
-            self.p1_select = Some(Instant::now() + Duration::from_secs(60));
-            self.host.split_tag = Some(horizon_client::toasts::SystemToast::new(
-                "P1 hosts this world".to_owned(),
-                Some("Save and Quit (pause menu) ends splitscreen".to_owned()),
-            ));
+        if !pad.held(Button::Select) {
+            self.p1_select = None;
+        } else if self.p1_select.get_or_insert_with(Instant::now).elapsed()
+            >= Duration::from_secs(2)
+        {
+            self.p1_select = None;
+            self.p1_asking = true;
+            self.host.split_tag = toast("P1's controller", "A: remove it from P1   B: keep it");
         }
     }
 
@@ -946,7 +981,12 @@ impl<'a> Split<'a> {
         self.offers
             .retain(|(_, since)| now - *since <= OFFER && in_world);
         let p1 = self.pad_state(self.p1_pad);
-        self.host.pad.feed = Some(p1);
+        // Asked about its controller, P1's buttons answer that, not the game.
+        self.host.pad.feed = Some(if self.p1_asking {
+            PadState::default()
+        } else {
+            p1
+        });
         for i in 0..self.guests.len() {
             let state = self.pad_state(self.guests[i].pad);
             // Asked whether to leave, its buttons answer that, not the game.

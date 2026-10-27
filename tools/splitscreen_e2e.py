@@ -354,6 +354,11 @@ def scenario_leave():
         g.wait(lambda: g.alive(2) and (g.ctl(2, 'state').get('menu') or {}).get('mode') == 'splitscreen-profiles',
                'P2 choosing again', seconds=15)
         check('X: P2 chooses a profile again, in the same window', g.size(2), (w, h))
+        # P1 holding Select is asked about its controller; B keeps it, and P1 plays on.
+        hold_select(1)
+        g.ctl(1, 'pad', 'east', 'tap')
+        time.sleep(0.5)
+        check('P1 plays on after keeping its controller', g.ctl(1, 'status')['fps'] > 10, True)
     finally:
         g.quit()
 
