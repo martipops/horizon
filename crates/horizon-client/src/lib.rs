@@ -159,6 +159,7 @@ pub mod screen_draw;
 pub mod screen_effects;
 pub mod screen_layout;
 pub mod sculk;
+pub mod split_layout;
 pub use horizon_server_files as server;
 pub mod server_packs;
 pub mod settings;

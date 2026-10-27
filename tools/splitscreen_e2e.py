@@ -3,7 +3,7 @@
 player's control socket, checking every player's view size after each change.
 
     python3 tools/splitscreen_e2e.py
-    python3 tools/splitscreen_e2e.py --only windows    # one scenario: join, windows, three, live, picker
+    python3 tools/splitscreen_e2e.py --only three eight    # some scenarios (see --help)
 
 Scenarios:
   join     four players fill Window 1's quarters; one disconnects and the others take thirds
@@ -418,14 +418,15 @@ SCENARIOS = {
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('--only', choices=SCENARIOS)
+    ap.add_argument('--only', nargs='+', choices=SCENARIOS, metavar='SCENARIO',
+                    help=f'run only these: {", ".join(SCENARIOS)}')
     args = ap.parse_args()
     if not CTL.exists():
         sys.exit(f'{CTL} is missing: cargo build --profile fast -p horizon-client')
     if not (RESOURCES / 'assets').exists():
         sys.exit(f'no prepared resources in {RESOURCES}')
     for name, run in SCENARIOS.items():
-        if args.only in (None, name):
+        if args.only is None or name in args.only:
             try:
                 run()
             except RuntimeError as e:

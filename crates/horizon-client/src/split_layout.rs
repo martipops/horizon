@@ -1,0 +1,470 @@
+//! Splitscreen's layout, pure data tested without a window: where each player's view goes in
+//! its window (`place`), and the setup screen's draft (`Draft`): the windows, where each is, who
+//! plays in each, before any of it is applied.
+use winit::dpi::PhysicalSize;
+
+/// Players at most: P1 and seven more.
+pub const MAX_PLAYERS: usize = 8;
+
+/// A player's view: its window (an index into the windows), its corner there and its size.
+pub type View = (usize, [u32; 2], PhysicalSize<u32>);
+
+/// Rows of five to eight players sharing a window, widest first (columns on a tall window): every
+/// view stays near a screen's shape, where a full grid would leave a long thin one.
+const ROWS: [&[u32]; 4] = [&[3, 2], &[3, 3], &[3, 2, 2], &[3, 3, 2]];
+
+/// Each player's view, given the window each is in and the windows' sizes. Players in one window
+/// share it in the order they joined: two take halves (`two`: 0 side by side when wider than
+/// tall, 1 side by side, 2 top and bottom); three (`three`: 0 the first wide on top and two below,
+/// 1 the first tall on the left and two on the right, 2 three columns); four its quarters; five
+/// to eight rows of three and two (`ROWS`).
+pub fn place(windows: &[usize], sizes: &[PhysicalSize<u32>], two: u8, three: u8) -> Vec<View> {
+    windows
+        .iter()
+        .enumerate()
+        .map(|(i, &window)| {
+            let here = windows.iter().filter(|&&w| w == window).count();
+            let slot = windows[..i].iter().filter(|&&w| w == window).count() as u32;
+            let size = sizes
+                .get(window)
+                .copied()
+                .unwrap_or(PhysicalSize::new(1, 1));
+            let (w, h) = (size.width, size.height);
+            let side_by_side = match two {
+                1 => true,
+                2 => false,
+                _ => w >= h,
+            };
+            // The view's cell as fractions of the window: (x0, x1, y0, y1) in halves or thirds.
+            let cell = |x0: u32, x1: u32, y0: u32, y1: u32, of: u32| {
+                [w * x0 / of, w * x1 / of, h * y0 / of, h * y1 / of]
+            };
+            let [x0, x1, y0, y1] = match (here, slot) {
+                (1, _) => cell(0, 1, 0, 1, 1),
+                (2, s) if side_by_side => cell(s, s + 1, 0, 2, 2),
+                (2, s) => cell(0, 2, s, s + 1, 2),
+                (3, s) => match (three, s) {
+                    (2, s) => cell(s, s + 1, 0, 3, 3),
+                    (1, 0) => cell(0, 1, 0, 2, 2),
+                    (1, s) => cell(1, 2, s - 1, s, 2),
+                    (_, 0) => cell(0, 2, 0, 1, 2),
+                    (_, s) => cell(s - 1, s, 1, 2, 2),
+                },
+                (4, s) => cell(s % 2, s % 2 + 1, s / 2, s / 2 + 1, 2),
+                (n, s) => rows(n, s, w, h),
+            };
+            (
+                window,
+                [x0, y0],
+                PhysicalSize::new((x1 - x0).max(1), (y1 - y0).max(1)),
+            )
+        })
+        .collect()
+}
+
+/// Five to eight players: `slot`'s cell `[x0, x1, y0, y1]` in rows of three and two (`ROWS`), or
+/// in columns when the window is taller than wide.
+fn rows(n: usize, slot: u32, w: u32, h: u32) -> [u32; 4] {
+    let counts = ROWS[n.clamp(5, 8) - 5];
+    let bands = counts.len() as u32;
+    let (mut band, mut k) = (0, slot);
+    while band + 1 < bands && k >= counts[band as usize] {
+        k -= counts[band as usize];
+        band += 1;
+    }
+    let across = counts[band as usize];
+    // Along: the long side, divided between a band's views; down: the bands.
+    let (along, down) = if w >= h { (w, h) } else { (h, w) };
+    let (a0, a1) = (along * k / across, along * (k + 1) / across);
+    let (d0, d1) = (down * band / bands, down * (band + 1) / bands);
+    if w >= h {
+        [a0, a1, d0, d1]
+    } else {
+        [d0, d1, a0, a1]
+    }
+}
+
+/// A screen as the system reports it: its name, where it is on the desktop and its size (both
+/// physical pixels), and its scale.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Monitor {
+    pub name: String,
+    pub at: [i32; 2],
+    pub size: [u32; 2],
+    pub scale: f64,
+}
+
+/// Where a window is.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Placement {
+    /// A normal window: where it was last (`None`: where the system opens it, `NEW_WINDOW` big).
+    Free(Option<([i32; 2], [u32; 2])>),
+    /// Borderless over the monitor of this name.
+    Fill(String),
+}
+
+/// A new free window's size, in logical pixels.
+pub const NEW_WINDOW: [f64; 2] = [854.0, 480.0];
+
+/// A window: its number (1 is the game's own) and where it is.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Window {
+    pub number: u8,
+    pub placement: Placement,
+}
+
+/// Something to tell before Apply.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Warning {
+    /// Nobody plays in this window: it won't open (Window 1 stays, blank).
+    Empty(u8),
+    /// This window fills a monitor that isn't there: its players play in Window 1.
+    Unplugged(u8, String),
+}
+
+/// The setup screen's arrangement until Apply: the windows, each player's window (by number, P1
+/// first) and the shapes two or three players sharing a window take (`place`'s `two`, `three`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Draft {
+    pub windows: Vec<Window>,
+    pub players: Vec<u8>,
+    pub two: u8,
+    pub three: u8,
+}
+
+impl Draft {
+    /// Everyone in Window 1 (where it is now).
+    pub fn everyone_here(players: usize, window1: Placement, two: u8, three: u8) -> Self {
+        Self {
+            windows: vec![Window {
+                number: 1,
+                placement: window1,
+            }],
+            players: vec![1; players],
+            two,
+            three,
+        }
+    }
+
+    /// P1 in Window 1, everyone else in Window 2 filling another monitor than `main` (Window 1's);
+    /// `None` with one monitor.
+    pub fn desk_and_tv(&self, monitors: &[Monitor], main: &str) -> Option<Self> {
+        let tv = monitors.iter().find(|m| m.name != main)?;
+        let mut draft = self.only_window1();
+        draft.windows.push(Window {
+            number: 2,
+            placement: Placement::Fill(tv.name.clone()),
+        });
+        for p in draft.players.iter_mut().skip(1) {
+            *p = 2;
+        }
+        Some(draft)
+    }
+
+    /// A window each: P1 in Window 1, the others filling the monitors Window 1 isn't on, then in
+    /// free windows.
+    pub fn everyone_separate(&self, monitors: &[Monitor], main: &str) -> Self {
+        let mut draft = self.only_window1();
+        let mut spare = monitors.iter().filter(|m| m.name != main);
+        for i in 1..draft.players.len() {
+            let number = i as u8 + 1;
+            let placement = spare
+                .next()
+                .map_or(Placement::Free(None), |m| Placement::Fill(m.name.clone()));
+            draft.windows.push(Window { number, placement });
+            draft.players[i] = number;
+        }
+        draft
+    }
+
+    fn only_window1(&self) -> Self {
+        let window1 = self.windows.iter().find(|w| w.number == 1).cloned();
+        Self {
+            windows: window1.into_iter().collect(),
+            players: vec![1; self.players.len()],
+            two: self.two,
+            three: self.three,
+        }
+    }
+
+    /// A new free window, numbered with the lowest number free; its number.
+    pub fn add_window(&mut self) -> u8 {
+        let number = (2..=u8::MAX)
+            .find(|n| self.windows.iter().all(|w| w.number != *n))
+            .unwrap_or(u8::MAX);
+        self.windows.push(Window {
+            number,
+            placement: Placement::Free(None),
+        });
+        number
+    }
+
+    /// Window `number` closes (never Window 1): its players go back to Window 1.
+    pub fn remove_window(&mut self, number: u8) {
+        if number == 1 {
+            return;
+        }
+        self.windows.retain(|w| w.number != number);
+        for p in &mut self.players {
+            if *p == number {
+                *p = 1;
+            }
+        }
+    }
+
+    /// What to tell before Apply, in window order.
+    pub fn warnings(&self, monitors: &[Monitor]) -> Vec<Warning> {
+        let mut out = Vec::new();
+        for w in &self.windows {
+            if let Placement::Fill(name) = &w.placement
+                && !monitors.iter().any(|m| &m.name == name)
+            {
+                out.push(Warning::Unplugged(w.number, name.clone()));
+            } else if !self.players.contains(&w.number) {
+                out.push(Warning::Empty(w.number));
+            }
+        }
+        out
+    }
+
+    /// Where each window would be on the desktop (its corner and size, physical pixels), in
+    /// `windows` order: free ones where they were (new ones at `main`'s corner), the others over
+    /// their monitor; a window over a missing monitor: `None`.
+    pub fn rects(&self, monitors: &[Monitor], main: &str) -> Vec<Option<([i32; 2], [u32; 2])>> {
+        let home = monitors
+            .iter()
+            .find(|m| m.name == main)
+            .or(monitors.first());
+        self.windows
+            .iter()
+            .map(|w| match &w.placement {
+                Placement::Free(Some(rect)) => Some(*rect),
+                Placement::Free(None) => {
+                    let (at, scale) = home.map_or(([0, 0], 1.0), |m| (m.at, m.scale));
+                    let size = NEW_WINDOW.map(|v| (v * scale).round() as u32);
+                    Some((at, size))
+                }
+                Placement::Fill(name) => monitors
+                    .iter()
+                    .find(|m| &m.name == name)
+                    .map(|m| (m.at, m.size)),
+            })
+            .collect()
+    }
+
+    /// Every player's view as Apply would make it (`place`, as the game tiles them), with
+    /// `View`'s window an index into `windows`; players of a window over a missing monitor in
+    /// Window 1's.
+    pub fn preview(&self, monitors: &[Monitor], main: &str) -> Vec<View> {
+        let rects = self.rects(monitors, main);
+        let index = |number: u8| self.windows.iter().position(|w| w.number == number);
+        let window1 = index(1).unwrap_or(0);
+        let windows: Vec<usize> = self
+            .players
+            .iter()
+            .map(|&n| index(n).filter(|&i| rects[i].is_some()).unwrap_or(window1))
+            .collect();
+        let sizes: Vec<PhysicalSize<u32>> = rects
+            .iter()
+            .map(|r| {
+                r.map_or(PhysicalSize::new(1, 1), |(_, [w, h])| {
+                    PhysicalSize::new(w, h)
+                })
+            })
+            .collect();
+        place(&windows, &sizes, self.two, self.three)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn size(w: u32, h: u32) -> PhysicalSize<u32> {
+        PhysicalSize::new(w, h)
+    }
+
+    #[test]
+    fn players_on_one_screen_share_it() {
+        let wide = [size(1920, 1080)];
+        assert_eq!(
+            place(&[0, 0], &wide, 0, 0)[1],
+            (0, [960, 0], size(960, 1080))
+        );
+        assert_eq!(
+            place(&[0, 0], &wide, 2, 0)[1],
+            (0, [0, 540], size(1920, 540))
+        );
+        // Auto on a tall screen: top and bottom.
+        assert_eq!(place(&[0, 0], &[size(1080, 1920)], 0, 0)[1].1, [0, 960]);
+        assert_eq!(
+            place(&[0; 4], &wide, 0, 0)[3],
+            (0, [960, 540], size(960, 540))
+        );
+    }
+
+    #[test]
+    fn desk_and_couch() {
+        // P1 alone at the desk; P2 and P3 share the TV.
+        let screens = [size(3024, 1964), size(3840, 2160)];
+        let views = place(&[0, 1, 1], &screens, 0, 0);
+        assert_eq!(views[0], (0, [0, 0], size(3024, 1964)));
+        assert_eq!(views[1], (1, [0, 0], size(1920, 2160)));
+        assert_eq!(views[2], (1, [1920, 0], size(1920, 2160)));
+    }
+
+    #[test]
+    fn three_on_a_screen() {
+        let tv = [size(1920, 1080)];
+        // One wide on top, two below.
+        let top = place(&[0; 3], &tv, 0, 0);
+        assert_eq!(top[0], (0, [0, 0], size(1920, 540)));
+        assert_eq!(top[2], (0, [960, 540], size(960, 540)));
+        // One tall on the left, two stacked on the right.
+        let left = place(&[0; 3], &tv, 0, 1);
+        assert_eq!(left[0], (0, [0, 0], size(960, 1080)));
+        assert_eq!(left[2], (0, [960, 540], size(960, 540)));
+        // Three columns.
+        assert_eq!(
+            place(&[0; 3], &tv, 0, 2)[2],
+            (0, [1280, 0], size(640, 1080))
+        );
+    }
+
+    #[test]
+    fn two_windows_two_players_each() {
+        // P1 and P2 at the desk, P3 and P4 on the TV: halves in each window.
+        let screens = [size(3024, 1964), size(3840, 2160)];
+        let views = place(&[0, 0, 1, 1], &screens, 0, 0);
+        assert_eq!(views[1], (0, [1512, 0], size(1512, 1964)));
+        assert_eq!(views[2], (1, [0, 0], size(1920, 2160)));
+        assert_eq!(views[3], (1, [1920, 0], size(1920, 2160)));
+    }
+
+    #[test]
+    fn five_to_eight_in_rows_of_three_and_two() {
+        let tv = [size(1920, 1080)];
+        let eight = place(&[0; 8], &tv, 0, 0);
+        assert_eq!(eight[0], (0, [0, 0], size(640, 360)));
+        assert_eq!(eight[5], (0, [1280, 360], size(640, 360)));
+        assert_eq!(eight[7], (0, [960, 720], size(960, 360)));
+        let seven = place(&[0; 7], &tv, 0, 0);
+        assert_eq!(seven[3], (0, [0, 360], size(960, 360)));
+        // Every count tiles the window exactly: no gap, no overlap.
+        for n in 5..=8 {
+            for screen in [size(1920, 1080), size(1080, 1920), size(1711, 997)] {
+                let views = place(&vec![0; n], &[screen], 0, 0);
+                let area: u64 = views
+                    .iter()
+                    .map(|v| u64::from(v.2.width) * u64::from(v.2.height))
+                    .sum();
+                assert_eq!(
+                    area,
+                    u64::from(screen.width) * u64::from(screen.height),
+                    "{n} in {screen:?}"
+                );
+            }
+        }
+        // A tall window: columns.
+        let tall = place(&[0; 5], &[size(1080, 1920)], 0, 0);
+        assert_eq!(tall[0], (0, [0, 0], size(540, 640)));
+        assert_eq!(tall[4], (0, [540, 960], size(540, 960)));
+    }
+
+    fn monitors() -> Vec<Monitor> {
+        vec![
+            Monitor {
+                name: "Built-in".into(),
+                at: [0, 0],
+                size: [3024, 1964],
+                scale: 2.0,
+            },
+            Monitor {
+                name: "TV".into(),
+                at: [3024, 0],
+                size: [3840, 2160],
+                scale: 1.0,
+            },
+        ]
+    }
+
+    fn here(players: usize) -> Draft {
+        Draft::everyone_here(
+            players,
+            Placement::Free(Some(([100, 100], [2000, 1200]))),
+            0,
+            0,
+        )
+    }
+
+    #[test]
+    fn presets() {
+        let m = monitors();
+        // Everyone here: four quarters of Window 1.
+        let views = here(4).preview(&m, "Built-in");
+        assert_eq!(views[3], (0, [1000, 600], size(1000, 600)));
+        // Desk + TV: P1 alone, the others share the TV in rows.
+        let tv = here(4).desk_and_tv(&m, "Built-in").unwrap();
+        assert_eq!(tv.players, [1, 2, 2, 2]);
+        assert_eq!(tv.windows[1].placement, Placement::Fill("TV".into()));
+        let views = tv.preview(&m, "Built-in");
+        assert_eq!(views[0], (0, [0, 0], size(2000, 1200)));
+        assert_eq!(views[1], (1, [0, 0], size(3840, 1080)));
+        // No other monitor: no Desk + TV.
+        assert_eq!(here(2).desk_and_tv(&m[..1], "Built-in"), None);
+        // Everyone separate: the TV first, then free windows at the main monitor's scale.
+        let apart = here(3).everyone_separate(&m, "Built-in");
+        assert_eq!(apart.players, [1, 2, 3]);
+        assert_eq!(apart.windows[2].placement, Placement::Free(None));
+        assert_eq!(apart.rects(&m, "Built-in")[2], Some(([0, 0], [1708, 960])));
+        assert!(apart.warnings(&m).is_empty());
+    }
+
+    #[test]
+    fn windows_added_and_removed() {
+        let mut d = here(3);
+        assert_eq!(d.add_window(), 2);
+        assert_eq!(d.add_window(), 3);
+        d.players[2] = 3;
+        d.remove_window(2);
+        // The lowest number free comes back.
+        assert_eq!(d.add_window(), 2);
+        d.players[1] = 2;
+        d.remove_window(2);
+        assert_eq!(d.players, [1, 1, 3]);
+        d.remove_window(1);
+        assert_eq!(d.windows[0].number, 1);
+    }
+
+    #[test]
+    fn warnings_and_an_unplugged_monitor() {
+        let m = monitors();
+        let mut d = here(2).desk_and_tv(&m, "Built-in").unwrap();
+        let three = d.add_window();
+        assert_eq!(d.warnings(&m), [Warning::Empty(three)]);
+        // The TV unplugged: its player plays in Window 1 beside P1.
+        assert_eq!(
+            d.warnings(&m[..1]),
+            [Warning::Unplugged(2, "TV".into()), Warning::Empty(three)]
+        );
+        let views = d.preview(&m[..1], "Built-in");
+        assert_eq!(views[1], (0, [1000, 0], size(1000, 1200)));
+        // P1 elsewhere: Window 1 is blank.
+        d.players = vec![2, 2];
+        assert_eq!(d.warnings(&m)[0], Warning::Empty(1));
+    }
+
+    #[test]
+    fn eight_players_two_windows() {
+        let m = monitors();
+        let d = here(8).desk_and_tv(&m, "Built-in").unwrap();
+        let views = d.preview(&m, "Built-in");
+        // Seven on the TV: rows of 3, 2 and 2, the whole TV covered.
+        let area: u64 = views[1..]
+            .iter()
+            .map(|v| u64::from(v.2.width) * u64::from(v.2.height))
+            .sum();
+        assert_eq!(area, 3840 * 2160);
+        assert!(views[1..].iter().all(|v| v.0 == 1));
+    }
+}

@@ -22,13 +22,13 @@
 //! `HORIZON_SPLIT=N` (testing): splitscreen on, and N-1 players without controllers join once P1
 //! is in a world, as P2, P3... (`HORIZON_SPLIT_PICK=1`: picking profiles instead). The player in
 //! seat N takes `horizon-ctl` on P1's socket path + "N".
-mod layout;
 
 use super::{
     Game, UiResources, build_renderer,
     pad::{PadId, PadRouter},
     start_game,
 };
+use horizon_client::split_layout::{MAX_PLAYERS, View, place};
 use horizon_client::{
     Result,
     gamepad::{Button, PadState},
@@ -36,7 +36,6 @@ use horizon_client::{
     hud::{HudBatch, rgba},
     widgets,
 };
-use layout::{MAX_PLAYERS, View, place};
 use std::{
     cell::RefCell,
     path::{Path, PathBuf},
