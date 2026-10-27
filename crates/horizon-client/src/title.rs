@@ -159,8 +159,6 @@ pub struct Title {
     recent: std::cell::RefCell<Option<(std::time::Instant, Vec<WorldEntry>)>>,
     /// Splitscreen: the profile a joining player chose, or `None` to leave (`profiles.rs`).
     profile_choice: Option<Option<String>>,
-    /// Splitscreen: where a joining player can play, and the one it picked.
-    play_on: (Vec<String>, Option<usize>),
 }
 pub(crate) struct Button {
     x: f32,
@@ -270,7 +268,6 @@ impl Title {
             ),
             recent: std::cell::RefCell::new(None),
             profile_choice: None,
-            play_on: (Vec::new(), None),
         }
     }
     /// Vanilla bypasses the selector when there are no saves.

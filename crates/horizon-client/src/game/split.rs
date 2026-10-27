@@ -10,8 +10,8 @@
 //! New window, closed with its last player), or a monitor's (borderless over it). Players in one
 //! window share it: halves for two (side by side or top and bottom), three one wide and two (or
 //! in columns), quarters for four.
-//! A profile remembers its screen (`profiles/<name>/screen.txt`, P1's `p1-screen.txt`); the
-//! Splitscreen page changes anyone's. Every player renders offscreen on one device and each
+//! A joining player starts in Window 1 and moves with its controller's bumpers before it picks
+//! its profile; the Splitscreen page moves anyone later. Every player renders offscreen on one device and each
 //! window's compositor copies its players' frames. Turning splitscreen on rebuilds P1's renderer
 //! that way at once (the world is meshed again: a moment, in the menu); off, back.
 //!
@@ -71,13 +71,11 @@ pub(super) fn options_path() -> Option<PathBuf> {
 }
 
 /// What splitscreen draws over a player's view (`Game::split_hud`): its corner badge (who, and a
-/// moment where), the frame while keyboard and mouse come to it, a question its controller
-/// answers, and notices nobody has to answer.
+/// moment where), a question its controller answers, and notices nobody has to answer.
 #[derive(Default)]
 pub(super) struct Hud {
     badge: Option<String>,
     place: Option<(String, Instant)>,
-    framed: Option<Instant>,
     prompt: Option<Prompt>,
     notice: Option<horizon_client::toasts::SystemToast>,
 }
@@ -107,34 +105,9 @@ enum Screen {
     /// A monitor, by name: a borderless fullscreen window there.
     Monitor(String),
     /// A window others can share, by number from 2 ("Window 2"); 0 is a new one, given the
-    /// first free number when it opens. A profile keeps only "a window": numbers last a session.
+    /// first free number when it opens.
     Window(u8),
 }
-impl Screen {
-    /// As `screen.txt` keeps it.
-    fn load(path: &Path) -> Self {
-        match std::fs::read_to_string(path).unwrap_or_default().trim() {
-            "window" | "own" => Screen::Window(0),
-            text => text
-                .strip_prefix("monitor:")
-                .map_or(Screen::Main, |name| Screen::Monitor(name.to_owned())),
-        }
-    }
-    fn save(&self, path: &Path) {
-        let text = match self {
-            Screen::Main => "main".to_owned(),
-            Screen::Monitor(name) => format!("monitor:{name}"),
-            Screen::Window(_) => "window".to_owned(),
-        };
-        if let Some(dir) = path.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
-        if let Err(e) = std::fs::write(path, text + "\n") {
-            log::warn!("Horizon: splitscreen: {}: {e}", path.display());
-        }
-    }
-}
-
 /// Which window a view is in: the game's, a monitor's, or a numbered one.
 #[derive(Clone, Debug, PartialEq)]
 enum Key {
@@ -249,8 +222,7 @@ impl<'a> Split<'a> {
             }],
             _ => Vec::new(),
         };
-        let p1_screen =
-            Self::folder().map_or(Screen::Main, |f| Screen::load(&f.join("p1-screen.txt")));
+        let p1_screen = Screen::Main;
         Self {
             host,
             guests: Vec::new(),
@@ -284,18 +256,6 @@ impl<'a> Split<'a> {
     /// The splitscreen folder in the game folder: `profiles/<name>/` holds each profile.
     fn folder() -> Result<PathBuf> {
         Ok(std::env::current_dir()?.join("splitscreen"))
-    }
-
-    /// Where each player's screen choice is kept.
-    fn screen_file(&self, i: usize) -> Option<PathBuf> {
-        let folder = Self::folder().ok()?;
-        match i {
-            0 => Some(folder.join("p1-screen.txt")),
-            _ => Some(folder.join(format!(
-                "profiles/{}/screen.txt",
-                self.guests.get(i - 1)?.name.as_ref()?
-            ))),
-        }
     }
 
     fn screen(&self, i: usize) -> &Screen {
@@ -498,28 +458,6 @@ impl<'a> Split<'a> {
             }
         }
         self.turn(0);
-        // Where everyone just moved, show again whose view keyboard and mouse drive.
-        self.flash(self.focus);
-    }
-
-    /// Frame player `i`'s view a moment, where its window has others too (alone, it needs none).
-    fn flash(&mut self, i: usize) {
-        let views = &self.applied;
-        let shared = views
-            .get(i)
-            .is_some_and(|v| views.iter().filter(|o| o.0 == v.0).count() > 1);
-        if !shared {
-            return;
-        }
-        let now = Some(Instant::now());
-        match i {
-            0 => self.host.split_hud.framed = now,
-            _ => {
-                if let Some(g) = self.guests.get_mut(i - 1) {
-                    g.game.split_hud.framed = now;
-                }
-            }
-        }
     }
 
     /// A joining player's bumper: its view moves to the next place it could play (`back`: the
@@ -534,15 +472,13 @@ impl<'a> Split<'a> {
             .iter()
             .position(|(_, s)| s == self.screen(i))
             .unwrap_or(0);
-        let (label, mut next) = choices[if back { (at + n - 1) % n } else { (at + 1) % n }].clone();
+        let mut next = choices[if back { (at + n - 1) % n } else { (at + 1) % n }]
+            .1
+            .clone();
         if next == Screen::Window(0) {
             next = Screen::Window(self.free_window());
         }
-        let guest = &mut self.guests[i - 1];
-        guest.screen = next;
-        if let Some(title) = guest.game.title.as_mut() {
-            title.set_play_on(&label);
-        }
+        self.guests[i - 1].screen = next;
         let shown = self.label(self.screen(i));
         self.guests[i - 1].game.split_hud.place = Some((
             format!("LB < {shown} > RB"),
@@ -839,9 +775,6 @@ impl<'a> Split<'a> {
             if next == Screen::Window(0) {
                 next = Screen::Window(self.free_window());
             }
-            if let Some(file) = self.screen_file(i) {
-                next.save(&file);
-            }
             match i {
                 0 => self.p1_screen = next,
                 _ => self.guests[i - 1].screen = next,
@@ -1094,13 +1027,8 @@ impl<'a> Split<'a> {
             .collect();
         names.sort_by_key(|n| n.to_lowercase());
         let taken = self.taken();
-        let labels = self
-            .choices(usize::MAX)
-            .into_iter()
-            .map(|(label, _)| label)
-            .collect();
         if let Some(title) = game.title.as_mut() {
-            title.profile_picker(names, taken, labels);
+            title.profile_picker(names, taken);
         }
         self.guests.push(Guest {
             game,
@@ -1116,7 +1044,7 @@ impl<'a> Split<'a> {
             leaving: false,
         });
         if let Some(name) = name {
-            self.enter(self.guests.len() - 1, name, None)?;
+            self.enter(self.guests.len() - 1, name)?;
         }
         Ok(())
     }
@@ -1128,9 +1056,9 @@ impl<'a> Split<'a> {
             .collect()
     }
 
-    /// Guest `i` plays as profile `name` on `screen` (`None`: where the profile played last):
-    /// its options, then into P1's world.
-    fn enter(&mut self, i: usize, name: String, screen: Option<String>) -> Result<()> {
+    /// Guest `i` plays as profile `name` where its view is now (moved with the bumpers): its
+    /// options, then into P1's world.
+    fn enter(&mut self, i: usize, name: String) -> Result<()> {
         if self.taken().contains(&name) {
             return Err(format!("{name} is already playing").into());
         }
@@ -1143,25 +1071,6 @@ impl<'a> Split<'a> {
             self.host.settings.save(&options);
             self.host.settings.clone()
         };
-        let picked = screen.and_then(|label| {
-            self.choices(usize::MAX)
-                .into_iter()
-                .find(|(l, _)| *l == label)
-                .map(|(_, s)| s)
-        });
-        let screen = match picked {
-            Some(screen) => {
-                screen.save(&profile.join("screen.txt"));
-                screen
-            }
-            None => Screen::load(&profile.join("screen.txt")),
-        };
-        // "A window": a new one, numbered now; the one the bumpers already opened for it, if so.
-        let screen = match (screen, &self.guests[i].screen) {
-            (Screen::Window(0), Screen::Window(n)) if *n > 0 => Screen::Window(*n),
-            (Screen::Window(0), _) => Screen::Window(self.free_window()),
-            (other, _) => other,
-        };
         let pipe = self
             .host
             .integrated
@@ -1169,7 +1078,6 @@ impl<'a> Split<'a> {
             .and_then(|server| server.join_split(&name))
             .ok_or("P1's world is not on its server thread")?;
         self.guests[i].options = options;
-        self.guests[i].screen = screen;
         self.turn(i + 1);
         let guest = &mut self.guests[i];
         settings.extras.agent_control &= guest.game.options.control.is_some();
@@ -1197,7 +1105,7 @@ impl<'a> Split<'a> {
                 Some(_) => None,
             };
             let leave = match choice {
-                Some(Some((name, screen))) => match self.enter(i, name, screen) {
+                Some(Some(name)) => match self.enter(i, name) {
                     Ok(()) => {
                         changed = true;
                         false
@@ -1420,7 +1328,6 @@ impl ApplicationHandler for Split<'_> {
                 {
                     self.focus = clicked;
                     self.tag(clicked, Some("Keyboard and mouse"));
-                    self.flash(clicked);
                     let position = self.cursor_in_focus();
                     if let Some((player, id)) = self.player(clicked) {
                         player.window_event(
@@ -1528,17 +1435,13 @@ impl ApplicationHandler for Split<'_> {
         if changed || self.views() != self.applied {
             self.relayout(event_loop);
         }
-        // Badges while others play too; a player choosing where to play stays framed.
-        let now = Instant::now();
+        // Badges while others play too.
         let together = self.players() > 1;
         self.host.split_hud.badge =
             together.then(|| format!("P1 · {}", self.host.options.player_name()));
         for (k, g) in self.guests.iter_mut().enumerate() {
             let who = g.name.as_deref().unwrap_or("choosing");
             g.game.split_hud.badge = Some(format!("P{} · {who}", k + 2));
-            if g.name.is_none() {
-                g.game.split_hud.framed = Some(now);
-            }
         }
         let master = self.host.audio.master;
         for i in 0..self.guests.len() {
@@ -1621,19 +1524,6 @@ impl Game<'_> {
         let atlas = &self.gui.atlas;
         let (w, h) = (batch.width, batch.height);
         let width = |text: &str| HudBatch::text_width(atlas, text).ceil();
-        // The frame round the view keyboard and mouse came to: 1.5 s, then it fades over 0.5 s.
-        let framed = self.split_hud.framed.map(|t| t.elapsed().as_secs_f32());
-        if let Some(t) = framed.filter(|&t| t < 2.0) {
-            let white = rgba(255, 255, 255, (255.0 * ((2.0 - t) / 0.5).min(1.0)) as u8);
-            for [x, y, fw, fh] in [
-                [0.0, 0.0, w, 1.0],
-                [0.0, h - 1.0, w, 1.0],
-                [0.0, 0.0, 1.0, h],
-                [w - 1.0, 0.0, 1.0, h],
-            ] {
-                batch.fill(atlas, x, y, fw, fh, white);
-            }
-        }
         // The badge, top left: who, and a moment where.
         if let Some(badge) = &self.split_hud.badge {
             let place = self.split_hud.place.as_ref();
@@ -1725,20 +1615,5 @@ mod tests {
 
     fn size(w: u32, h: u32) -> PhysicalSize<u32> {
         PhysicalSize::new(w, h)
-    }
-
-    #[test]
-    fn screen_choices_round_trip() {
-        let dir = std::env::temp_dir().join(format!("horizon-split-screen-{}", std::process::id()));
-        let file = dir.join("screen.txt");
-        for screen in [
-            Screen::Main,
-            Screen::Window(0),
-            Screen::Monitor("LG TV".into()),
-        ] {
-            screen.save(&file);
-            assert_eq!(Screen::load(&file), screen);
-        }
-        let _ = std::fs::remove_dir_all(dir);
     }
 }

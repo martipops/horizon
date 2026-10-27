@@ -11,7 +11,7 @@ Scenarios:
            first leaves it again
   three    three in a window: one wide on top, one tall on the left, side by side
   live     splitscreen off and on again from the Splitscreen page, in a world
-  picker   a joining player makes a profile, picks New window, and joins in it
+  picker   a joining player opens a new window (RB), makes a profile, and joins in it
   leave    a player holds Select, then A leaves, or X switches profile in the same place
   bumpers  a joining player moves its view with LB and RB before picking its profile
   eight    eight players in one window: rows of three, three and two, every view drawing
@@ -255,22 +255,20 @@ def scenario_live():
 
 
 def scenario_picker():
-    print('picker: a new profile in a New window')
+    print('picker: RB to a new window, then a new profile')
     g = Game(2, pick=True)
     try:
         g.wait(lambda: (g.ctl(2, 'state').get('menu') or {}).get('mode') == 'splitscreen-profiles',
                'the picker')
         half = g.size(1)  # P2 picks in Window 1 beside P1
-        g.ctl(2, 'click-button', 'Play on')  # As last time -> Window 1
-        g.ctl(2, 'click-button', 'Play on')  # -> New window
+        g.ctl(2, 'pad', 'rb', 'tap')  # Window 1 -> New window
+        g.settle([1], [(2 * half[0], half[1])])
         g.ctl(2, 'click-button', 'New Profile...')
         g.ctl(2, 'type', 'Sam')
         g.ctl(2, 'click-button', 'Create')
         g.wait(lambda: g.ctl(2, 'state').get('player') is not None, 'Sam in the world')
         check('P1 has Window 1 to itself', g.settle([1], [(2 * half[0], half[1])]), [(2 * half[0], half[1])])
         check('Sam plays in its own window', g.size(2) != g.size(1), True)
-        saved = (g.home / 'splitscreen/profiles/Sam/screen.txt').read_text().strip()
-        check('the profile remembers a window', saved, 'window')
     finally:
         g.quit()
 
@@ -292,7 +290,12 @@ def scenario_fullscreen():
         g.play_on(2, 'Window 2')
         windowed = g.size(2)
         g.ctl(2, 'key', 'f11', 'tap')
-        g.wait(lambda: g.size(2)[0] > windowed[0], "P2's window fullscreen", seconds=10)
+        try:
+            g.wait(lambda: g.size(2)[0] > windowed[0], "P2's window fullscreen", seconds=10)
+        except RuntimeError:
+            # macOS ignores a fullscreen request while another window's transition runs: again.
+            g.ctl(2, 'key', 'f11', 'tap')
+            g.wait(lambda: g.size(2)[0] > windowed[0], "P2's window fullscreen", seconds=20)
         check("P2's F11: its window fills the screen", g.size(2)[0] > windowed[0], True)
         value = g.ctl(1, 'options-get', 'fullscreen')['options']['fullscreen']['value']
         check("P1's window stays windowed", value, False)
@@ -319,7 +322,6 @@ def scenario_bumpers():
         g.ctl(2, 'pad', 'rb', 'tap')
         check('RB: P2 opens Window 2, P1 has Window 1 to itself', g.settle([1], [whole]), [whole])
         own = g.size(2)
-        check("P2's picker shows it", 'Play on: New window' in g.labels(2), True)
         g.ctl(2, 'pad', 'lb', 'tap')
         check('LB: back beside P1 in Window 1', g.settle([1, 2], [half, half]), [half, half])
         g.ctl(2, 'pad', 'rb', 'tap')
@@ -329,8 +331,6 @@ def scenario_bumpers():
         g.ctl(2, 'click-button', 'Create')
         g.wait(lambda: g.ctl(2, 'state').get('player') is not None, 'Ann in the world')
         check('Ann joins where the bumpers put her', g.settle([1, 2], [whole, own]), [whole, own])
-        saved = (g.home / 'splitscreen/profiles/Ann/screen.txt').read_text().strip()
-        check('her profile remembers a window', saved, 'window')
     finally:
         g.quit()
 
