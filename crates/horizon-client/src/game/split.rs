@@ -322,6 +322,9 @@ pub(super) struct Split<'a> {
     lost: Vec<Lost<PadId>>,
     /// `HORIZON_SPLIT_STATS`: when the frame times were last printed.
     stats: Option<Instant>,
+    /// P1's name and when it was read: without `--name` reading it opens horizon-player.txt,
+    /// too slow for every frame (the badge, the titles).
+    p1_name: (String, Instant),
     /// The game's window and its compositor first, then monitors' and players' own.
     surfaces: Vec<Surface>,
     /// The views the players were last fitted to.
@@ -358,6 +361,7 @@ impl<'a> Split<'a> {
             host.settings.extras.splitscreen = true;
         }
         let enabled = host.settings.extras.splitscreen;
+        let p1_name = host.options.player_name();
         if enabled {
             host.options.offscreen = true;
             host.options.paced_by_split = true;
@@ -393,6 +397,7 @@ impl<'a> Split<'a> {
             fresh: Vec::new(),
             lost: Vec::new(),
             stats: std::env::var_os("HORIZON_SPLIT_STATS").map(|_| Instant::now()),
+            p1_name: (p1_name, Instant::now()),
             surfaces,
             applied: Vec::new(),
             window_rects: Default::default(),
@@ -661,7 +666,7 @@ impl<'a> Split<'a> {
     /// Player `i`'s seat (P1's is 1) and name ("choosing" while it picks its profile).
     fn who(&self, i: usize) -> (usize, String) {
         match i {
-            0 => (1, self.host.options.player_name()),
+            0 => (1, self.p1_name.0.clone()),
             _ => {
                 let g = &self.guests[i - 1];
                 (g.seat, g.name.clone().unwrap_or_else(|| "choosing".into()))
@@ -1979,6 +1984,9 @@ impl ApplicationHandler for Split<'_> {
         if !self.enabled {
             return self.host.about_to_wait(event_loop);
         }
+        if self.p1_name.1.elapsed() >= Duration::from_secs(1) {
+            self.p1_name = (self.host.options.player_name(), Instant::now());
+        }
         let pad_joins = self.route_pads();
         self.turn(0);
         self.host.about_to_wait(event_loop);
@@ -2038,7 +2046,7 @@ impl ApplicationHandler for Split<'_> {
         }
         // Badges while others play too.
         let together = self.players() > 1;
-        self.host.split_hud.badge = together.then(|| self.host.options.player_name());
+        self.host.split_hud.badge = together.then(|| self.p1_name.0.clone());
         for g in &mut self.guests {
             g.game.split_hud.badge = Some(g.name.clone().unwrap_or_else(|| "New player".into()));
         }
