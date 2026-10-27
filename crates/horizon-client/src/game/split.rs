@@ -136,6 +136,8 @@ pub(super) struct Split<'a> {
     /// started.
     spent: [Duration; 4],
     spent_frames: u32,
+    /// `HORIZON_SPLIT_NO_PRESENT=1` (measuring): the players render, the windows show nothing.
+    no_present: bool,
     frame_started: Option<Instant>,
     /// P1's name and when it was read: without `--name` reading it opens horizon-player.txt,
     /// too slow for every frame (the badge, the titles).
@@ -214,6 +216,7 @@ impl<'a> Split<'a> {
             stats: std::env::var_os("HORIZON_SPLIT_STATS").map(|_| Instant::now()),
             spent: Default::default(),
             spent_frames: 0,
+            no_present: std::env::var_os("HORIZON_SPLIT_NO_PRESENT").is_some(),
             frame_started: None,
             p1_name: (p1_name, Instant::now()),
             surfaces,
@@ -721,7 +724,13 @@ impl ApplicationHandler for Split<'_> {
             .chain(self.guests.iter().map(|g| &g.game.renderer))
             .collect();
         let vsync = self.host.settings.vsync;
-        for (k, surface) in self.surfaces.iter_mut().enumerate() {
+        // Measuring without the window system's pace (macOS takes ~150 frames a second at most).
+        let surfaces = if self.no_present {
+            &mut self.surfaces[..0]
+        } else {
+            &mut self.surfaces[..]
+        };
+        for (k, surface) in surfaces.iter_mut().enumerate() {
             let frames: Vec<_> = renderers
                 .iter()
                 .zip(&views)
