@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Local splitscreen dev launcher (not in the repo: dev/ is in .git/info/exclude).
+"""Local splitscreen dev launcher (temporary, on the splitscreen branch).
 
-    python3 dev/launch.py
+    cd dev && uv run launch.py      (or: python3 dev/launch.py)
 
 Up/down picks a row, left/right (or Enter) changes it, L launches, B builds, Q quits.
 The game plays from dev/home (its worlds, options and splitscreen profiles), never your
@@ -11,13 +11,14 @@ real game folder. Choices are remembered in dev/launcher.json.
 import curses
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
 
 DEV = Path(__file__).resolve().parent
 ROOT = DEV.parent
-GAME = ROOT / 'target/fast/horizon-client'
+GAME = ROOT / 'target/fast' / ('horizon-client.exe' if os.name == 'nt' else 'horizon-client')
 RESOURCES = ROOT / '.local/horizon-client/26.3'
 SAVED = DEV / 'launcher.json'
 
@@ -84,7 +85,7 @@ def launch(c):
     # The game keeps options.txt and saves in its working folder.
     code = subprocess.run(args, cwd=home, env=env).returncode
     if fresh:
-        subprocess.run(['rm', '-rf', str(home)])
+        shutil.rmtree(home, ignore_errors=True)
     if code != 0:
         input(f'The game exited with {code}. Enter to go back. ')
 
