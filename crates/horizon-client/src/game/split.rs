@@ -28,7 +28,7 @@ use super::{
     pad::{PadId, PadRouter},
     start_game,
 };
-use horizon_client::split_layout::{MAX_PLAYERS, View, place};
+use horizon_client::split_layout::{self as layout, MAX_PLAYERS, Placement, View, place};
 use horizon_client::{
     Result,
     gamepad::{Button, PadState},
@@ -138,16 +138,13 @@ impl HoldSelect {
     }
 }
 
-/// Where a player plays.
+/// Where a player can go: a window there is (by number, 1 the game's), a new free one, or a new
+/// one filling a monitor (by name).
 #[derive(Clone, Debug, PartialEq)]
-enum Screen {
-    /// The game's window.
-    Main,
-    /// A monitor, by name: a borderless fullscreen window there.
-    Monitor(String),
-    /// A window others can share, by number from 2 ("Window 2"); 0 is a new one, given the
-    /// first free number when it opens.
+enum Choice {
     Window(u8),
+    New,
+    Fill(String),
 }
 /// Player `game` into `window`; when it `moved` from another, the mouse it held there goes free
 /// (a click takes it in the new one).
@@ -160,8 +157,8 @@ fn into_window(game: &mut Game<'_>, window: Arc<Window>, moved: bool) {
 
 /// A window showing players' views, and the compositor that copies their frames into it.
 struct Surface {
-    /// Which window this is (never `Window(0)`).
-    key: Screen,
+    /// Which window this is, by number (1: the game's).
+    key: u8,
     window: Arc<Window>,
     compositor: Compositor,
     size: PhysicalSize<u32>,
@@ -176,7 +173,8 @@ struct Guest<'a> {
     name: Option<String>,
     /// Its seat (2 to `MAX_PLAYERS`): its number on screen (P2...), its control socket, its sounds.
     seat: usize,
-    screen: Screen,
+    /// The window it plays in, by number.
+    window: u8,
     pad: Option<PadId>,
     options: PathBuf,
     /// Its buttons and focus targets while another player's game runs.
@@ -197,12 +195,15 @@ pub(super) struct Split<'a> {
     test_players: usize,
     pads: PadRouter,
     p1_pad: Option<PadId>,
-    p1_screen: Screen,
+    p1_window: u8,
+    /// The windows players play in (Window 1, the game's, always first), each free or filling a
+    /// monitor: what the setup screen's draft starts from (`layout::Draft`).
+    windows: Vec<layout::Window>,
     /// Controllers offered to join, each since when: several may join at once.
     offers: Vec<(PadId, Instant)>,
     /// Players switching profile from the controller: its pad and where it played, to choose
     /// again there once it has left.
-    rejoin: Vec<(Option<PadId>, Screen)>,
+    rejoin: Vec<(Option<PadId>, layout::Window)>,
     /// P1's controller: holding Select asks whether it goes (P1 hosts: it leaves from the pause
     /// menu, but its controller can go).
     p1_hold: HoldSelect,
@@ -244,7 +245,7 @@ impl<'a> Split<'a> {
         // Made after the window on an ordinary launch (no `resumed` follows).
         let surfaces = match (compositor, &host.window) {
             (Some(compositor), Some(window)) => vec![Surface {
-                key: Screen::Main,
+                key: 1,
                 window: window.clone(),
                 compositor,
                 size: window.inner_size(),
@@ -253,7 +254,6 @@ impl<'a> Split<'a> {
             }],
             _ => Vec::new(),
         };
-        let p1_screen = Screen::Main;
         Self {
             host,
             guests: Vec::new(),
@@ -261,7 +261,11 @@ impl<'a> Split<'a> {
             test_players,
             pads: PadRouter::default(),
             p1_pad: None,
-            p1_screen,
+            p1_window: 1,
+            windows: vec![layout::Window {
+                number: 1,
+                placement: Placement::Free(None),
+            }],
             offers: Vec::new(),
             rejoin: Vec::new(),
             p1_hold: HoldSelect::default(),
@@ -293,11 +297,26 @@ impl<'a> Split<'a> {
         Ok(std::env::current_dir()?.join("splitscreen"))
     }
 
-    fn screen(&self, i: usize) -> &Screen {
+    /// The window player `i` chose, by number.
+    fn window_number(&self, i: usize) -> u8 {
         match i {
-            0 => &self.p1_screen,
-            _ => &self.guests[i - 1].screen,
+            0 => self.p1_window,
+            _ => self.guests[i - 1].window,
         }
+    }
+
+    fn set_window(&mut self, i: usize, number: u8) {
+        match i {
+            0 => self.p1_window = number,
+            _ => self.guests[i - 1].window = number,
+        }
+    }
+
+    fn placement(&self, number: u8) -> Option<&Placement> {
+        self.windows
+            .iter()
+            .find(|w| w.number == number)
+            .map(|w| &w.placement)
     }
 
     /// The monitors, by name.
@@ -318,87 +337,131 @@ impl<'a> Split<'a> {
         self.surfaces.first()?.window.current_monitor()?.name()
     }
 
-    /// Where player `i` can play, as the screens say it: Window 1 (the game's), the windows open,
-    /// a new window (unless it is alone in one), and each monitor but Window 1's (numbered left
-    /// to right, with its size: the system's names are ids on some). `i` past the players: one
-    /// joining. The page's button steps forward through them (buttons take the left click
-    /// only), a joining player's bumpers both ways.
-    fn choices(&self, i: usize) -> Vec<(String, Screen)> {
+    /// How a monitor is called: numbered left to right, with its size (the system's names are
+    /// ids on some).
+    fn monitor_label(&self, name: &str) -> Option<String> {
+        let mut monitors = self.monitors();
+        monitors.sort_by_key(|m| (m.position().x, m.position().y));
+        let (n, m) = monitors
+            .iter()
+            .enumerate()
+            .find(|(_, m)| m.name().as_deref() == Some(name))?;
+        let size = m.size();
+        Some(format!(
+            "Monitor {} ({}x{})",
+            n + 1,
+            size.width,
+            size.height
+        ))
+    }
+
+    /// The window player `i` plays in now: Window 1 for a window that fills a monitor that's
+    /// gone, or the one Window 1 is on.
+    fn window_of(&self, i: usize) -> u8 {
+        let number = self.window_number(i);
+        let shown = match self.placement(number) {
+            Some(Placement::Fill(name)) => {
+                Some(name) != self.main_monitor().as_ref()
+                    && self
+                        .monitors()
+                        .iter()
+                        .any(|m| m.name().as_ref() == Some(name))
+            }
+            Some(Placement::Free(_)) => true,
+            None => false,
+        };
+        if shown { number } else { 1 }
+    }
+
+    /// Where player `i` can play, as the screens say it: Window 1 (the game's), the other windows
+    /// open, a new window (unless it is alone in a free one), and each monitor no window fills
+    /// but Window 1's. The page's button steps forward through them (buttons take the left
+    /// click only), a joining player's bumpers both ways.
+    fn choices(&self, i: usize) -> Vec<(String, Choice)> {
+        let mut open: Vec<u8> = (0..self.players()).map(|j| self.window_of(j)).collect();
+        open.sort_unstable();
+        open.dedup();
+        let mine = self.window_of(i);
+        // Alone in a free window, a new one would only renumber it.
+        let alone = mine != 1
+            && matches!(self.placement(mine), Some(Placement::Free(_)))
+            && (0..self.players()).all(|j| j == i || self.window_of(j) != mine);
+        let filled: Vec<&String> = open
+            .iter()
+            .filter_map(|&n| match self.placement(n) {
+                Some(Placement::Fill(name)) => Some(name),
+                _ => None,
+            })
+            .collect();
         let main = self.main_monitor();
         let mut monitors = self.monitors();
         monitors.sort_by_key(|m| (m.position().x, m.position().y));
-        let monitors = monitors.iter().enumerate().filter_map(|(n, m)| {
-            let name = m.name().filter(|name| Some(name) != main.as_ref())?;
-            let size = m.size();
-            let label = format!("Monitor {} ({}x{})", n + 1, size.width, size.height);
-            Some((label, Screen::Monitor(name)))
+        let monitors = monitors.iter().filter_map(|m| {
+            let name = m
+                .name()
+                .filter(|n| Some(n) != main.as_ref() && !filled.contains(&n))?;
+            Some((self.monitor_label(&name)?, Choice::Fill(name)))
         });
-        let window_of = |j: usize| match self.screen(j) {
-            Screen::Window(n) if *n > 0 => Some(*n),
-            _ => None,
-        };
-        let mut open: Vec<u8> = (0..self.players()).filter_map(window_of).collect();
-        open.sort_unstable();
-        open.dedup();
-        // Alone in its window, a new one would only renumber it.
-        let alone = i < self.players()
-            && window_of(i)
-                .is_some_and(|n| (0..self.players()).all(|j| j == i || window_of(j) != Some(n)));
-        std::iter::once((WINDOW_1.to_owned(), Screen::Main))
+        std::iter::once((WINDOW_1.to_owned(), Choice::Window(1)))
             .chain(
                 open.into_iter()
-                    .map(|n| (format!("Window {n}"), Screen::Window(n))),
+                    .filter(|&n| n != 1)
+                    .map(|n| (self.window_label(n), Choice::Window(n))),
             )
-            .chain((!alone).then(|| (NEW_WINDOW.to_owned(), Screen::Window(0))))
+            .chain((!alone).then(|| (NEW_WINDOW.to_owned(), Choice::New)))
             .chain(monitors)
             .collect()
     }
 
-    /// How a screen is shown: a monitor that's gone or Window 1's own, as Window 1.
-    fn label(&self, screen: &Screen) -> String {
-        match screen {
-            Screen::Window(0) => NEW_WINDOW.to_owned(),
-            Screen::Window(n) => format!("Window {n}"),
-            _ => self
-                .choices(usize::MAX)
-                .into_iter()
-                .find(|(_, s)| s == screen)
-                .map_or_else(|| WINDOW_1.to_owned(), |(label, _)| label),
+    /// How window `number` is shown: "Window 2", and the monitor it fills.
+    fn window_label(&self, number: u8) -> String {
+        match self.placement(number) {
+            Some(Placement::Fill(name)) if number != 1 => match self.monitor_label(name) {
+                Some(monitor) => format!("Window {number}, {monitor}"),
+                None => format!("Window {number}"),
+            },
+            _ => format!("Window {number}"),
         }
     }
 
-    /// A new window's number: the first not in use.
-    fn free_window(&self) -> u8 {
-        (2..)
-            .find(|n| (0..self.players()).all(|j| self.screen(j) != &Screen::Window(*n)))
-            .unwrap_or(2)
+    /// Where player `i` plays, as the screens say it.
+    fn label(&self, i: usize) -> String {
+        self.window_label(self.window_of(i))
     }
 
-    /// The window player `i` is in: a monitor that's gone, or the one Window 1 is on, means
-    /// Window 1.
-    fn key(&self, i: usize, monitors: &[String]) -> Screen {
-        match self.screen(i) {
-            Screen::Monitor(name)
-                if monitors.contains(name) && Some(name) != self.main_monitor().as_ref() =>
-            {
-                Screen::Monitor(name.clone())
-            }
-            Screen::Window(n) if *n > 0 => Screen::Window(*n),
-            _ => Screen::Main,
-        }
+    /// Player `i` into a window: one there is, or a new one with the first number free.
+    fn choose(&mut self, i: usize, choice: Choice) {
+        let placement = match choice {
+            Choice::Window(n) => return self.set_window(i, n),
+            Choice::New => Placement::Free(None),
+            Choice::Fill(name) => Placement::Fill(name),
+        };
+        // Out of its window first: alone there, its number is free again.
+        self.set_window(i, 1);
+        self.forget_empty_windows();
+        let number = (2..=u8::MAX)
+            .find(|n| self.windows.iter().all(|w| w.number != *n))
+            .unwrap_or(u8::MAX);
+        self.windows.push(layout::Window { number, placement });
+        self.set_window(i, number);
+    }
+
+    /// Windows nobody plays in close (Window 1 stays).
+    fn forget_empty_windows(&mut self) {
+        let used: Vec<u8> = (0..self.players()).map(|i| self.window_number(i)).collect();
+        self.windows
+            .retain(|w| w.number == 1 || used.contains(&w.number));
     }
 
     /// Every player's view, in the windows there are now.
     fn views(&self) -> Vec<View> {
-        let monitors: Vec<_> = self
-            .monitors()
-            .iter()
-            .filter_map(MonitorHandle::name)
-            .collect();
         let windows: Vec<usize> = (0..self.players())
             .map(|i| {
-                let key = self.key(i, &monitors);
-                self.surfaces.iter().position(|s| s.key == key).unwrap_or(0)
+                let number = self.window_of(i);
+                self.surfaces
+                    .iter()
+                    .position(|s| s.key == number)
+                    .unwrap_or(0)
             })
             .collect();
         let sizes: Vec<_> = self.surfaces.iter().map(|s| s.size).collect();
@@ -518,27 +581,19 @@ impl<'a> Split<'a> {
         if n == 0 {
             return;
         }
-        let at = choices
-            .iter()
-            .position(|(_, s)| s == self.screen(i))
-            .unwrap_or(0);
-        let mut next = choices[if back { (at + n - 1) % n } else { (at + 1) % n }]
+        let mine = Choice::Window(self.window_of(i));
+        let at = choices.iter().position(|(_, c)| *c == mine).unwrap_or(0);
+        let next = choices[if back { (at + n - 1) % n } else { (at + 1) % n }]
             .1
             .clone();
-        if next == Screen::Window(0) {
-            next = Screen::Window(self.free_window());
-        }
-        match i {
-            0 => self.p1_screen = next,
-            _ => self.guests[i - 1].screen = next,
-        }
+        self.choose(i, next);
     }
 
     /// A joining player's bumper: its view moves to the next place it could play (`back`: the
     /// one before), at once, so it sees where it will be; choosing its profile keeps it there.
     fn place_joining(&mut self, i: usize, back: bool) {
         self.step_screen(i, back);
-        let shown = self.label(self.screen(i));
+        let shown = self.label(i);
         self.guests[i - 1].game.split_hud.place = Some((
             format!("LB < {shown} > RB"),
             Instant::now() + Duration::from_secs(3),
@@ -581,7 +636,15 @@ impl<'a> Split<'a> {
                     return;
                 }
                 if answer == Button::West {
-                    self.rejoin.push((g.pad, g.screen.clone()));
+                    let number = g.window;
+                    let window = self.windows.iter().find(|w| w.number == number).cloned();
+                    self.rejoin.push((
+                        g.pad,
+                        window.unwrap_or(layout::Window {
+                            number: 1,
+                            placement: Placement::Free(None),
+                        }),
+                    ));
                 }
                 if let Err(e) = g.game.leave_server(None) {
                     log::warn!("Horizon: splitscreen: {e}");
@@ -652,7 +715,7 @@ impl<'a> Split<'a> {
         if i > 0 && self.guests[i - 1].name.is_none() {
             return;
         }
-        let note = note.map_or_else(|| self.label(self.screen(i)), str::to_owned);
+        let note = note.map_or_else(|| self.label(i), str::to_owned);
         let place = Some((note, Instant::now() + Duration::from_secs(3)));
         if let Some(game) = self.game_mut(i) {
             game.split_hud.place = place;
@@ -666,10 +729,9 @@ impl<'a> Split<'a> {
             .filter(|&i| views.get(i).is_some_and(|v| v.0 == k))
             .map(|i| self.who(i).1)
             .collect();
-        let name = match &self.surfaces[k].key {
-            Screen::Window(n) => format!(" - Window {n}"),
-            Screen::Main if self.surfaces.len() > 1 => format!(" - {WINDOW_1}"),
-            _ => String::new(),
+        let name = match self.surfaces[k].key {
+            1 if self.surfaces.len() == 1 => String::new(),
+            n => format!(" - Window {n}"),
         };
         if self.players() > 1 && !who.is_empty() {
             format!("Horizon{name} · {}", who.join(", "))
@@ -684,20 +746,20 @@ impl<'a> Split<'a> {
         if self.surfaces.is_empty() {
             return false;
         }
+        self.forget_empty_windows();
         let monitors = self.monitors();
-        let names: Vec<_> = monitors.iter().filter_map(MonitorHandle::name).collect();
-        let wanted: Vec<Screen> = (0..self.players()).map(|i| self.key(i, &names)).collect();
+        let wanted: Vec<u8> = (0..self.players()).map(|i| self.window_of(i)).collect();
         let before = self.surfaces.len();
         for s in &self.surfaces {
-            if let Screen::Window(n) = s.key
+            if s.key != 1
                 && !wanted.contains(&s.key)
                 && let Ok(at) = s.window.outer_position()
             {
-                self.window_rects.insert(n, (at, s.window.inner_size()));
+                self.window_rects.insert(s.key, (at, s.window.inner_size()));
             }
         }
         self.surfaces
-            .retain(|s| s.key == Screen::Main || wanted.contains(&s.key));
+            .retain(|s| s.key == 1 || wanted.contains(&s.key));
         let mut changed = self.surfaces.len() != before;
         // macOS would join new windows to the game's as tabs (when the system prefers tabs).
         #[cfg(target_os = "macos")]
@@ -715,8 +777,9 @@ impl<'a> Split<'a> {
                 .with_active(false);
             // A monitor's window covers it, borderless; not the system's fullscreen, which on
             // macOS is a Space of its own that hides the other windows as it slides in.
-            let cover = match key {
-                Screen::Monitor(name) => monitors
+            let placement = self.placement(*key).cloned();
+            let cover = match &placement {
+                Some(Placement::Fill(name)) => monitors
                     .iter()
                     .find(|m| m.name().as_ref() == Some(name))
                     .map(|m| (m.position(), m.size())),
@@ -730,9 +793,12 @@ impl<'a> Split<'a> {
                     .with_inner_size(size),
                 // A numbered window where it was last, else 854 x 480.
                 None => {
-                    let last = match key {
-                        Screen::Window(n) => self.window_rects.get(n).copied(),
-                        _ => None,
+                    let last = match placement {
+                        Some(Placement::Free(Some((at, size)))) => Some((
+                            PhysicalPosition::new(at[0], at[1]),
+                            PhysicalSize::new(size[0], size[1]),
+                        )),
+                        _ => self.window_rects.get(key).copied(),
                     };
                     match last {
                         Some((at, size)) => attributes.with_position(at).with_inner_size(size),
@@ -757,19 +823,19 @@ impl<'a> Split<'a> {
             }
             match made {
                 Ok((window, compositor)) => self.surfaces.push(Surface {
-                    key: key.clone(),
+                    key: *key,
                     size: window.inner_size(),
                     window,
                     compositor,
                     focused: false,
                     title: String::new(),
                 }),
-                Err(e) => log::warn!("Horizon: splitscreen: no window for {key:?}: {e}"),
+                Err(e) => log::warn!("Horizon: splitscreen: no Window {key}: {e}"),
             }
             changed = true;
         }
         // The game's window only while someone plays on it.
-        let main_used = wanted.contains(&Screen::Main);
+        let main_used = wanted.contains(&1);
         let main = &self.surfaces[0].window;
         if main.is_visible() != Some(main_used) {
             main.set_visible(main_used);
@@ -798,7 +864,7 @@ impl<'a> Split<'a> {
         let rows: Vec<(String, String)> = (0..self.players())
             .map(|i| {
                 let (seat, who) = self.who(i);
-                (format!("P{seat} {who}"), self.label(self.screen(i)))
+                (format!("P{seat} {who}"), self.label(i))
             })
             .collect();
         self.host.ui.options.split_players = rows.clone();
@@ -849,7 +915,7 @@ impl<'a> Split<'a> {
         self.host.clear_lod();
         self.host.all_sections_changed();
         self.surfaces = vec![Surface {
-            key: Screen::Main,
+            key: 1,
             size: window.inner_size(),
             window,
             compositor,
@@ -1062,7 +1128,7 @@ impl<'a> Split<'a> {
             game,
             name: None,
             seat,
-            screen: Screen::Main,
+            window: 1,
             pad,
             options,
             widgets: Default::default(),
@@ -1259,7 +1325,7 @@ impl<'a> Split<'a> {
                 continue;
             }
             if i == 0 {
-                self.p1_screen = Screen::Main;
+                self.p1_window = 1;
                 continue;
             }
             let guest = &mut self.guests[i - 1];
@@ -1286,7 +1352,7 @@ impl ApplicationHandler for Split<'_> {
         if self.surfaces.is_empty() {
             match renderer.compositor(window.clone()) {
                 Ok(compositor) => self.surfaces.push(Surface {
-                    key: Screen::Main,
+                    key: 1,
                     window: window.clone(),
                     compositor,
                     size: window.inner_size(),
@@ -1440,16 +1506,21 @@ impl ApplicationHandler for Split<'_> {
         self.host.about_to_wait(event_loop);
         let mut changed = self.drop_out();
         // Switching profile: choosing again, where it played.
-        for (pad, screen) in std::mem::take(&mut self.rejoin) {
+        for (pad, window) in std::mem::take(&mut self.rejoin) {
             if self.guests.iter().any(|g| g.pad.is_some() && g.pad == pad) {
                 // Not gone yet: next frame.
-                self.rejoin.push((pad, screen));
+                self.rejoin.push((pad, window));
                 continue;
             }
             match self.join(pad, None) {
                 Ok(()) => {
+                    // Its window again: still open, or opened again as it was.
+                    let number = window.number;
+                    if self.placement(number).is_none() {
+                        self.windows.push(window);
+                    }
                     if let Some(g) = self.guests.last_mut() {
-                        g.screen = screen;
+                        g.window = number;
                     }
                     changed = true;
                 }
