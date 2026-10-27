@@ -61,8 +61,13 @@ def launch(c):
     if c['build'] == 'on' and not build():
         input('Build failed. Enter to go back. ')
         return
-    if not GAME.exists() or not (RESOURCES / 'assets').exists():
-        input(f'Missing {GAME} or prepared resources in {RESOURCES}. Enter to go back. ')
+    if not GAME.exists():
+        input(f'No game at {GAME}: turn on "Build before launch" or press B. Enter to go back. ')
+        return
+    if not (RESOURCES / 'assets').exists():
+        input(f'No prepared resources in {RESOURCES}. From the repo root, with Minecraft 26.3 played once\n'
+              '  cargo run --release -p horizon-prepare -- --prepare --server-jar <26.3 server.jar>   (JDK 25)\n'
+              '  cargo run --release -p horizon-prepare -- sounds\nEnter to go back. ')
         return
     fresh = c['home'] != 'dev/home'
     home = Path(tempfile.mkdtemp(prefix='horizon-dev-')) if fresh else DEV / 'home'
