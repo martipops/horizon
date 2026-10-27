@@ -822,7 +822,16 @@ impl<'a> Split<'a> {
                 return Err(e);
             }
         };
-        let compositor = old.compositor(window.clone())?;
+        // A window it can't present on: P1 keeps drawing on it as before.
+        let compositor = match old.compositor(window.clone()) {
+            Ok(c) => c,
+            Err(e) => {
+                drop(renderer);
+                old.recreate_surface()?;
+                self.host.renderer = Some(old);
+                return Err(e);
+            }
+        };
         self.host.renderer = Some(renderer);
         self.host.options.offscreen = true;
         self.host.options.paced_by_split = true;
@@ -845,16 +854,9 @@ impl<'a> Split<'a> {
     /// Splitscreen turned off: the others leave, and P1 draws on its window again.
     fn disable(&mut self, event_loop: &ActiveEventLoop) -> Result<()> {
         // P1's own buttons and focus targets back first: the others' go with them.
-        self.turn(0);
-        if let Some(server) = &self.host.integrated {
-            for g in &self.guests {
-                if let Some(name) = &g.name {
-                    server.leave_split(name);
-                }
-            }
+        for k in (0..self.guests.len()).rev() {
+            self.remove_guest(k);
         }
-        self.guests.clear();
-        self.focus = 0;
         self.host.pad.feed = None;
         self.surfaces.truncate(1);
         let Some(main) = self.surfaces.pop() else {
@@ -865,7 +867,7 @@ impl<'a> Split<'a> {
         let old = self.host.renderer.take().ok_or("no renderer")?;
         old.take_back(main.compositor);
         let api = self.host.settings.horizon.api;
-        let renderer = build_renderer(
+        let built = build_renderer(
             main.window.clone(),
             false,
             &self.host.pack,
@@ -873,7 +875,17 @@ impl<'a> Split<'a> {
             Some(&old),
             None,
             api,
-        )?;
+        );
+        let renderer = match built {
+            Ok(r) => r,
+            Err(e) => {
+                // P1 stays offscreen, presented as before (alone now).
+                let compositor = old.compositor(main.window.clone())?;
+                self.host.renderer = Some(old);
+                self.surfaces.push(Surface { compositor, ..main });
+                return Err(e);
+            }
+        };
         drop(old);
         self.host.renderer = Some(renderer);
         self.host.window = Some(main.window.clone());
@@ -1086,7 +1098,13 @@ impl<'a> Split<'a> {
         guest.game.apply_settings();
         let joined = guest.game.connect_local(pipe, &name);
         self.turn(0);
-        joined?;
+        if let Err(e) = joined {
+            // Let in for nothing: the world pauses again, the name is free.
+            if let Some(server) = &self.host.integrated {
+                server.leave_split(&name);
+            }
+            return Err(e);
+        }
         self.guests[i].name = Some(name);
         Ok(())
     }
@@ -1119,7 +1137,7 @@ impl<'a> Split<'a> {
                 None => false,
             };
             if leave {
-                self.guests.remove(i);
+                self.remove_guest(i);
                 changed = true;
             } else {
                 i += 1;
@@ -1183,20 +1201,36 @@ impl<'a> Split<'a> {
     fn drop_out(&mut self) -> bool {
         let p1_left = self.host.title.is_some() || self.host.integrated.is_none();
         let before = self.guests.len();
-        let server = self.host.integrated.as_ref();
-        self.guests.retain(|g| {
+        for k in (0..self.guests.len()).rev() {
+            let g = &self.guests[k];
             // A player picking a profile has no connection yet.
             let playing = g.name.is_none() || g.game.remote.is_some();
-            let stays = !p1_left && playing && g.game.error.is_none();
-            if !stays && let (Some(server), Some(name)) = (server, &g.name) {
-                server.leave_split(name);
+            if p1_left || !playing || g.game.error.is_some() {
+                self.remove_guest(k);
             }
-            stays
-        });
-        if self.focus >= self.players() {
-            self.focus = 0;
         }
         self.guests.len() != before
+    }
+
+    /// Guest `k` (player `k + 1`) leaves: keyboard and mouse stay with whoever had them (P1 if it
+    /// was this one), the views keep their order for the layout's comparison, and the server
+    /// forgets the name (the world may pause again).
+    fn remove_guest(&mut self, k: usize) {
+        // Its turn's buttons and options go back to their owners before the order shifts.
+        self.turn(0);
+        let guest = self.guests.remove(k);
+        let i = k + 1;
+        if self.focus == i {
+            self.focus = 0;
+        } else if self.focus > i {
+            self.focus -= 1;
+        }
+        if i < self.applied.len() {
+            self.applied.remove(i);
+        }
+        if let (Some(server), Some(name)) = (&self.host.integrated, &guest.name) {
+            server.leave_split(name);
+        }
     }
 
     /// A window other than Window 1 was closed: its players leave, P1 goes back to Window 1.
@@ -1606,14 +1640,5 @@ impl Game<'_> {
             return;
         }
         notice.draw(&self.gui.atlas, batch, 32.0 * slot as f32);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn size(w: u32, h: u32) -> PhysicalSize<u32> {
-        PhysicalSize::new(w, h)
     }
 }

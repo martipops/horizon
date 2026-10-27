@@ -14225,9 +14225,6 @@ impl Loading {
     fn finish(&mut self, loaded: Loaded) -> Result<Option<split::Split<'static>>> {
         let handoff_at = Instant::now();
         let mut options = self.options.take().ok_or("loading already finished")?;
-        // Splitscreen: every player renders offscreen and a compositor presents on the window.
-        let splitscreen = self.settings.extras.splitscreen;
-        options.offscreen |= splitscreen;
         options.resources = loaded.root.clone();
         // StartupMenu owns world selection until it can hand it to Game.
         options.world = None;
@@ -14238,6 +14235,20 @@ impl Loading {
         if let Some(renderer) = &mut self.renderer {
             renderer.release_surface();
         }
+        // Splitscreen: a compositor presents on the window and every player renders offscreen.
+        // A window it can't present on (a surface format the copy can't take): off this time.
+        let compositor = match (&self.renderer, self.settings.extras.splitscreen) {
+            (Some(loader), true) => match loader.compositor(window.clone()) {
+                Ok(c) => Some(c),
+                Err(e) => {
+                    log::warn!("Horizon: splitscreen is off: {e}");
+                    self.settings.extras.splitscreen = false;
+                    None
+                }
+            },
+            _ => None,
+        };
+        options.offscreen |= compositor.is_some();
         let renderer_at = Instant::now();
         let renderer = build_renderer(
             window.clone(),
@@ -14253,10 +14264,6 @@ impl Loading {
             self.started.elapsed().as_millis()
         );
         let renderer_ms = renderer_at.elapsed().as_millis();
-        let compositor = match (&self.renderer, splitscreen) {
-            (Some(loader), true) => Some(loader.compositor(window.clone())?),
-            _ => None,
-        };
         // Audio is created on the main thread, after the core is ready.
         let audio = if !options.execution_role.is_client() {
             Audio::silent(&options.resources)

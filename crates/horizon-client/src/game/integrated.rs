@@ -97,14 +97,19 @@ impl Integrated {
     pub fn join_split(&self, name: &str) -> Option<horizon_protocol::connection::Pipe> {
         let uuid = horizon_protocol::crypto::offline_uuid(name);
         self.flags.split_players.lock().unwrap().push(uuid);
-        self.call(move |g| {
-            let host = g.lan.as_mut()?;
-            let owner = host.owner.as_ref()?.uuid;
-            let level = host.hub.ops.get(&owner).copied().unwrap_or(0);
-            host.hub.ops.insert(uuid, level);
-            host.hub.lan.connect_local().ok()
-        })
-        .flatten()
+        let pipe = self
+            .call(move |g| {
+                let host = g.lan.as_mut()?;
+                let owner = host.owner.as_ref()?.uuid;
+                let level = host.hub.ops.get(&owner).copied().unwrap_or(0);
+                host.hub.ops.insert(uuid, level);
+                host.hub.lan.connect_local().ok()
+            })
+            .flatten();
+        if pipe.is_none() {
+            self.leave_split(name);
+        }
+        pipe
     }
     /// The window's render and simulation distances, for the server to follow.
     pub fn set_distances(&self, render: i32, simulation: i32) {

@@ -12,6 +12,7 @@ Scenarios:
   three    three in a window: one wide on top, one tall on the left, side by side
   live     splitscreen off and on again from the Splitscreen page, in a world
   picker   a joining player opens a new window (RB), makes a profile, and joins in it
+  signedin P1 signed into an account: another player still joins, under its own profile
   leave    a player holds Select, then A leaves, or X switches profile in the same place
   bumpers  a joining player moves its view with LB and RB before picking its profile
   eight    eight players in one window: rows of three, three and two, every view drawing
@@ -56,7 +57,7 @@ def check(name, got, want):
 class Game:
     """One splitscreen session: P1 launched with `players` (HORIZON_SPLIT), each on its socket."""
 
-    def __init__(self, players, pick=False, seed=None):
+    def __init__(self, players, pick=False, seed=None, args=()):
         self.home = Path(tempfile.mkdtemp(prefix='horizon-split-e2e-'))
         if seed:
             seed(self.home)
@@ -69,7 +70,7 @@ class Game:
         self.ctl(1, 'launch', '--wait', '--world', 'Split', '--creative', '--resources', str(RESOURCES),
                  '--width', str(WIDTH), '--height', str(HEIGHT), '--render-distance', '4',
                  # Another scenario's windows closing take the focus: no pause on losing it.
-                 '--no-pause')
+                 '--no-pause', *args)
         self.wait(lambda: all(self.alive(n) for n in range(1, players + 1)), 'every player in')
         # The automatic GUI scale keeps menus about 400 x 240: room for every row of the page.
         self.ctl(1, 'options-set', 'guiScale', '2')
@@ -363,6 +364,23 @@ def scenario_leave():
         g.quit()
 
 
+def scenario_signedin():
+    print('signedin: P1 signed into an account, another player joins under its own profile')
+    session = Path(tempfile.mkdtemp(prefix='horizon-session-')) / 'session.json'
+    session.write_text(json.dumps({'name': 'Signed', 'uuid': '069a79f444e94726a5befca90e38aaf5',
+                                   'access_token': 'not-a-real-token', 'user_type': 'msa'}))
+    session.chmod(0o600)
+    g = Game(2, args=('--session-file', str(session)))
+    try:
+        g.wait(lambda: g.ctl(2, 'state').get('player') is not None, 'P2 in the world', seconds=20)
+        time.sleep(2)
+        check('P2 plays', g.ctl(2, 'state').get('player') is not None, True)
+        check('P1 still plays (not replaced by its own name joining)',
+              g.ctl(1, 'state').get('player') is not None and g.size(1) == g.size(2), True)
+    finally:
+        g.quit()
+
+
 def scenario_eight():
     print('eight: eight players in one window')
     g = Game(8)
@@ -394,6 +412,7 @@ SCENARIOS = {
     'eight': scenario_eight,
     'bumpers': scenario_bumpers,
     'leave': scenario_leave,
+    'signedin': scenario_signedin,
 }
 
 

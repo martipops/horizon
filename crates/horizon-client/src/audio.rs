@@ -1227,7 +1227,7 @@ mod tests {
             owner,
         };
         let (mut p1, mut p2) = (backend(0), backend(1));
-        let mut started = |b: &mut MixerBackend, at: [f64; 3]| {
+        let started = |b: &mut MixerBackend, at: [f64; 3]| {
             let id = b.create(false).unwrap();
             b.set_position(id, at);
             !b.duplicate(id, "minecraft:mob/creeper/say1.ogg")
