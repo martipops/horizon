@@ -1,4 +1,4 @@
-//! Splitscreen (Horizon's Splitscreen page, off by default): players drop in and out of P1's world
+//! Splitscreen (Horizon Settings → Splitscreen..., off by default): players drop in and out of P1's world
 //! on this computer, as on a console. P1 is the game as launched, with the keyboard, the mouse and
 //! the first controller used in a menu. In a world, another controller pressing a button is
 //! offered to join (several at once: each its own offer); pressing A adds a player, another `Game` in this process that joins P1's
@@ -11,7 +11,7 @@
 //! window share it: halves for two (side by side or top and bottom), three one wide and two (or
 //! in columns), quarters for four.
 //! A joining player starts in Window 1 and moves with its controller's bumpers before it picks
-//! its profile; the Splitscreen page moves anyone later. Every player renders offscreen on one device and each
+//! its profile; the Setup screen (`split_ui.rs`) moves anyone later. Every player renders offscreen on one device and each
 //! window's compositor copies its players' frames. Turning splitscreen on rebuilds P1's renderer
 //! that way at once (the world is meshed again: a moment, in the menu); off, back.
 //!
@@ -1048,29 +1048,6 @@ impl<'a> Split<'a> {
         changed
     }
 
-    /// The Splitscreen page on every player's options: who plays where. Its clicks move them.
-    fn sync_page(&mut self) {
-        let mut requests = std::mem::take(&mut self.host.ui.options.split_requests);
-        for g in &mut self.guests {
-            requests.append(&mut g.game.ui.options.split_requests);
-        }
-        for (i, back) in requests {
-            if i < self.players() {
-                self.step_screen(i, back);
-            }
-        }
-        let rows: Vec<(String, String)> = (0..self.players())
-            .map(|i| {
-                let (seat, who) = self.who(i);
-                (format!("P{seat} {who}"), self.label(i))
-            })
-            .collect();
-        self.host.ui.options.split_players = rows.clone();
-        for g in &mut self.guests {
-            g.game.ui.options.split_players = rows.clone();
-        }
-    }
-
     /// The arrangement now, for the Setup screen: free windows where they are.
     fn draft(&self) -> layout::Draft {
         let windows = self
@@ -2053,7 +2030,6 @@ impl ApplicationHandler for Split<'_> {
                 }
             }
         }
-        self.sync_page();
         changed |= self.sync_setup();
         changed |= self.sync_surfaces(event_loop);
         // Also a new arrangement from the settings (a screen, Two on a screen).

@@ -411,7 +411,7 @@ pub enum Item {
     AgentControl,
     /// On the Horizon Settings page.
     DiscordPresence,
-    /// On the Splitscreen page, with each player's screen.
+    /// On the Splitscreen Setup screen (`split_ui.rs`; Two and Three as its drafts' layouts).
     Splitscreen,
     SplitscreenTwo,
     SplitscreenThree,

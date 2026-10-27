@@ -1,7 +1,8 @@
 //! The Splitscreen Setup screen: the monitors to scale with every window and player on them, a
-//! draft to move players in, and nothing changed until Apply (`split_layout::Draft`). The game
-//! fills `live`, `monitors`, `main`, `names`, `me` and `host` while it is open, and takes
-//! `apply` and `identify`.
+//! draft to move players in, and nothing changed until Apply (`split_layout::Draft`). Horizon
+//! Settings → Splitscreen... opens it, with the switch that turns splitscreen on (`on`, from the
+//! settings). The game fills `live`, `monitors`, `main`, `names`, `me` and `host` while
+//! splitscreen is on and it is open, and takes `apply` and `identify`.
 use crate::{
     extras::{SPLIT_THREE, SPLIT_TWO},
     graphics_style::STYLE,
@@ -13,6 +14,8 @@ use crate::{
 
 #[derive(Default)]
 pub struct SplitUi {
+    /// Splitscreen is on (the options screen sets it from the settings).
+    pub on: bool,
     /// The arrangement now.
     pub live: Option<Draft>,
     /// The monitors, left to right, and the name of the one Window 1 is on.
@@ -52,6 +55,8 @@ enum Target {
     Revert,
     Apply,
     Done,
+    /// Splitscreen on or off (P1's).
+    Switch,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -66,6 +71,8 @@ pub enum Click {
     Nothing,
     Pressed,
     Done,
+    /// Splitscreen on or off: the settings change.
+    Switch,
 }
 
 /// A button: where, what it says, what it does, whether it can be pressed.
@@ -75,6 +82,29 @@ type Button = ([f32; 4], String, Target, bool);
 const TOP: f32 = 30.0;
 const BOTTOM: f32 = 128.0;
 const ROW: f32 = 24.0;
+
+/// What of `r` no rectangle of `covers` hides, as one rectangle: the largest side left by each
+/// cover in turn (all of it hidden: no size).
+fn uncovered(mut r: [f32; 4], covers: impl Iterator<Item = [f32; 4]>) -> [f32; 4] {
+    for [cx, cy, cw, ch] in covers {
+        let [x, y, w, h] = r;
+        if cx >= x + w || cx + cw <= x || cy >= y + h || cy + ch <= y {
+            continue;
+        }
+        let sides = [
+            [x, y, cx - x, h],
+            [cx + cw, y, x + w - (cx + cw), h],
+            [x, y, w, cy - y],
+            [x, cy + ch, w, y + h - (cy + ch)],
+        ];
+        r = sides
+            .into_iter()
+            .map(|[sx, sy, sw, sh]| [sx, sy, sw.max(0.0), sh.max(0.0)])
+            .max_by(|a, b| (a[2] * a[3]).total_cmp(&(b[2] * b[3])))
+            .unwrap_or([x, y, 0.0, 0.0]);
+    }
+    r
+}
 
 impl SplitUi {
     /// Opened: the arrangement as it is.
@@ -248,8 +278,30 @@ impl SplitUi {
     }
 
     /// Every button: the players' tiles (window by window, as they stack), the move row, the
-    /// presets and layouts (P1's), and Identify, Revert, Apply and Done.
+    /// presets, layouts and the switch (P1's), and Identify, Revert, Apply and Done. Splitscreen
+    /// off: the switch and Done.
     fn buttons(&self, w: f32, h: f32) -> Vec<Button> {
+        let row = |out: &mut Vec<Button>, y: f32, items: Vec<(f32, String, Target, bool)>| {
+            let total: f32 = items.iter().map(|i| i.0 + 4.0).sum::<f32>() - 4.0;
+            let mut x = ((w - total) / 2.0).floor();
+            for (bw, label, target, active) in items {
+                out.push(([x, y, bw, 20.0], label, target, active));
+                x += bw + 4.0;
+            }
+        };
+        let done = (76.0, "Done".into(), Target::Done, true);
+        let switch = (
+            104.0,
+            format!("Splitscreen: {}", if self.on { "On" } else { "Off" }),
+            Target::Switch,
+            true,
+        );
+        if !self.on {
+            let mut out = Vec::new();
+            row(&mut out, h - 2.0 * ROW - 3.0, vec![switch]);
+            row(&mut out, h - 27.0, vec![done]);
+            return out;
+        }
         let (_, windows, tiles) = self.map(w, h);
         let mut order: Vec<usize> = (0..tiles.len()).collect();
         order.sort_by_key(|&i| windows.iter().position(|(n, _)| *n == tiles[i].0));
@@ -261,17 +313,13 @@ impl SplitUi {
                     .get(i)
                     .cloned()
                     .unwrap_or_else(|| format!("P{}", i + 1));
-                (tiles[i].1, name, Target::Player(i), self.may_move(i))
+                // The part no later window covers: what can be seen and pressed.
+                let at = windows.iter().position(|(n, _)| *n == tiles[i].0);
+                let covers = at.map_or(&[][..], |k| &windows[k + 1..]);
+                let rect = uncovered(tiles[i].1, covers.iter().map(|(_, r)| *r));
+                (rect, name, Target::Player(i), self.may_move(i))
             })
             .collect();
-        let row = |out: &mut Vec<Button>, y: f32, items: Vec<(f32, String, Target, bool)>| {
-            let total: f32 = items.iter().map(|i| i.0 + 4.0).sum::<f32>() - 4.0;
-            let mut x = ((w - total) / 2.0).floor();
-            for (bw, label, target, active) in items {
-                out.push(([x, y, bw, 20.0], label, target, active));
-                x += bw + 4.0;
-            }
-        };
         let spots = self.spots();
         if !spots.is_empty() {
             let items = spots
@@ -305,6 +353,7 @@ impl SplitUi {
             let layouts = vec![
                 (144.0, format!("Two: {two}"), Target::Two, true),
                 (152.0, format!("Three: {three}"), Target::Three, true),
+                switch,
             ];
             row(&mut out, h - 2.0 * ROW - 3.0, layouts);
         }
@@ -313,7 +362,7 @@ impl SplitUi {
             (76.0, "Identify".into(), Target::Identify, true),
             (76.0, "Revert".into(), Target::Revert, editing),
             (76.0, "Apply".into(), Target::Apply, editing),
-            (76.0, "Done".into(), Target::Done, true),
+            done,
         ];
         row(&mut out, h - 27.0, footer);
         out
@@ -343,6 +392,24 @@ impl SplitUi {
         let (w, h) = (batch.width, batch.height);
         ui::menu_background(batch, atlas, 0.0, 0.0, w, h, in_world);
         STYLE.title(batch, atlas, &Text::literal("Splitscreen Setup"));
+        if !self.on {
+            let grey = rgba(170, 170, 170, 255);
+            for (k, line) in [
+                "Splitscreen is off.",
+                "Turn it on, then in a world press a button on another",
+                "controller to add a player.",
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let y = (h / 2.0 - 30.0 + 12.0 * k as f32).floor();
+                ui::centered_text(batch, atlas, &Text::literal(line), 0.0, y, w, grey);
+            }
+            for b in &self.buttons(w, h) {
+                self.draw_button(batch, atlas, cursor, b);
+            }
+            return;
+        }
         let (monitors, windows, tiles) = self.map(w, h);
         let grey = rgba(160, 160, 160, 255);
         for &[x, y, mw, mh] in &monitors {
@@ -534,6 +601,10 @@ impl SplitUi {
                 self.reset();
                 return Click::Done;
             }
+            Target::Switch => {
+                self.reset();
+                return Click::Switch;
+            }
         }
         Click::Pressed
     }
@@ -604,8 +675,36 @@ mod tests {
             main: "Built-in".into(),
             names: (1..=players).map(|n| format!("P{n}")).collect(),
             host: true,
+            on: true,
             ..Default::default()
         }
+    }
+
+    fn labels(ui: &SplitUi) -> Vec<String> {
+        ui.buttons(SIZE.0, SIZE.1)
+            .into_iter()
+            .map(|b| b.1)
+            .collect()
+    }
+
+    #[test]
+    fn off_only_the_switch_and_done() {
+        let mut ui = screen(2);
+        ui.on = false;
+        assert_eq!(labels(&ui), ["Splitscreen: Off", "Done"]);
+        let r = rect(&ui, "Splitscreen: Off");
+        assert!(matches!(
+            ui.click((r[0] + 1.0, r[1] + 1.0), SIZE, false),
+            Click::Switch
+        ));
+    }
+
+    #[test]
+    fn the_switch_is_p1s() {
+        let mut ui = screen(2);
+        assert!(labels(&ui).contains(&"Splitscreen: On".to_owned()));
+        ui.host = false;
+        assert!(!labels(&ui).iter().any(|l| l.starts_with("Splitscreen")));
     }
 
     fn rect(ui: &SplitUi, label: &str) -> [f32; 4] {
@@ -669,6 +768,26 @@ mod tests {
         press(&mut ui, "Apply");
         ui.live = ui.apply.take();
         press(&mut ui, "P2");
+        assert_eq!(ui.selected, Some(1));
+    }
+
+    #[test]
+    fn a_tile_under_a_window_is_pressed_where_it_shows() {
+        // The left half of a tile hidden: its right half is left.
+        let r = uncovered([0.0, 0.0, 10.0, 4.0], [[-5.0, -1.0, 10.0, 9.0]].into_iter());
+        assert_eq!(r, [5.0, 0.0, 5.0, 4.0]);
+        // All of it hidden: nothing to press.
+        let r = uncovered([0.0, 0.0, 10.0, 4.0], [[-1.0, -1.0, 20.0, 9.0]].into_iter());
+        assert_eq!(r[2] * r[3], 0.0);
+        // P3 in a new window over the middle of Window 1: P2's tile, partly under it, still
+        // answers at the middle of what shows of it.
+        let mut ui = screen(3);
+        press(&mut ui, "P3");
+        press(&mut ui, "New window");
+        press(&mut ui, "Apply");
+        ui.live = ui.apply.take();
+        let [x, y, w, h] = rect(&ui, "P2");
+        ui.click((x + w / 2.0, y + h / 2.0), SIZE, false);
         assert_eq!(ui.selected, Some(1));
     }
 

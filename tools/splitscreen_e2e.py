@@ -120,8 +120,12 @@ class Game:
         return [w.get('label', '') for w in self.ctl(n, 'ui')['widgets']]
 
     def page(self, n=1):
-        """Open player n's Splitscreen page (once it is drawn); its widgets."""
-        if any(l.startswith('Splitscreen: ') for l in self.labels(n)):
+        """Open player n's Splitscreen Setup screen (Horizon Settings > Splitscreen...), on or
+        off; its widgets."""
+        def shown():
+            labels = self.labels(n)
+            return 'Done' in labels and ('Identify' in labels or 'Splitscreen: Off' in labels)
+        if shown():
             return self.ctl(n, 'ui')['widgets']  # still open (Esc taken during a rebuild)
         self.ctl(n, 'options', 'horizon')
         try:
@@ -131,14 +135,12 @@ class Game:
             raise RuntimeError(f'no Horizon Settings: screen {ui.get("screen")}, '
                                f'buttons {[w["label"] for w in ui["widgets"]]}') from None
         self.ctl(n, 'click-button', 'Splitscreen...')
-        self.wait(lambda: any(l.startswith('Splitscreen: ') for l in self.labels(n)),
-                  'the Splitscreen page', seconds=5)
+        self.wait(shown, 'the Setup screen', seconds=5)
         return self.ctl(n, 'ui')['widgets']
 
     def setup(self, n=1):
-        """Open player n's Splitscreen Setup screen."""
+        """Open player n's Splitscreen Setup screen, splitscreen on."""
         self.page(n)
-        self.ctl(n, 'click-button', 'Setup...')
         self.wait(lambda: 'Apply' in self.labels(n), 'the Setup screen', seconds=5)
 
     def press(self, n, label):
@@ -149,21 +151,13 @@ class Game:
         self.ctl(n, 'click', ids[0])
         time.sleep(0.4)
 
-    def screens(self, by=1):
-        """Every player's Play on, as player `by`'s page shows them."""
-        return [l for l in self.labels(by) if l.startswith('Play on:')]
-
     def play_on(self, player, where, by=1):
-        """Click player `player`'s Play on (forward: buttons take the left click only) until it
-        reads `where`, on player `by`'s Splitscreen page."""
-        self.page(by)
-        for _ in range(6):
-            if self.screens(by)[player - 1] == f'Play on: {where}':
-                break
-            row = [w for w in self.ctl(by, 'ui')['widgets'] if w.get('label', '').startswith('Play on:')]
-            self.ctl(by, 'click', row[player - 1]['id'])
-            time.sleep(0.3)
-        check(f'P{player} plays on {where}', self.screens(by)[player - 1], f'Play on: {where}')
+        """Move player `player` to `where` ('Window 2', 'New window', 'Fill Monitor 2') on player
+        `by`'s Setup screen and Apply; a window not open yet is a new one."""
+        self.setup(by)
+        self.press(by, f'P{player} ')
+        self.press(by, where if where in self.labels(by) else 'New window')
+        self.press(by, 'Apply')
         self.close_page(by)
 
     def close_page(self, n=1):
@@ -234,8 +228,9 @@ def scenario_three():
             ('one wide on top', [(2 * w2, h), (w2, h), (w2, h)]),
         ]
         for name, want in layouts:
-            g.page()
-            g.ctl(1, 'click-button', 'Three on a screen')
+            g.setup()
+            g.press(1, 'Three:')
+            g.press(1, 'Apply')
             g.close_page()
             got = g.settle([1, 2, 3], want) if want else g.settle([1, 2, 3], [g.size(1)] * 3)
             if want:
@@ -401,29 +396,21 @@ def scenario_monitor():
     print('monitor: a player fills another monitor, another joins it (skipped with one monitor)')
     g = Game(2)
     try:
-        g.page(1)
-        for _ in range(8):
-            if 'Monitor' in g.screens(1)[1]:
-                break
-            row = [w for w in g.ctl(1, 'ui')['widgets'] if w.get('label', '').startswith('Play on:')]
-            g.ctl(1, 'click', row[1]['id'])
-            time.sleep(0.6)
-        where = g.screens(1)[1]
-        if 'Monitor' not in where:
+        half = g.size(1)
+        g.setup(1)
+        g.press(1, 'P2 ')
+        fill = [l for l in g.labels(1) if l.startswith('Fill Monitor')]
+        if not fill:
             print('  skip one monitor only')
             return
-        size = tuple(int(v) for v in where.split('(')[1].rstrip(')').split('x'))
+        g.press(1, fill[0])
+        g.press(1, 'Apply')
         g.close_page(1)
-        g.wait(lambda: g.size(2) == size, "P2's window to fill the monitor", seconds=15)
-        check('P2 fills the monitor', g.size(2), size)
-        g.page(1)
-        for _ in range(8):
-            if g.screens(1)[0] == where:
-                break
-            row = [w for w in g.ctl(1, 'ui')['widgets'] if w.get('label', '').startswith('Play on:')]
-            g.ctl(1, 'click', row[0]['id'])
-            time.sleep(0.6)
-        g.close_page(1)
+        g.wait(lambda: g.size(2) != half, "P2's window to fill the monitor", seconds=15)
+        time.sleep(1)
+        size = g.size(2)
+        check('P2 fills the monitor: a window of its own', size != g.size(1), True)
+        g.play_on(1, 'Window 2')
         half = (size[0] // 2, size[1])
         g.wait(lambda: g.size(1) == half, 'P1 beside P2 on the monitor', seconds=15)
         check('P1 joins it: halves of the monitor', (g.size(1), g.size(2)), (half, half))
