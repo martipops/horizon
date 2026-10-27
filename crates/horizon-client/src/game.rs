@@ -1789,6 +1789,8 @@ struct Game<'a> {
     /// When an agent's last command came.
     agent_last: Option<Instant>,
     frame_stats: horizon_client::control::FrameStats,
+    /// Splitscreen: this frame, built and waiting for Split to render it with the others'.
+    pending_frame: Option<Frame>,
     /// This play session's frame and tick times, for opt-in performance statistics.
     perf: horizon_client::telemetry::Session,
     /// Control replies waiting for a rendered frame or a benchmark deadline.
@@ -11378,7 +11380,7 @@ impl Game<'_> {
                     },
                     0.0,
                 );
-                return renderer.render(&loading_frame(&hud));
+                return renderer.render(&loading_frame(hud));
             }
             return Ok(false);
         }
@@ -11391,7 +11393,7 @@ impl Game<'_> {
                     loader.progress.line(),
                     loader.progress.fraction(),
                 );
-                return renderer.render(&loading_frame(&hud));
+                return renderer.render(&loading_frame(hud));
             }
             return Ok(false);
         }
@@ -11406,7 +11408,7 @@ impl Game<'_> {
                     reload.progress.line(),
                     reload.progress.fraction(),
                 );
-                return renderer.render(&loading_frame(&hud));
+                return renderer.render(&loading_frame(hud));
             }
             return Ok(false);
         }
@@ -11692,7 +11694,7 @@ impl Game<'_> {
         let entity_spans = std::mem::take(self.entity_spans.get_mut());
         let glowing = std::mem::take(self.glowing_vertices.get_mut());
         let frame = Frame {
-            weather: &weather,
+            weather,
             weather_time: horizon_client::weather::Time::new(self.world.game_time, alpha as f32),
             nether_lighting: self.dim == Dim::Nether,
             camera,
@@ -11736,10 +11738,10 @@ impl Game<'_> {
             outline,
             outline_after_terrain,
             outline_high_contrast: self.settings.file.bool("highContrastBlockOutline"),
-            debug_lines: &debug_lines,
-            debug_lines_on_top: &debug_lines_on_top,
-            debug_crosshair: &debug_crosshair,
-            hud: &hud,
+            debug_lines,
+            debug_lines_on_top,
+            debug_crosshair,
+            hud,
             glint_alpha: self.settings.file.double("glintStrength") as f32,
             glint_ticks: self.glint_ticks(),
             clouds: (!title
@@ -11748,7 +11750,7 @@ impl Game<'_> {
             .then(|| self.gui.atlas.sprites.get("horizon/white"))
             .flatten()
             .map(|white| horizon_client::clouds::Input {
-                texture: &self.pack.clouds,
+                texture: self.pack.clouds.clone(),
                 uv: [(white.u0 + white.u1) / 2.0, (white.v0 + white.v1) / 2.0],
                 camera,
                 time: self.world.game_time,
@@ -11757,28 +11759,28 @@ impl Game<'_> {
                 fast: self.settings.clouds == "fast",
                 color: sky.cloud_color,
             }),
-            entities: &entities,
-            entity_spans: &entity_spans,
-            glowing: &glowing,
-            dynamic_lights: &self.dynamic_lights,
+            entities,
+            entity_spans,
+            glowing,
+            dynamic_lights: std::mem::take(&mut self.dynamic_lights),
             lightning: horizon_client::gfx::lightning::Input {
-                bolts: &bolts,
+                bolts,
                 uv: [
                     self.gui.atlas.font.white().u0,
                     self.gui.atlas.font.white().v0,
                 ],
             },
-            additive: &additive,
-            see_through: &see_through,
+            additive,
+            see_through,
             celestial: if self.settings.horizon.sky || title {
-                &celestial
+                celestial
             } else {
-                &[]
+                Vec::new()
             },
             stars: stars.filter(|_| self.settings.horizon.sky || title),
-            hand: &hand,
+            hand,
             hand_fov_degrees: self.hud_fov_degrees(camera_alpha as f32, camera.to_array()),
-            screen: &screen,
+            screen,
             pack: pack_inputs,
             border,
             game_time: self.world.game_time as f32,
@@ -11805,19 +11807,28 @@ impl Game<'_> {
                 .darken_amount(self.clock.fraction() as f32),
             menu_blur: self.menu_blur(),
         };
-        let result = match self.renderer.as_mut() {
-            Some(renderer) => {
-                renderer.set_pass_timing(self.debug);
-                horizon_client::spans::time("renderer", || renderer.render(&frame))
-            }
-            None => Err("renderer".into()),
+        let Some(renderer) = self.renderer.as_mut() else {
+            self.take_back(frame);
+            return Err("renderer".into());
         };
+        renderer.set_pass_timing(self.debug);
+        // Splitscreen renders every player's frame at once, after their turns (`game/split.rs`).
+        if self.options.paced_by_split {
+            self.pending_frame = Some(frame);
+            return Ok(true);
+        }
+        let result = horizon_client::spans::time("renderer", || renderer.render(&frame));
         // Restore storage even when rendering fails (for example, a lost surface).
-        self.entity_vertices = entities;
-        *self.entity_spans.get_mut() = entity_spans;
-        *self.glowing_vertices.get_mut() = glowing;
-        self.see_through_vertices = see_through;
+        self.take_back(frame);
         result
+    }
+    /// The storage a frame borrowed for its geometry, back for the next one.
+    fn take_back(&mut self, frame: Frame) {
+        self.entity_vertices = frame.entities;
+        *self.entity_spans.get_mut() = frame.entity_spans;
+        *self.glowing_vertices.get_mut() = frame.glowing;
+        self.see_through_vertices = frame.see_through;
+        self.dynamic_lights = frame.dynamic_lights;
     }
     /// The LevelLoadingScreen shown while the player waits for its chunks:
     /// opening a world, or after a portal or a respawn into another dimension.
@@ -13789,6 +13800,7 @@ impl<'a> Game<'a> {
             agent_control_on: false,
             agent_last: None,
             frame_stats: Default::default(),
+            pending_frame: None,
             perf: Default::default(),
             pending_screenshot: None,
             pending_bench: None,
@@ -14591,9 +14603,9 @@ fn loading_renderer(
 }
 
 /// A title-shaped frame: black clear and panorama, only the HUD is drawn.
-fn loading_frame(hud: &HudBatch) -> Frame<'_> {
+fn loading_frame(hud: HudBatch) -> Frame {
     Frame {
-        weather: &[],
+        weather: Vec::new(),
         weather_time: horizon_client::weather::Time::new(0, 0.0),
         camera: glam::DVec3::new(0.5, 100.0, 0.5),
         yaw: 0.0,
@@ -14617,26 +14629,26 @@ fn loading_frame(hud: &HudBatch) -> Frame<'_> {
         outline: Vec::new(),
         outline_after_terrain: false,
         outline_high_contrast: false,
-        debug_lines: &[],
-        debug_lines_on_top: &[],
-        debug_crosshair: &[],
+        debug_lines: Vec::new(),
+        debug_lines_on_top: Vec::new(),
+        debug_crosshair: Vec::new(),
         hud,
         glint_alpha: 0.75,
         glint_ticks: 0.0,
         nether_lighting: false,
-        entities: &[],
-        entity_spans: &[],
-        glowing: &[],
-        dynamic_lights: &[],
+        entities: Vec::new(),
+        entity_spans: Vec::new(),
+        glowing: Vec::new(),
+        dynamic_lights: Vec::new(),
         clouds: None,
         lightning: Default::default(),
-        additive: &[],
-        see_through: &[],
-        celestial: &[],
+        additive: Vec::new(),
+        see_through: Vec::new(),
+        celestial: Vec::new(),
         stars: None,
-        hand: &[],
+        hand: Vec::new(),
         hand_fov_degrees: 70.0,
-        screen: &[],
+        screen: Vec::new(),
         pack: Default::default(),
         border: None,
         game_time: 0.0,
@@ -14963,7 +14975,7 @@ impl Loading {
         };
         let mut batch = HudBatch::new(size);
         self.draw_menu(&mut batch);
-        let mut frame = loading_frame(&batch);
+        let mut frame = loading_frame(batch);
         frame.yaw = self.panorama_rotation.update(
             self.started.elapsed().as_secs_f32(),
             self.settings.file.double("panoramaScrollSpeed") as f32,

@@ -1963,7 +1963,7 @@ impl PackPost {
             frame.depth_far,
             frame.bob,
         );
-        geometry.prepare(device, queue, frame.hand, projection);
+        geometry.prepare(device, queue, &frame.hand, projection);
         if geometry.quads > 0 {
             let group = self.bind(device, queue, &mut pass, size);
             {

@@ -70,8 +70,9 @@ pub fn cells(radius: i32) -> impl Iterator<Item = (i32, i32)> {
 
 /// Per-frame cloud inputs. Resources are immutable for the renderer's lifetime:
 /// resource-pack reloads replace the renderer and its cache together.
-pub struct Input<'a> {
-    pub texture: &'a (u32, u32, Vec<bool>),
+pub struct Input {
+    /// The clouds texture (shared with the pack, not copied).
+    pub texture: std::sync::Arc<(u32, u32, Vec<bool>)>,
     pub uv: [f32; 2],
     pub camera: glam::DVec3,
     pub time: i64,
@@ -99,9 +100,9 @@ pub(crate) struct Uniform {
     colors: [[f32; 4]; 4],
 }
 
-impl Input<'_> {
+impl Input {
     fn state(&self) -> (MeshKey, Uniform) {
-        let (w, h, _) = self.texture;
+        let (w, h, _) = &*self.texture;
         let offset = self.time.rem_euclid(i64::from(*w) * 400) as f64 + self.partial_tick;
         let mut x = self.camera.x + offset * 0.030_000_001;
         let mut z = self.camera.z + 3.96;
@@ -148,13 +149,13 @@ pub(crate) struct Mesh {
 impl Mesh {
     /// Returns true only when vertices must be uploaded. Sub-cell motion and
     /// color changes update only the uniform, as in CloudRenderer.prepare.
-    pub fn prepare(&mut self, input: &Input<'_>) -> (bool, Uniform) {
+    pub fn prepare(&mut self, input: &Input) -> (bool, Uniform) {
         let (key, uniform) = input.state();
         if self.key.as_ref() == Some(&key) {
             return (false, uniform);
         }
         self.vertices.clear();
-        let (w, h, cells) = input.texture;
+        let (w, h, cells) = &*input.texture;
         let (w, h) = (i64::from(*w), i64::from(*h));
         let (cell_x, cell_z, radius) = (key.cell_x, key.cell_z, key.radius);
         let bottom = uniform.offset[1];
@@ -226,7 +227,7 @@ mod tests {
     fn cached_mesh_tracks_geometry_but_not_subcell_motion_or_color() {
         let texture = (8, 8, (0..64).map(|i| i % 3 != 0).collect());
         let mut input = Input {
-            texture: &texture,
+            texture: std::sync::Arc::new(texture),
             uv: [0.5; 2],
             camera: glam::DVec3::new(1.0, 100.0, 1.0),
             time: 0,
@@ -284,7 +285,7 @@ mod tests {
         // Resource reload constructs a new renderer and cache, including empty packs.
         let mut reloaded = Mesh::default();
         let empty = (1, 1, vec![false]);
-        input.texture = &empty;
+        input.texture = std::sync::Arc::new(empty);
         assert!(reloaded.prepare(&input).0);
         assert!(reloaded.vertices.is_empty());
         assert!(!reloaded.prepare(&input).0);
