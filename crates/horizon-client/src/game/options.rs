@@ -289,7 +289,10 @@ impl Game<'_> {
         }
         let mut volumes = s.volumes;
         volumes[0] = 1.0;
-        horizon_client::settings::set_source_volumes(volumes);
+        // Splitscreen: the speakers are P1's, and so are their volumes.
+        if !self.options.split_guest {
+            horizon_client::settings::set_source_volumes(volumes);
+        }
         let chat = s.chat_options();
         let rescale = {
             let o = &self.ui.chat.options;

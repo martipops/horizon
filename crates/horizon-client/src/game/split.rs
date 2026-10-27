@@ -1033,7 +1033,8 @@ impl<'a> Split<'a> {
         settings.extras.agent_control &= options.control.is_some();
         let gui = UiResources::load(&options.resources, &options.resources)?;
         let res: &'static Arc<_> = Box::leak(Box::new(host.res.clone()));
-        let audio = horizon_client::audio::Audio::silent(&options.resources);
+        // P1's output, heard from this player's camera too (`Audio::share`).
+        let audio = host.audio.share(seat as u8);
         let window = host.window.clone().ok_or("no window")?;
         let mut guest = start_game(
             res,
@@ -1303,8 +1304,11 @@ impl ApplicationHandler for Split<'_> {
         if changed || self.views() != self.applied {
             self.relayout(event_loop);
         }
+        let master = self.host.audio.master;
         for i in 0..self.guests.len() {
             self.turn(i + 1);
+            // One set of speakers: P1's volume.
+            self.guests[i].game.audio.master = master;
             self.guests[i].game.about_to_wait(event_loop);
             // A player's game stops the event loop on an error, as P1's does: say why.
             if let Some(e) = &self.guests[i].game.error {
