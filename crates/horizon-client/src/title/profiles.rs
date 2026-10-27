@@ -27,7 +27,7 @@ pub fn valid_name(name: &str) -> bool {
 
 impl Title {
     /// The profile list for a joining player; `taken` are playing now and can't be picked;
-    /// `screens` are where it can play ("This screen", the monitors, "Own window").
+    /// `screens` are where it can play ("Window 1", open windows, "New window", the monitors).
     pub fn profile_picker(&mut self, names: Vec<String>, taken: Vec<String>, screens: Vec<String>) {
         self.mode = Mode::Profiles { names, taken };
         self.play_on = (screens, None);

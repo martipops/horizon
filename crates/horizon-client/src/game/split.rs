@@ -6,9 +6,10 @@
 //! (`title/profiles.rs`). A player who disconnects (pause menu) drops out; when P1 leaves the
 //! world, all do.
 //!
-//! Each player plays on a screen: this one (the game's window), a monitor (a borderless
-//! fullscreen window there, shared by everyone who picked it) or its own window. Players on one
-//! screen share it: halves for two (side by side or top and bottom), quarters for three or four.
+//! Each player plays in a window: Window 1 (the game's), Window 2, 3... (opened when someone picks
+//! New window, closed with its last player), or a monitor's (borderless over it). Players in one
+//! window share it: halves for two (side by side or top and bottom), three one wide and two (or
+//! in columns), quarters for four.
 //! A profile remembers its screen (`profiles/<name>/screen.txt`, P1's `p1-screen.txt`); the
 //! Splitscreen page changes anyone's. Every player renders offscreen on one device and each
 //! window's compositor copies its players' frames. Turning splitscreen on rebuilds P1's renderer
@@ -51,7 +52,8 @@ use winit::{
 const MAX_PLAYERS: usize = 4;
 /// How long a controller's offer to join stays up.
 const OFFER: Duration = Duration::from_secs(10);
-const THIS_SCREEN: &str = "This screen";
+/// The game's window, the first of the numbered ones.
+const WINDOW_1: &str = "Window 1";
 const NEW_WINDOW: &str = "New window";
 
 thread_local! {
@@ -315,15 +317,15 @@ impl<'a> Split<'a> {
             .unwrap_or_default()
     }
 
-    /// The monitor the game's window is on: "This screen" already means it.
+    /// The monitor the game's window is on: Window 1 already shows there.
     fn main_monitor(&self) -> Option<String> {
         self.surfaces.first()?.window.current_monitor()?.name()
     }
 
-    /// Where player `i` can play, as the screens say it: this screen, each other monitor
-    /// (numbered left to right, with its size: the system's names are ids on some), the windows
-    /// others have open, and a new window (not for P1: the game's window is P1's own).
-    /// `i` past the players: one about to join.
+    /// Where player `i` can play, as the screens say it: Window 1 (the game's), the windows open,
+    /// a new window (unless it is alone in one), and each monitor but Window 1's (numbered left
+    /// to right, with its size: the system's names are ids on some). `i` past the players: one
+    /// joining. The page cycles through them forward (buttons take the left click only).
     fn choices(&self, i: usize) -> Vec<(String, Screen)> {
         let main = self.main_monitor();
         let mut monitors = self.monitors();
@@ -334,26 +336,28 @@ impl<'a> Split<'a> {
             let label = format!("Monitor {} ({}x{})", n + 1, size.width, size.height);
             Some((label, Screen::Monitor(name)))
         });
-        let mut open: Vec<u8> = (0..self.players())
-            .filter(|&j| j != i)
-            .filter_map(|j| match self.screen(j) {
-                Screen::Window(n) if *n > 0 => Some(*n),
-                _ => None,
-            })
-            .collect();
+        let window_of = |j: usize| match self.screen(j) {
+            Screen::Window(n) if *n > 0 => Some(*n),
+            _ => None,
+        };
+        let mut open: Vec<u8> = (0..self.players()).filter_map(window_of).collect();
         open.sort_unstable();
         open.dedup();
-        std::iter::once((THIS_SCREEN.to_owned(), Screen::Main))
-            .chain(monitors)
+        // Alone in its window, a new one would only renumber it.
+        let alone = i < self.players()
+            && window_of(i)
+                .is_some_and(|n| (0..self.players()).all(|j| j == i || window_of(j) != Some(n)));
+        std::iter::once((WINDOW_1.to_owned(), Screen::Main))
             .chain(
                 open.into_iter()
                     .map(|n| (format!("Window {n}"), Screen::Window(n))),
             )
-            .chain((i != 0).then(|| (NEW_WINDOW.to_owned(), Screen::Window(0))))
+            .chain((!alone).then(|| (NEW_WINDOW.to_owned(), Screen::Window(0))))
+            .chain(monitors)
             .collect()
     }
 
-    /// How a screen is shown: a monitor that's gone or the game window's own, as this screen.
+    /// How a screen is shown: a monitor that's gone or Window 1's own, as Window 1.
     fn label(&self, screen: &Screen) -> String {
         match screen {
             Screen::Window(0) => NEW_WINDOW.to_owned(),
@@ -362,7 +366,7 @@ impl<'a> Split<'a> {
                 .choices(usize::MAX)
                 .into_iter()
                 .find(|(_, s)| s == screen)
-                .map_or_else(|| THIS_SCREEN.to_owned(), |(label, _)| label),
+                .map_or_else(|| WINDOW_1.to_owned(), |(label, _)| label),
         }
     }
 
@@ -373,8 +377,8 @@ impl<'a> Split<'a> {
             .unwrap_or(2)
     }
 
-    /// The window player `i` is in: a monitor that's gone, or the one the game's window is on,
-    /// means this screen.
+    /// The window player `i` is in: a monitor that's gone, or the one Window 1 is on, means
+    /// Window 1.
     fn key(&self, i: usize, monitors: &[String]) -> Key {
         match self.screen(i) {
             Screen::Monitor(name)
@@ -528,6 +532,7 @@ impl<'a> Split<'a> {
             .collect();
         let name = match &self.surfaces[k].key {
             Key::Window(n) => format!(" - Window {n}"),
+            Key::Main if self.surfaces.len() > 1 => format!(" - {WINDOW_1}"),
             _ => String::new(),
         };
         if self.players() > 1 && !who.is_empty() {
@@ -737,6 +742,8 @@ impl<'a> Split<'a> {
 
     /// Splitscreen turned off: the others leave, and P1 draws on its window again.
     fn disable(&mut self, event_loop: &ActiveEventLoop) -> Result<()> {
+        // P1's own buttons and focus targets back first: the others' go with them.
+        self.turn(0);
         if let Some(server) = &self.host.integrated {
             for g in &self.guests {
                 if let Some(name) = &g.name {
@@ -1076,7 +1083,7 @@ impl<'a> Split<'a> {
         self.guests.len() != before
     }
 
-    /// A window other than the game's was closed: its players leave, P1 goes back to this screen.
+    /// A window other than Window 1 was closed: its players leave, P1 goes back to Window 1.
     fn close_window(&mut self, surface: usize) -> Result<()> {
         let views = self.views();
         for i in (0..self.players()).rev() {
