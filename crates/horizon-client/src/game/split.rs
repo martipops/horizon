@@ -192,9 +192,10 @@ impl<'a> Split<'a> {
     }
 
     /// Controllers: P1's is the first used in a menu; in a world another one is offered to join
-    /// (A), or to drive P1 (Y) while P1 has none.
-    fn route_pads(&mut self) {
+    /// (A), or to drive P1 (Y) while P1 has none. The pad whose player should join now.
+    fn route_pads(&mut self) -> Option<PadId> {
         let now = Instant::now();
+        let mut join = None;
         for (id, button) in self.pads.presses() {
             if Some(id) == self.p1_pad || self.guests.iter().any(|g| g.pad == Some(id)) {
                 continue;
@@ -210,9 +211,7 @@ impl<'a> Split<'a> {
                 Some((offered, _)) if offered == id => match button {
                     Button::South => {
                         self.offer = None;
-                        if let Err(e) = self.join(Some(id)) {
-                            log::warn!("Horizon: splitscreen: a player could not join: {e}");
-                        }
+                        join = Some(id);
                     }
                     Button::North if self.p1_pad.is_none() => {
                         self.offer = None;
@@ -245,6 +244,7 @@ impl<'a> Split<'a> {
             let state = self.pad_state(self.guests[i].pad);
             self.guests[i].game.pad.feed = Some(state);
         }
+        join
     }
 
     /// Add a player driven by `pad`, named after the first free slot (P2, P3...).
@@ -289,11 +289,15 @@ impl<'a> Split<'a> {
         options.world = None;
         options.server = None;
         options.player_name = Some(name.to_owned());
-        options.control = options.control.map(|p| {
-            let mut p = p.into_os_string();
+        // P1's socket (`--control` or Agent Control) + the seat: every game in this process
+        // would otherwise take the one default endpoint, P1's.
+        options.control = host.control.as_ref().map(|c| {
+            let mut p = c.path().as_os_str().to_owned();
             p.push(name.trim_start_matches('P'));
             p.into()
         });
+        let mut settings = settings;
+        settings.extras.agent_control &= options.control.is_some();
         let gui = UiResources::load(&options.resources, &options.resources)?;
         let res: &'static Arc<_> = Box::leak(Box::new(host.res.clone()));
         let audio = horizon_client::audio::Audio::silent(&options.resources);
@@ -384,7 +388,10 @@ impl ApplicationHandler for Split<'_> {
             }
             // The views draw themselves offscreen; the compositor presents in about_to_wait.
             WindowEvent::RedrawRequested => {}
-            WindowEvent::Focused(_) | WindowEvent::CloseRequested => {
+            // Closing the window is P1's to handle (it saves the world, then quits); a player's
+            // game would end the event loop before that.
+            WindowEvent::CloseRequested => self.host.window_event(event_loop, id, event),
+            WindowEvent::Focused(_) => {
                 for i in 0..=self.guests.len() {
                     if let Some(player) = self.player(i) {
                         player.window_event(event_loop, id, event.clone());
@@ -464,10 +471,16 @@ impl ApplicationHandler for Split<'_> {
         if !self.enabled {
             return self.host.about_to_wait(event_loop);
         }
-        self.route_pads();
+        let pad_joins = self.route_pads();
         OPTIONS.set(None);
         self.host.about_to_wait(event_loop);
         let mut changed = self.drop_out();
+        if let Some(pad) = pad_joins {
+            match self.join(Some(pad)) {
+                Ok(()) => changed = true,
+                Err(e) => log::warn!("Horizon: splitscreen: a player could not join: {e}"),
+            }
+        }
         // Testing: players without controllers, one per frame, once.
         if self.in_world() && self.test_players > 0 {
             match self.join(None) {
@@ -488,6 +501,10 @@ impl ApplicationHandler for Split<'_> {
         for i in 0..self.guests.len() {
             OPTIONS.set(Some(self.guests[i].options.clone()));
             self.guests[i].game.about_to_wait(event_loop);
+            // A player's game stops the event loop on an error, as P1's does: say why.
+            if let Some(e) = &self.guests[i].game.error {
+                log::error!("Horizon: splitscreen: {}: {e}", self.guests[i].name);
+            }
         }
         OPTIONS.set(None);
         let views = self.views();
