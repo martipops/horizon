@@ -45,7 +45,7 @@ use winit::{
     event::{DeviceEvent, DeviceId, ElementState, WindowEvent},
     event_loop::ActiveEventLoop,
     monitor::MonitorHandle,
-    window::{Fullscreen, Window, WindowId},
+    window::{Window, WindowId},
 };
 
 const MAX_PLAYERS: usize = 4;
@@ -290,38 +290,48 @@ impl<'a> Split<'a> {
             .unwrap_or_default()
     }
 
-    /// Where a player can play, as the screens say it: this screen, each monitor (numbered
-    /// left to right, with its size: the system's names are ids on some), its own window.
-    fn choices(&self) -> Vec<(String, Screen)> {
+    /// The monitor the game's window is on: "This screen" already means it.
+    fn main_monitor(&self) -> Option<String> {
+        self.surfaces.first()?.window.current_monitor()?.name()
+    }
+
+    /// Where a player can play, as the screens say it: this screen, each other monitor
+    /// (numbered left to right, with its size: the system's names are ids on some), its own
+    /// window (not P1's: the game's window is P1's own).
+    fn choices(&self, p1: bool) -> Vec<(String, Screen)> {
+        let main = self.main_monitor();
         let mut monitors = self.monitors();
         monitors.sort_by_key(|m| (m.position().x, m.position().y));
         let monitors = monitors.iter().enumerate().filter_map(|(n, m)| {
+            let name = m.name().filter(|name| Some(name) != main.as_ref())?;
             let size = m.size();
             let label = format!("Monitor {} ({}x{})", n + 1, size.width, size.height);
-            Some((label, Screen::Monitor(m.name()?)))
+            Some((label, Screen::Monitor(name)))
         });
         std::iter::once((THIS_SCREEN.to_owned(), Screen::Main))
             .chain(monitors)
-            .chain(std::iter::once((OWN_WINDOW.to_owned(), Screen::Own)))
+            .chain((!p1).then(|| (OWN_WINDOW.to_owned(), Screen::Own)))
             .collect()
     }
 
-    /// How a screen is shown: a monitor that's gone, as this screen.
+    /// How a screen is shown: a monitor that's gone or the game window's own, as this screen.
     fn label(&self, screen: &Screen) -> String {
-        self.choices()
+        self.choices(false)
             .into_iter()
             .find(|(_, s)| s == screen)
             .map_or_else(|| THIS_SCREEN.to_owned(), |(label, _)| label)
     }
 
-    /// The window player `i` is in: a monitor that's gone means this screen.
+    /// The window player `i` is in: a monitor that's gone, or the one the game's window is on,
+    /// means this screen; so does P1's own window.
     fn key(&self, i: usize, monitors: &[String]) -> Key {
         match self.screen(i) {
-            Screen::Monitor(name) if monitors.contains(name) => Key::Monitor(name.clone()),
-            Screen::Own => Key::Own(match i {
-                0 => 1,
-                _ => self.guests[i - 1].seat,
-            }),
+            Screen::Monitor(name)
+                if monitors.contains(name) && Some(name) != self.main_monitor().as_ref() =>
+            {
+                Key::Monitor(name.clone())
+            }
+            Screen::Own if i > 0 => Key::Own(self.guests[i - 1].seat),
             _ => Key::Main,
         }
     }
@@ -437,32 +447,43 @@ impl<'a> Split<'a> {
         self.surfaces
             .retain(|s| s.key == Key::Main || wanted.contains(&s.key));
         let mut changed = self.surfaces.len() != before;
+        // macOS would join new windows to the game's as tabs (when the system prefers tabs).
+        #[cfg(target_os = "macos")]
+        {
+            use winit::platform::macos::ActiveEventLoopExtMacOS;
+            event_loop.set_allows_automatic_window_tabbing(false);
+        }
         for (i, key) in wanted.iter().enumerate() {
             if self.surfaces.iter().any(|s| &s.key == key) {
                 continue;
             }
             let attributes =
                 Window::default_attributes().with_window_icon(horizon_client::window::icon());
-            let attributes =
-                match key {
-                    Key::Monitor(name) => attributes.with_title("Horizon").with_fullscreen(Some(
-                        Fullscreen::Borderless(
-                            monitors
-                                .iter()
-                                .find(|m| m.name().as_ref() == Some(name))
-                                .cloned(),
-                        ),
-                    )),
-                    _ => {
-                        let who = match i {
-                            0 => self.host.options.player_name(),
-                            _ => self.guests[i - 1].name.clone().unwrap_or_default(),
-                        };
-                        attributes
-                            .with_title(format!("Horizon - {who}"))
-                            .with_inner_size(LogicalSize::new(854.0, 480.0))
-                    }
-                };
+            // A monitor's window covers it, borderless; not the system's fullscreen, which on
+            // macOS is a Space of its own that hides the other windows as it slides in.
+            let cover = match key {
+                Key::Monitor(name) => monitors
+                    .iter()
+                    .find(|m| m.name().as_ref() == Some(name))
+                    .map(|m| (m.position(), m.size())),
+                _ => None,
+            };
+            let attributes = match cover {
+                Some((at, size)) => attributes
+                    .with_title("Horizon")
+                    .with_decorations(false)
+                    .with_position(at)
+                    .with_inner_size(size),
+                None => {
+                    let who = match i {
+                        0 => self.host.options.player_name(),
+                        _ => self.guests[i - 1].name.clone().unwrap_or_default(),
+                    };
+                    attributes
+                        .with_title(format!("Horizon - {who}"))
+                        .with_inner_size(LogicalSize::new(854.0, 480.0))
+                }
+            };
             let made = event_loop
                 .create_window(attributes)
                 .map_err(Into::into)
@@ -471,6 +492,12 @@ impl<'a> Split<'a> {
                     let renderer = self.host.renderer.as_ref().ok_or("no renderer")?;
                     Ok::<_, Box<dyn std::error::Error>>((w.clone(), renderer.compositor(w)?))
                 });
+            if let (Ok((window, _)), Some((at, size))) = (&made, cover) {
+                // macOS moves a new window under the menu bar: place it again, size first (it
+                // keeps a window's bottom-left corner when it resizes).
+                let _ = window.request_inner_size(size);
+                window.set_outer_position(at);
+            }
             match made {
                 Ok((window, compositor)) => self.surfaces.push(Surface {
                     key: key.clone(),
@@ -494,7 +521,6 @@ impl<'a> Split<'a> {
 
     /// The Splitscreen page on every player's options: who plays where. Its clicks move them.
     fn sync_page(&mut self) {
-        let choices = self.choices();
         let mut requests = std::mem::take(&mut self.host.ui.options.split_requests);
         for g in &mut self.guests {
             requests.append(&mut g.game.ui.options.split_requests);
@@ -503,6 +529,7 @@ impl<'a> Split<'a> {
             if i >= self.players() {
                 continue;
             }
+            let choices = self.choices(i == 0);
             let at = choices
                 .iter()
                 .position(|(_, s)| s == self.screen(i))
@@ -731,7 +758,11 @@ impl<'a> Split<'a> {
             .collect();
         names.sort_by_key(|n| n.to_lowercase());
         let taken = self.taken();
-        let labels = self.choices().into_iter().map(|(label, _)| label).collect();
+        let labels = self
+            .choices(false)
+            .into_iter()
+            .map(|(label, _)| label)
+            .collect();
         if let Some(title) = game.title.as_mut() {
             title.profile_picker(names, taken, labels);
         }
@@ -773,7 +804,7 @@ impl<'a> Split<'a> {
             self.host.settings.clone()
         };
         let picked = screen.and_then(|label| {
-            self.choices()
+            self.choices(false)
                 .into_iter()
                 .find(|(l, _)| *l == label)
                 .map(|(_, s)| s)
