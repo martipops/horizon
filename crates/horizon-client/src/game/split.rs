@@ -1021,6 +1021,7 @@ impl<'a> Split<'a> {
         let mut options = host.options.clone();
         options.world = None;
         options.server = None;
+        options.split_guest = true;
         // P1's socket (`--control` or Agent Control) + the seat: every game in this process
         // would otherwise take the one default endpoint, P1's.
         options.control = host.control.as_ref().map(|c| {

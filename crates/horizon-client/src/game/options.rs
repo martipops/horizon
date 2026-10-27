@@ -282,6 +282,7 @@ impl Game<'_> {
         // window to change, so applying settings never undoes a fullscreen
         // the compositor set up.
         if let Some(w) = &self.window
+            && !self.options.split_guest
             && let Some(want) = self.fullscreen.request(s.fullscreen)
         {
             w.set_fullscreen(want.then_some(Fullscreen::Borderless(None)));
@@ -310,6 +311,9 @@ impl Game<'_> {
     /// system is adopted by the option (`Minecraft.fullscreenStateChanged`).
     pub(super) fn observe_fullscreen(&mut self) {
         let Some(w) = &self.window else { return };
+        if self.options.split_guest {
+            return;
+        }
         if let Some(now) = self.fullscreen.observe(w.fullscreen().is_some())
             && self.settings.fullscreen != now
         {
@@ -319,6 +323,9 @@ impl Game<'_> {
     }
     /// F11 (key.fullscreen): Window.toggleFullScreen, remembered in options.txt.
     pub(super) fn toggle_fullscreen(&mut self) {
+        if self.options.split_guest {
+            return;
+        }
         self.settings.fullscreen = !self.settings.fullscreen;
         self.settings.save(&Self::options_path());
         self.apply_ui_settings();

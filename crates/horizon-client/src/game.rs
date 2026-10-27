@@ -277,6 +277,9 @@ struct Options {
     frames: Option<u64>,
     /// A splitscreen player: the split window paces every player's frames, not each its own.
     paced_by_split: bool,
+    /// A splitscreen player other than P1: its windows are the split's (P1 alone decides
+    /// fullscreen; this game neither asks for it nor adopts it into its options).
+    split_guest: bool,
     /// `--world-frames N`: exit after N frames drawn in the world (smoke runs; the world may load slowly).
     world_frames: Option<u64>,
     screenshot_after: Option<u64>,
@@ -347,6 +350,7 @@ impl Options {
             test_terrain: false,
             frames: None,
             paced_by_split: false,
+            split_guest: false,
             world_frames: None,
             screenshot_after: None,
             timeout: Duration::from_secs(120),

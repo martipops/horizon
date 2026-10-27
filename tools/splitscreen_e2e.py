@@ -12,6 +12,7 @@ Scenarios:
   three    three in a window: one wide on top, one tall on the left, side by side
   live     splitscreen off and on again from the Splitscreen page, in a world
   picker   a joining player makes a profile, picks New window, and joins in it
+  fullscreen  a player whose options say fullscreen joins: the window stays as P1 has it
 
 Needs a desktop session (the windows open on screen) and the vanilla data in .local/. Each game
 gets fresh scratch folders (lab.game_env) and runs from inside them. Exit status 0 when every check
@@ -51,8 +52,10 @@ def check(name, got, want):
 class Game:
     """One splitscreen session: P1 launched with `players` (HORIZON_SPLIT), each on its socket."""
 
-    def __init__(self, players, pick=False):
+    def __init__(self, players, pick=False, seed=None):
         self.home = Path(tempfile.mkdtemp(prefix='horizon-split-e2e-'))
+        if seed:
+            seed(self.home)
         self.sockets = Path(tempfile.mkdtemp(prefix='hzse-'))  # short: Unix socket paths
         extra = {'HORIZON_SPLIT': str(players)}
         if pick:
@@ -263,12 +266,30 @@ def scenario_picker():
         g.quit()
 
 
+def scenario_fullscreen():
+    print('fullscreen: a profile that was fullscreen joins')
+
+    def seed(home):
+        profile = home / 'splitscreen/profiles/P2'
+        profile.mkdir(parents=True)
+        (profile / 'options.txt').write_text('fullscreen:true\n')
+
+    g = Game(2, seed=seed)
+    try:
+        time.sleep(3)
+        value = g.ctl(1, 'options-get', 'fullscreen')['options']['fullscreen']['value']
+        check("P1's window stays windowed (P1's fullscreen option)", value, False)
+    finally:
+        g.quit()
+
+
 SCENARIOS = {
     'join': scenario_join,
     'windows': scenario_windows,
     'three': scenario_three,
     'live': scenario_live,
     'picker': scenario_picker,
+    'fullscreen': scenario_fullscreen,
 }
 
 
