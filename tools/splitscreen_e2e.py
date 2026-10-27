@@ -114,6 +114,8 @@ class Game:
 
     def page(self, n=1):
         """Open player n's Splitscreen page (once it is drawn); its widgets."""
+        if any(l.startswith('Splitscreen: ') for l in self.labels(n)):
+            return self.ctl(n, 'ui')['widgets']  # still open (Esc taken during a rebuild)
         self.ctl(n, 'options', 'horizon')
         try:
             self.wait(lambda: 'Splitscreen...' in self.labels(n), 'Horizon Settings', seconds=15)
@@ -149,7 +151,7 @@ class Game:
             if self.ctl(n, 'ui').get('screen') not in ('options', 'paused'):
                 return
             self.ctl(n, 'key', 'esc', 'tap')
-            time.sleep(0.2)
+            time.sleep(0.5)
 
     def quit(self):
         """Save and quit, and wait until the game is gone (the next scenario starts clean)."""
