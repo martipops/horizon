@@ -538,6 +538,12 @@ impl Game<'_> {
         };
         match &title.mode {
             Mode::Main => json!({ "mode": "main", "worlds": worlds() }),
+            Mode::Profiles { names, taken } => {
+                json!({ "mode": "splitscreen-profiles", "profiles": names, "taken": taken })
+            }
+            Mode::NewProfile { name, .. } => {
+                json!({ "mode": "splitscreen-new-profile", "fields": { "name": name } })
+            }
             Mode::Select {
                 worlds: list,
                 selected,

@@ -13,6 +13,8 @@ use std::{
 };
 
 mod create_world;
+mod profiles;
+pub use profiles::valid_name as valid_profile_name;
 #[cfg(test)]
 mod tests;
 pub mod world_management;
@@ -101,6 +103,17 @@ pub enum Mode {
         return_to: Box<Mode>,
     },
     Multiplayer(crate::multiplayer::Screen),
+    /// Splitscreen: a joining player picks a profile (`profiles.rs`).
+    Profiles {
+        names: Vec<String>,
+        taken: Vec<String>,
+    },
+    NewProfile {
+        name: String,
+        focused: bool,
+        names: Vec<String>,
+        taken: Vec<String>,
+    },
 }
 #[derive(Clone, Debug, PartialEq)]
 pub enum Action {
@@ -144,6 +157,8 @@ pub struct Title {
     splash: Option<String>,
     /// The saves listed for Home, re-read every couple of seconds.
     recent: std::cell::RefCell<Option<(std::time::Instant, Vec<WorldEntry>)>>,
+    /// Splitscreen: the profile a joining player chose, or `None` to leave (`profiles.rs`).
+    profile_choice: Option<Option<String>>,
 }
 pub(crate) struct Button {
     x: f32,
@@ -252,6 +267,7 @@ impl Title {
                 (today.month(), today.day()),
             ),
             recent: std::cell::RefCell::new(None),
+            profile_choice: None,
         }
     }
     /// Vanilla bypasses the selector when there are no saves.
@@ -577,6 +593,7 @@ impl Title {
             icon: None,
         };
         match &self.mode {
+            Mode::Profiles { .. } | Mode::NewProfile { .. } => self.profile_buttons(w, h),
             Mode::Main => {
                 let cx = (w / 2.0).floor();
                 let y = (h / 4.0).floor() + 48.0;
@@ -815,6 +832,7 @@ impl Title {
     ) {
         let (w, h) = (batch.width.ceil(), batch.height.ceil());
         match &self.mode {
+            Mode::Profiles { .. } | Mode::NewProfile { .. } => self.draw_profiles(atlas, batch),
             Mode::Main => {
                 // LogoRenderer: the logo's top 44 of 64 rows, then the edition
                 // banner's top 14 of 16 rows overlapping its bottom by 7.
@@ -1230,6 +1248,10 @@ impl Title {
         (action, sound)
     }
     fn click_action(&mut self, x: f32, y: f32, (w, h): (f32, f32), hit: Option<u8>) -> Action {
+        if matches!(self.mode, Mode::Profiles { .. } | Mode::NewProfile { .. }) {
+            self.profile_click(x, y, (w, h), hit);
+            return Action::None;
+        }
         match (&mut self.mode, hit) {
             (Mode::Main, Some(1)) => {
                 self.enter_singleplayer();
@@ -1461,7 +1483,9 @@ impl Title {
         let x = (w / 2.0).floor() - 100.0;
         match &self.mode {
             Mode::Select { .. } if self.search_focused => Some([x, 21.0, 200.0, 20.0]),
-            Mode::Edit { focused: true, .. } => Some([x, edit_top(h) + 39.0, 200.0, 20.0]),
+            Mode::Edit { focused: true, .. } | Mode::NewProfile { focused: true, .. } => {
+                Some([x, edit_top(h) + 39.0, 200.0, 20.0])
+            }
             Mode::Create { focus, options, .. } => create_world::field_rect(w, h, options.tab)
                 .filter(|(id, _)| id == focus)
                 .map(|(_, rect)| rect),
@@ -1509,6 +1533,7 @@ impl Title {
         }
     }
     pub fn confirm_edit(&mut self) {
+        self.confirm_profile();
         let Mode::Edit {
             world,
             name,
@@ -1584,6 +1609,7 @@ impl Title {
             return;
         }
         match &self.mode {
+            Mode::Profiles { .. } | Mode::NewProfile { .. } => self.profile_back(),
             Mode::Backup { .. } => {}
             Mode::Edit { world, .. } | Mode::Delete { world } => {
                 let folder = world.folder.clone();
@@ -1633,6 +1659,11 @@ fn caret_field<'a>(
             focused: true,
             ..
         } => Some((EDIT_NAME, name, 32)),
+        Mode::NewProfile {
+            name,
+            focused: true,
+            ..
+        } => Some((profiles::NAME_FIELD, name, profiles::NAME_MAX)),
         Mode::Create {
             name, seed, focus, ..
         } => match focus {
