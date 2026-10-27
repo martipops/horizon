@@ -411,10 +411,8 @@ pub enum Item {
     AgentControl,
     /// On the Horizon Settings page.
     DiscordPresence,
-    /// On the Splitscreen Setup screen (`split_ui.rs`; Two and Three as its drafts' layouts).
+    /// On the Splitscreen Setup screen (`split_ui.rs`, which sets Two and Three itself).
     Splitscreen,
-    SplitscreenTwo,
-    SplitscreenThree,
 }
 /// The Extras page: headers and items.
 pub fn rows() -> Vec<Result<Item, &'static str>> {
@@ -446,8 +444,6 @@ impl Item {
             Item::AgentControl => "Agent Control",
             Item::DiscordPresence => "Discord Rich Presence",
             Item::Splitscreen => "Splitscreen",
-            Item::SplitscreenTwo => "Two on a screen",
-            Item::SplitscreenThree => "Three on a screen",
         }
     }
     /// The switch this setting belongs to: it does nothing while that is off.
@@ -456,7 +452,6 @@ impl Item {
         Some(match self {
             MouseTweaksWheel => MouseTweaks,
             SortKey => Sort,
-            SplitscreenTwo | SplitscreenThree => Splitscreen,
             Fullbright | DynamicLights | MouseTweaks | Sort | AutoReconnect | NoAi
             | AgentControl | DiscordPresence | Splitscreen => {
                 return None;
@@ -490,12 +485,6 @@ impl Item {
             }
             Item::DiscordPresence => {
                 "Shows Playing Horizon on your Discord profile while Discord runs: menus, single player or multiplayer, the dimension and the time played. Never a world's name or a server's address."
-            }
-            Item::SplitscreenThree => {
-                "How three players share a screen: the first one wide on top, tall on the left, or all three side by side."
-            }
-            Item::SplitscreenTwo => {
-                "How two players share a screen: side by side, top and bottom, or Auto (side by side when it is wider than tall)."
             }
             Item::Splitscreen => {
                 "In a world, another controller can join as a new player: press A when it asks, then pick a profile and where to play."
@@ -537,19 +526,15 @@ impl Item {
     pub fn value(self, e: &Extras) -> String {
         match self {
             Item::SortKey => crate::keybinds::display_name(&e.sort_key).plain(),
-            Item::SplitscreenTwo => SPLIT_TWO[usize::from(e.splitscreen_two.min(2))].into(),
-            Item::SplitscreenThree => SPLIT_THREE[usize::from(e.splitscreen_three.min(2))].into(),
             other => match other.switch(e) {
                 Some(true) => "On".into(),
                 _ => "Off".into(),
             },
         }
     }
-    /// A click (`back` for the right button: switches flip either way, the splitscreen choices
-    /// step back). The sort key binds instead.
-    pub fn cycle(self, e: &mut Extras, back: bool) {
-        // The next of three choices, or the one before with the right button.
-        let step = |v: u8, back: bool| if back { (v + 2) % 3 } else { (v + 1) % 3 };
+    /// A click (`_back` for the right button: every item left is a switch,
+    /// so both flip it). The sort key binds instead.
+    pub fn cycle(self, e: &mut Extras, _back: bool) {
         match self {
             Item::Fullbright => e.fullbright = !e.fullbright,
             Item::DynamicLights => e.dynamic_lights = !e.dynamic_lights,
@@ -561,8 +546,6 @@ impl Item {
             Item::AgentControl => e.agent_control = !e.agent_control,
             Item::DiscordPresence => e.discord_presence = !e.discord_presence,
             Item::Splitscreen => e.splitscreen = !e.splitscreen,
-            Item::SplitscreenTwo => e.splitscreen_two = step(e.splitscreen_two, back),
-            Item::SplitscreenThree => e.splitscreen_three = step(e.splitscreen_three, back),
             Item::SortKey => {}
         }
     }
