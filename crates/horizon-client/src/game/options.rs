@@ -323,7 +323,13 @@ impl Game<'_> {
     }
     /// F11 (key.fullscreen): Window.toggleFullScreen, remembered in options.txt.
     pub(super) fn toggle_fullscreen(&mut self) {
+        // Splitscreen: another player's F11 toggles the window it plays in, kept out of its
+        // options (a profile that saved it would turn the next window fullscreen on joining).
         if self.options.split_guest {
+            if let Some(w) = &self.window {
+                let on = w.fullscreen().is_none();
+                w.set_fullscreen(on.then_some(Fullscreen::Borderless(None)));
+            }
             return;
         }
         self.settings.fullscreen = !self.settings.fullscreen;

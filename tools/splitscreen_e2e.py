@@ -12,7 +12,8 @@ Scenarios:
   three    three in a window: one wide on top, one tall on the left, side by side
   live     splitscreen off and on again from the Splitscreen page, in a world
   picker   a joining player makes a profile, picks New window, and joins in it
-  fullscreen  a player whose options say fullscreen joins: the window stays as P1 has it
+  fullscreen  a player whose options say fullscreen joins: the window stays as P1 has it; its F11
+              in a window of its own toggles that window only
 
 Needs a desktop session (the windows open on screen) and the vanilla data in .local/. Each game
 gets fresh scratch folders (lab.game_env) and runs from inside them. Exit status 0 when every check
@@ -281,6 +282,22 @@ def scenario_fullscreen():
         time.sleep(3)
         value = g.ctl(1, 'options-get', 'fullscreen')['options']['fullscreen']['value']
         check("P1's window stays windowed (P1's fullscreen option)", value, False)
+        # P2's F11 in a window of its own: that window, and only it, goes fullscreen and back.
+        g.play_on(2, 'Window 2')
+        windowed = g.size(2)
+        g.ctl(2, 'key', 'f11', 'tap')
+        g.wait(lambda: g.size(2)[0] > windowed[0], "P2's window fullscreen", seconds=10)
+        check("P2's F11: its window fills the screen", g.size(2)[0] > windowed[0], True)
+        value = g.ctl(1, 'options-get', 'fullscreen')['options']['fullscreen']['value']
+        check("P1's window stays windowed", value, False)
+        full = g.size(2)
+        time.sleep(2)  # macOS ignores a change while its fullscreen animation runs
+        g.ctl(2, 'key', 'f11', 'tap')
+        try:
+            g.wait(lambda: g.size(2) == windowed, "P2's window back", seconds=10)
+        except RuntimeError:
+            print(f'    (windowed {windowed}, fullscreen {full}, now {g.size(2)})')
+        check("P2's F11 again: back to its window", g.size(2), windowed)
     finally:
         g.quit()
 
