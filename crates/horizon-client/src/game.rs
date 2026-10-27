@@ -275,6 +275,8 @@ struct Options {
     creative: bool,
     test_terrain: bool,
     frames: Option<u64>,
+    /// A splitscreen player: the split window paces every player's frames, not each its own.
+    paced_by_split: bool,
     /// `--world-frames N`: exit after N frames drawn in the world (smoke runs; the world may load slowly).
     world_frames: Option<u64>,
     screenshot_after: Option<u64>,
@@ -344,6 +346,7 @@ impl Options {
             creative: false,
             test_terrain: false,
             frames: None,
+            paced_by_split: false,
             world_frames: None,
             screenshot_after: None,
             timeout: Duration::from_secs(120),

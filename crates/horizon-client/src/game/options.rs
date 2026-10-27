@@ -350,7 +350,7 @@ impl Game<'_> {
     /// below 260 frames per second, sleeping then spin-waiting until the
     /// frame's slot ends (not in scripted frame-count runs).
     pub(super) fn limit_frame(&mut self) {
-        if self.options.frames.is_some() {
+        if self.options.frames.is_some() || self.options.paced_by_split {
             return;
         }
         let limit = self.framerate_limit();

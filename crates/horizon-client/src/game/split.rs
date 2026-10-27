@@ -2,15 +2,16 @@
 //! launched; once its world is open it goes to LAN and the others, more `Game`s in this process,
 //! join it. Every player renders offscreen on one device and the compositor tiles their frames:
 //! halves for two, quadrants for three or four. Each controller joins as the next player when one
-//! of its buttons is pressed; keyboard and mouse drive P1. Player N also takes `horizon-ctl` on
-//! P1's socket path + "N".
+//! of its buttons is pressed. Keyboard and mouse drive the player whose view was clicked last
+//! (Esc frees the mouse, then click another view). Player N also takes `horizon-ctl` on P1's
+//! socket path + "N". The window paces every player's frames once, at the fastest any wants.
 use super::{Game, UiResources, build_renderer, pad::PadRouter, start_game};
 use horizon_client::{Result, gfx::compositor::Compositor};
 use std::sync::Arc;
 use winit::{
     application::ApplicationHandler,
-    dpi::PhysicalSize,
-    event::{DeviceEvent, DeviceId, WindowEvent},
+    dpi::{PhysicalPosition, PhysicalSize},
+    event::{DeviceEvent, DeviceId, ElementState, WindowEvent},
     event_loop::ActiveEventLoop,
     window::WindowId,
 };
@@ -24,11 +25,20 @@ pub(super) struct Split<'a> {
     pads: PadRouter,
     compositor: Option<Compositor>,
     size: PhysicalSize<u32>,
+    /// The player keyboard and mouse drive (0 = P1), and the pointer on the window.
+    focus: usize,
+    cursor: PhysicalPosition<f64>,
+    limiter: horizon_client::window::FramerateLimiter,
+    clock: horizon_client::window::SystemClock,
+    /// Spike timing: presents and ms per player's turn since `timing_at`.
+    timing_at: std::time::Instant,
+    timing: (u32, u32, Vec<f64>),
 }
 
 impl<'a> Split<'a> {
     pub(super) fn new(mut host: Game<'a>, players: usize) -> Self {
         host.options.offscreen = true;
+        host.options.paced_by_split = true;
         Self {
             host,
             guests: Vec::new(),
@@ -36,6 +46,12 @@ impl<'a> Split<'a> {
             pads: PadRouter::default(),
             compositor: None,
             size: PhysicalSize::new(1, 1),
+            focus: 0,
+            cursor: PhysicalPosition::new(0.0, 0.0),
+            limiter: horizon_client::window::FramerateLimiter::new(0),
+            clock: Default::default(),
+            timing_at: std::time::Instant::now(),
+            timing: (0, 0, Vec::new()),
         }
     }
 
@@ -55,6 +71,27 @@ impl<'a> Split<'a> {
                 )
             })
             .collect()
+    }
+
+    /// Player `i`'s game (0 = P1).
+    fn player(&mut self, i: usize) -> Option<&mut dyn ApplicationHandler> {
+        match i {
+            0 => Some(&mut self.host),
+            _ => self.guests.get_mut(i - 1).map(|g| g as _),
+        }
+    }
+
+    fn captured(&self, i: usize) -> bool {
+        match i {
+            0 => self.host.captured,
+            _ => self.guests.get(i - 1).is_some_and(|g| g.captured),
+        }
+    }
+
+    /// The pointer as the focused player sees it: from its view's corner.
+    fn cursor_in_focus(&self) -> PhysicalPosition<f64> {
+        let [x, y] = self.views().get(self.focus).map_or([0, 0], |v| v.0);
+        PhysicalPosition::new(self.cursor.x - f64::from(x), self.cursor.y - f64::from(y))
     }
 
     fn resize_views(&mut self, event_loop: &ActiveEventLoop, id: WindowId) {
@@ -153,12 +190,72 @@ impl ApplicationHandler for Split<'_> {
                 }
                 self.host.window_event(event_loop, id, event);
             }
-            _ => self.host.window_event(event_loop, id, event),
+            WindowEvent::CursorMoved {
+                device_id,
+                position,
+            } => {
+                self.cursor = position;
+                let position = self.cursor_in_focus();
+                let focus = self.focus;
+                if let Some(player) = self.player(focus) {
+                    player.window_event(
+                        event_loop,
+                        id,
+                        WindowEvent::CursorMoved {
+                            device_id,
+                            position,
+                        },
+                    );
+                }
+            }
+            WindowEvent::MouseInput {
+                device_id,
+                state: ElementState::Pressed,
+                ..
+            } => {
+                // A click on another player's view gives it keyboard and mouse, unless the
+                // focused player holds the mouse (playing): Esc frees it first, as in vanilla.
+                let (x, y) = (self.cursor.x as u32, self.cursor.y as u32);
+                let clicked = self.views().iter().position(|([vx, vy], size)| {
+                    (*vx..vx + size.width).contains(&x) && (*vy..vy + size.height).contains(&y)
+                });
+                if let Some(clicked) = clicked
+                    && clicked != self.focus
+                    && clicked < self.guests.len() + 1
+                    && !self.captured(self.focus)
+                {
+                    self.focus = clicked;
+                    let position = self.cursor_in_focus();
+                    if let Some(player) = self.player(clicked) {
+                        player.window_event(
+                            event_loop,
+                            id,
+                            WindowEvent::CursorMoved {
+                                device_id,
+                                position,
+                            },
+                        );
+                    }
+                }
+                let focus = self.focus;
+                if let Some(player) = self.player(focus) {
+                    player.window_event(event_loop, id, event);
+                }
+            }
+            _ => {
+                let focus = self.focus;
+                if let Some(player) = self.player(focus) {
+                    player.window_event(event_loop, id, event);
+                }
+            }
         }
     }
 
     fn device_event(&mut self, event_loop: &ActiveEventLoop, id: DeviceId, event: DeviceEvent) {
-        self.host.device_event(event_loop, id, event);
+        let focus = self.focus;
+        if let Some(player) = self.player(focus) {
+            player.device_event(event_loop, id, event);
+        }
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
@@ -167,7 +264,9 @@ impl ApplicationHandler for Split<'_> {
         for (guest, pad) in self.guests.iter_mut().zip(pads) {
             guest.pad.feed = Some(pad);
         }
+        let mut turns = vec![std::time::Instant::now()];
         self.host.about_to_wait(event_loop);
+        turns.push(std::time::Instant::now());
         // One player joins per frame once P1 is playing in its world.
         if self.guests.len() + 1 < self.players
             && self.compositor.is_some()
@@ -189,7 +288,10 @@ impl ApplicationHandler for Split<'_> {
             }
         }
         for guest in &mut self.guests {
+            let at = std::time::Instant::now();
             guest.about_to_wait(event_loop);
+            turns.push(at);
+            turns.push(std::time::Instant::now());
         }
         let views = self.views();
         let frames: Vec<_> = std::iter::once(&self.host.renderer)
@@ -198,7 +300,53 @@ impl ApplicationHandler for Split<'_> {
             .filter_map(|(r, view)| Some((r.as_ref()?.offscreen_frame()?, view.0)))
             .collect();
         if let Some(c) = &mut self.compositor {
-            c.present(&frames);
+            c.set_vsync(self.host.settings.vsync);
+            if c.present(&frames) {
+                self.timing.0 += 1;
+            }
+        }
+        // One pace for all: the fastest any player wants, so an idle one (vanilla's AFK limit)
+        // can't slow the others.
+        let limit = std::iter::once(self.host.framerate_limit())
+            .chain(self.guests.iter().map(|g| g.framerate_limit()))
+            .max()
+            .unwrap_or(60);
+        // With vsync the display paces anything at or above its refresh rate; the limiter on top
+        // would miss refreshes.
+        let refresh_hz = self
+            .host
+            .window
+            .as_ref()
+            .and_then(|w| w.current_monitor()?.refresh_rate_millihertz())
+            .map_or(60, |mhz| mhz.div_ceil(1000) as i32);
+        if !(self.host.settings.vsync && limit >= refresh_hz) {
+            horizon_client::window::end_frame(&mut self.limiter, limit, &mut self.clock);
+        }
+        let ms: Vec<f64> = turns
+            .chunks(2)
+            .map(|t| (t[1] - t[0]).as_secs_f64() * 1000.0)
+            .collect();
+        self.timing.1 += 1;
+        self.timing.2.resize(ms.len(), 0.0);
+        for (sum, t) in self.timing.2.iter_mut().zip(ms) {
+            *sum += t;
+        }
+        if self.timing_at.elapsed().as_secs_f64() >= 1.0 {
+            let n = f64::from(self.timing.1);
+            let per: Vec<String> = self
+                .timing
+                .2
+                .iter()
+                .map(|t| format!("{:.1}", t / n))
+                .collect();
+            log::info!(
+                "split: {} presents/s ({} loops), ms per player turn [{}]",
+                self.timing.0,
+                self.timing.1,
+                per.join(", ")
+            );
+            self.timing = (0, 0, Vec::new());
+            self.timing_at = std::time::Instant::now();
         }
     }
 

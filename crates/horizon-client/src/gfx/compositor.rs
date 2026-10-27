@@ -11,6 +11,7 @@ pub struct Compositor {
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
+    present_modes: Vec<wgpu::PresentMode>,
 }
 
 impl Renderer {
@@ -46,6 +47,7 @@ impl Renderer {
             device: self.device.clone(),
             queue: self.queue.clone(),
             config,
+            present_modes: caps.present_modes,
         })
     }
 
@@ -56,6 +58,18 @@ impl Renderer {
 }
 
 impl Compositor {
+    /// Vsync on: presents wait for the display. Off: they don't (Mailbox, else Immediate).
+    pub fn set_vsync(&mut self, vsync: bool) {
+        let mode = [wgpu::PresentMode::Mailbox, wgpu::PresentMode::Immediate]
+            .into_iter()
+            .find(|m| !vsync && self.present_modes.contains(m))
+            .unwrap_or(wgpu::PresentMode::Fifo);
+        if mode != self.config.present_mode {
+            self.config.present_mode = mode;
+            self.surface.configure(&self.device, &self.config);
+        }
+    }
+
     pub fn resize(&mut self, width: u32, height: u32) {
         if width > 0 && height > 0 {
             self.config.width = width;
@@ -65,16 +79,17 @@ impl Compositor {
     }
 
     /// Copy each view's frame to its top-left corner on the window and present. Frames that
-    /// don't fit are clipped; uncovered parts of the window keep whatever was there.
-    pub fn present(&mut self, views: &[(&wgpu::Texture, [u32; 2])]) {
+    /// don't fit are clipped; uncovered parts of the window keep whatever was there. False when
+    /// the window had no frame to give (occluded, resized, timed out).
+    pub fn present(&mut self, views: &[(&wgpu::Texture, [u32; 2])]) -> bool {
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(f)
             | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
             wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
                 self.surface.configure(&self.device, &self.config);
-                return;
+                return false;
             }
-            _ => return,
+            _ => return false,
         };
         let mut encoder = self
             .device
@@ -102,5 +117,6 @@ impl Compositor {
         }
         self.queue.submit([encoder.finish()]);
         self.queue.present(frame);
+        true
     }
 }
