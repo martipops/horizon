@@ -1,0 +1,10 @@
+{
+  "world": "Splitscreen",
+  "mode": "creative",
+  "splitscreen": "on",
+  "test_players": "0",
+  "size": "1600x900",
+  "audio": "on",
+  "home": "dev/home",
+  "build": "on"
+}

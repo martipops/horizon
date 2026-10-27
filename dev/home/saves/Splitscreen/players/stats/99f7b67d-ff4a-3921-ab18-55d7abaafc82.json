@@ -1,0 +1,18 @@
+{
+  "DataVersion": 5023,
+  "stats": {
+    "minecraft:custom": {
+      "minecraft:damage_dealt": 10,
+      "minecraft:fall_one_cm": 1182,
+      "minecraft:fly_one_cm": 2381,
+      "minecraft:play_time": 69341,
+      "minecraft:sprint_one_cm": 301,
+      "minecraft:time_since_death": 69341,
+      "minecraft:time_since_rest": 69341,
+      "minecraft:total_world_time": 69341,
+      "minecraft:walk_on_water_one_cm": 56,
+      "minecraft:walk_one_cm": 1491,
+      "minecraft:walk_under_water_one_cm": 48
+    }
+  }
+}
