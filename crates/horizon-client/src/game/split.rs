@@ -1,8 +1,10 @@
-//! Splitscreen spike (`HORIZON_SPLIT=1`): two players in one window. P1 is the game as launched;
-//! once its world is open it goes to LAN and P2, a second `Game` in this process, joins it. Both
-//! render offscreen on one device and the compositor puts P1 on the left half, P2 on the right.
-//! Keyboard and mouse drive P1; P2 takes `horizon-ctl` on P1's socket path + "2".
-use super::{Game, UiResources, build_renderer, start_game};
+//! Splitscreen spike (`HORIZON_SPLIT=N`, 2 to 4 players in one window). P1 is the game as
+//! launched; once its world is open it goes to LAN and the others, more `Game`s in this process,
+//! join it. Every player renders offscreen on one device and the compositor tiles their frames:
+//! halves for two, quadrants for three or four. Each controller joins as the next player when one
+//! of its buttons is pressed; keyboard and mouse drive P1. Player N also takes `horizon-ctl` on
+//! P1's socket path + "N".
+use super::{Game, UiResources, build_renderer, pad::PadRouter, start_game};
 use horizon_client::{Result, gfx::compositor::Compositor};
 use std::sync::Arc;
 use winit::{
@@ -17,51 +19,66 @@ const LAN_PORT: &str = "25579";
 
 pub(super) struct Split<'a> {
     pub(super) host: Game<'a>,
-    guest: Option<Box<Game<'static>>>,
+    guests: Vec<Game<'static>>,
+    players: usize,
+    pads: PadRouter,
     compositor: Option<Compositor>,
     size: PhysicalSize<u32>,
 }
 
 impl<'a> Split<'a> {
-    pub(super) fn new(mut host: Game<'a>) -> Self {
+    pub(super) fn new(mut host: Game<'a>, players: usize) -> Self {
         host.options.offscreen = true;
         Self {
             host,
-            guest: None,
+            guests: Vec::new(),
+            players: players.clamp(2, 4),
+            pads: PadRouter::default(),
             compositor: None,
             size: PhysicalSize::new(1, 1),
         }
     }
 
-    /// P1 on the left half, P2 on the right.
-    fn halves(&self) -> [PhysicalSize<u32>; 2] {
-        let left = (self.size.width / 2).max(1);
-        [
-            PhysicalSize::new(left, self.size.height),
-            PhysicalSize::new((self.size.width - left).max(1), self.size.height),
-        ]
+    /// Each player's view: its top-left corner and size. Two players split the window down the
+    /// middle; three or four take its quarters.
+    fn views(&self) -> Vec<([u32; 2], PhysicalSize<u32>)> {
+        let (w, h) = (self.size.width, self.size.height);
+        let (columns, rows) = if self.players == 2 { (2, 1) } else { (2, 2) };
+        (0..self.players as u32)
+            .map(|i| {
+                let (column, row) = (i % columns, i / columns);
+                let (x0, x1) = (w * column / columns, w * (column + 1) / columns);
+                let (y0, y1) = (h * row / rows, h * (row + 1) / rows);
+                (
+                    [x0, y0],
+                    PhysicalSize::new((x1 - x0).max(1), (y1 - y0).max(1)),
+                )
+            })
+            .collect()
     }
 
     fn resize_views(&mut self, event_loop: &ActiveEventLoop, id: WindowId) {
-        let [left, right] = self.halves();
+        let views = self.views();
         self.host
-            .window_event(event_loop, id, WindowEvent::Resized(left));
-        if let Some(guest) = &mut self.guest {
-            guest.window_event(event_loop, id, WindowEvent::Resized(right));
+            .window_event(event_loop, id, WindowEvent::Resized(views[0].1));
+        for (guest, view) in self.guests.iter_mut().zip(&views[1..]) {
+            guest.window_event(event_loop, id, WindowEvent::Resized(view.1));
         }
     }
 
-    /// P2 joins once P1 is playing in a world it can open to LAN.
-    fn start_guest(&mut self) -> Result<Game<'static>> {
+    /// Player `n` (from 2) joins P1's world, opened to LAN for the first.
+    fn start_guest(&mut self, n: usize) -> Result<Game<'static>> {
         let host = &mut self.host;
-        host.lan_control(&["lan", "open", LAN_PORT])?;
+        if n == 2 {
+            host.lan_control(&["lan", "open", LAN_PORT])?;
+        }
         let mut options = host.options.clone();
         options.world = None;
         options.server = Some(format!("127.0.0.1:{LAN_PORT}"));
-        options.player_name = Some("P2".into());
+        options.player_name = Some(format!("P{n}"));
         options.control = options.control.map(|p| {
             let mut p = p.into_os_string();
-            p.push("2");
+            p.push(n.to_string());
             p.into()
         });
         let gui = UiResources::load(&options.resources, &options.resources)?;
@@ -81,7 +98,7 @@ impl<'a> Split<'a> {
             Some(host.settings.clone()),
             None,
         )?
-        .ok_or("P2 did not start")?;
+        .ok_or("a player did not start")?;
         guest.renderer = Some(build_renderer(
             window.clone(),
             true,
@@ -131,7 +148,7 @@ impl ApplicationHandler for Split<'_> {
             // The views draw themselves offscreen; the compositor presents in about_to_wait.
             WindowEvent::RedrawRequested => {}
             WindowEvent::Focused(_) | WindowEvent::CloseRequested => {
-                if let Some(guest) = &mut self.guest {
+                for guest in &mut self.guests {
                     guest.window_event(event_loop, id, event.clone());
                 }
                 self.host.window_event(event_loop, id, event);
@@ -145,15 +162,21 @@ impl ApplicationHandler for Split<'_> {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        let mut pads = self.pads.read(self.players).into_iter();
+        self.host.pad.feed = pads.next();
+        for (guest, pad) in self.guests.iter_mut().zip(pads) {
+            guest.pad.feed = Some(pad);
+        }
         self.host.about_to_wait(event_loop);
-        if self.guest.is_none()
+        // One player joins per frame once P1 is playing in its world.
+        if self.guests.len() + 1 < self.players
             && self.compositor.is_some()
             && self.host.player.is_some()
             && self.host.title.is_none()
         {
-            match self.start_guest() {
+            match self.start_guest(self.guests.len() + 2) {
                 Ok(guest) => {
-                    self.guest = Some(Box::new(guest));
+                    self.guests.push(guest);
                     if let Some(id) = self.host.window.as_ref().map(|w| w.id()) {
                         self.resize_views(event_loop, id);
                     }
@@ -165,31 +188,22 @@ impl ApplicationHandler for Split<'_> {
                 }
             }
         }
-        if let Some(guest) = &mut self.guest {
+        for guest in &mut self.guests {
             guest.about_to_wait(event_loop);
         }
-        let left = self.halves()[0].width;
-        let host_frame = self
-            .host
-            .renderer
-            .as_ref()
-            .and_then(|r| r.offscreen_frame());
-        let guest_frame = self
-            .guest
-            .as_ref()
-            .and_then(|g| g.renderer.as_ref()?.offscreen_frame());
-        let views: Vec<_> = host_frame
-            .map(|t| (t, [0, 0]))
-            .into_iter()
-            .chain(guest_frame.map(|t| (t, [left, 0])))
+        let views = self.views();
+        let frames: Vec<_> = std::iter::once(&self.host.renderer)
+            .chain(self.guests.iter().map(|g| &g.renderer))
+            .zip(&views)
+            .filter_map(|(r, view)| Some((r.as_ref()?.offscreen_frame()?, view.0)))
             .collect();
         if let Some(c) = &mut self.compositor {
-            c.present(&views);
+            c.present(&frames);
         }
     }
 
     fn exiting(&mut self, event_loop: &ActiveEventLoop) {
-        if let Some(guest) = &mut self.guest {
+        for guest in &mut self.guests {
             guest.exiting(event_loop);
         }
         self.host.exiting(event_loop);

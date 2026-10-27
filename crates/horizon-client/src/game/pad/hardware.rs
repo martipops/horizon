@@ -124,31 +124,79 @@ impl Pads {
         };
         self.style = GlyphStyle::of_vendor(pad.vendor_id());
         self.devices.dualsense = is_dualsense(&pad);
-        let mut state = PadState::default();
-        for button in Button::ALL {
-            if !matches!(button, Button::LeftTrigger | Button::RightTrigger) {
-                state.set(button, pad.is_pressed(gilrs_button(button)));
+        state_of(&pad)
+    }
+}
+
+/// A pad's buttons, sticks and triggers now.
+fn state_of(pad: &gilrs::Gamepad) -> PadState {
+    let mut state = PadState::default();
+    for button in Button::ALL {
+        if !matches!(button, Button::LeftTrigger | Button::RightTrigger) {
+            state.set(button, pad.is_pressed(gilrs_button(button)));
+        }
+    }
+    let axis = |a| pad.value(a);
+    use gilrs::Axis as A;
+    state.left = [axis(A::LeftStickX), axis(A::LeftStickY)];
+    state.right = [axis(A::RightStickX), axis(A::RightStickY)];
+    // Triggers arrive as analog buttons on most mappings, as plain
+    // buttons on some.
+    let trigger = |b: gilrs::Button| {
+        let value = pad.button_data(b).map_or(0.0, |d| d.value());
+        if pad.is_pressed(b) {
+            value.max(1.0)
+        } else {
+            value
+        }
+    };
+    state.triggers = [
+        trigger(gilrs::Button::LeftTrigger2),
+        trigger(gilrs::Button::RightTrigger2),
+    ];
+    state
+}
+
+/// Splitscreen: one gilrs for every player's game in this process. A pad joins as the next
+/// player when one of its buttons is first pressed, and stays that player's.
+#[derive(Default)]
+pub(in crate::game) struct PadRouter {
+    gilrs: Option<gilrs::Gilrs>,
+    started: bool,
+    players: Vec<gilrs::GamepadId>,
+}
+
+impl PadRouter {
+    /// Each of `players`' pad now (default: no pad joined as that player yet).
+    pub(in crate::game) fn read(&mut self, players: usize) -> Vec<PadState> {
+        if !self.started {
+            self.started = true;
+            self.gilrs = gilrs::Gilrs::new().ok();
+        }
+        let Some(gilrs) = self.gilrs.as_mut() else {
+            return vec![PadState::default(); players];
+        };
+        while let Some(gilrs::Event { id, event, .. }) = gilrs.next_event() {
+            if matches!(event, gilrs::EventType::ButtonPressed(..))
+                && !self.players.contains(&id)
+                && self.players.len() < players
+            {
+                log::info!(
+                    "Horizon: {} is player {}",
+                    gilrs.gamepad(id).name(),
+                    self.players.len() + 1
+                );
+                self.players.push(id);
             }
         }
-        let axis = |a| pad.value(a);
-        use gilrs::Axis as A;
-        state.left = [axis(A::LeftStickX), axis(A::LeftStickY)];
-        state.right = [axis(A::RightStickX), axis(A::RightStickY)];
-        // Triggers arrive as analog buttons on most mappings, as plain
-        // buttons on some.
-        let trigger = |b: gilrs::Button| {
-            let value = pad.button_data(b).map_or(0.0, |d| d.value());
-            if pad.is_pressed(b) {
-                value.max(1.0)
-            } else {
-                value
-            }
-        };
-        state.triggers = [
-            trigger(gilrs::Button::LeftTrigger2),
-            trigger(gilrs::Button::RightTrigger2),
-        ];
-        state
+        (0..players)
+            .map(|i| {
+                self.players
+                    .get(i)
+                    .and_then(|&id| gilrs.connected_gamepad(id))
+                    .map_or_else(PadState::default, |pad| state_of(&pad))
+            })
+            .collect()
     }
 }
 

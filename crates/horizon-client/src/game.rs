@@ -13843,8 +13843,8 @@ fn write_report(game: &Game<'_>) -> Result<()> {
 }
 
 fn run_event_loop(mut game: Game<'_>) -> Result<()> {
-    if std::env::var_os("HORIZON_SPLIT").is_some() {
-        let mut split = split::Split::new(game);
+    if let Ok(players) = std::env::var("HORIZON_SPLIT") {
+        let mut split = split::Split::new(game, players.parse().unwrap_or(2));
         EventLoop::new()?.run_app(&mut split)?;
         game = split.host;
     } else {

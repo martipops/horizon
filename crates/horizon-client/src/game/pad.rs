@@ -25,6 +25,8 @@ pub(super) const HELP: &[&str] = &[
 /// The controllers and the state the game last acted on.
 #[derive(Default)]
 pub(super) struct Pads {
+    /// Splitscreen: this player's pad, read by `PadRouter` for every game, instead of the pads.
+    pub(super) feed: Option<PadState>,
     /// The real controllers and the DualSense's output.
     #[cfg(feature = "controllers")]
     devices: hardware::Devices,
@@ -55,6 +57,7 @@ pub(super) struct Pads {
 
 #[cfg(feature = "controllers")]
 mod hardware;
+pub(super) use hardware::PadRouter;
 
 /// A build without the `controllers` feature (the server build, which must not need libudev): no
 /// hardware pads, only `horizon-ctl pad`'s virtual one.
@@ -67,6 +70,14 @@ mod hardware {
     impl Pads {
         pub(super) fn read(&mut self) -> PadState {
             PadState::default()
+        }
+    }
+
+    #[derive(Default)]
+    pub(in crate::game) struct PadRouter;
+    impl PadRouter {
+        pub(in crate::game) fn read(&mut self, players: usize) -> Vec<PadState> {
+            vec![PadState::default(); players]
         }
     }
 
@@ -103,7 +114,10 @@ impl Game<'_> {
             }
             return;
         }
-        let hardware = self.pad.read();
+        let hardware = match self.pad.feed {
+            Some(state) => state,
+            None => self.pad.read(),
+        };
         self.ui.options.pad_style = self.settings.controller.glyphs.resolve(self.pad.style);
         let state = hardware.merge(&self.pad.injected);
         self.pad.virtual_input = self.pad.injected != PadState::default();
