@@ -13846,13 +13846,9 @@ fn write_report(game: &Game<'_>) -> Result<()> {
 }
 
 fn run_event_loop(mut game: Game<'_>) -> Result<()> {
-    if let Ok(players) = std::env::var("HORIZON_SPLIT") {
-        let mut split = split::Split::new(game, players.parse().unwrap_or(2));
-        EventLoop::new()?.run_app(&mut split)?;
-        game = split.host;
-    } else {
-        EventLoop::new()?.run_app(&mut game)?;
-    }
+    let mut split = split::Split::new(game, None);
+    EventLoop::new()?.run_app(&mut split)?;
+    game = split.host;
     horizon_client::discord_presence::stop();
     write_report(&game)?;
     if let Some(e) = game.error.take() {
@@ -14021,9 +14017,12 @@ impl Loading {
             );
         }
     }
-    fn finish(&mut self, loaded: Loaded) -> Result<Option<Game<'static>>> {
+    fn finish(&mut self, loaded: Loaded) -> Result<Option<split::Split<'static>>> {
         let handoff_at = Instant::now();
         let mut options = self.options.take().ok_or("loading already finished")?;
+        // Splitscreen: every player renders offscreen and a compositor presents on the window.
+        let splitscreen = self.settings.extras.splitscreen;
+        options.offscreen |= splitscreen;
         options.resources = loaded.root.clone();
         // StartupMenu owns world selection until it can hand it to Game.
         options.world = None;
@@ -14049,6 +14048,10 @@ impl Loading {
             self.started.elapsed().as_millis()
         );
         let renderer_ms = renderer_at.elapsed().as_millis();
+        let compositor = match (&self.renderer, splitscreen) {
+            (Some(loader), true) => Some(loader.compositor(window.clone())?),
+            _ => None,
+        };
         // Audio is created on the main thread, after the core is ready.
         let audio = if !options.execution_role.is_client() {
             Audio::silent(&options.resources)
@@ -14091,7 +14094,7 @@ impl Loading {
             renderer_ms,
             game_ms
         );
-        Ok(Some(game))
+        Ok(Some(split::Split::new(game, compositor)))
     }
 }
 
@@ -14099,7 +14102,7 @@ impl Loading {
 /// the game itself, on the same event loop and window.
 enum App {
     Loading(Box<Loading>),
-    Ready(Box<Game<'static>>),
+    Ready(Box<split::Split<'static>>),
 }
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
@@ -14122,7 +14125,7 @@ impl ApplicationHandler for App {
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         enum Step {
             Waiting,
-            Ready(Box<Game<'static>>),
+            Ready(Box<split::Split<'static>>),
             Done,
             Failed(Box<dyn std::error::Error>),
         }
@@ -14207,9 +14210,9 @@ fn run_loading(
     EventLoop::new()?.run_app(&mut app)?;
     horizon_client::discord_presence::stop();
     match app {
-        App::Ready(mut game) => {
-            write_report(&game)?;
-            if let Some(e) = game.error.take() {
+        App::Ready(mut split) => {
+            write_report(&split.host)?;
+            if let Some(e) = split.host.error.take() {
                 return Err(e);
             }
         }

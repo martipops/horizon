@@ -57,14 +57,14 @@ pub(super) struct Pads {
 
 #[cfg(feature = "controllers")]
 mod hardware;
-pub(super) use hardware::PadRouter;
+pub(super) use hardware::{PadId, PadRouter};
 
 /// A build without the `controllers` feature (the server build, which must not need libudev): no
 /// hardware pads, only `horizon-ctl pad`'s virtual one.
 #[cfg(not(feature = "controllers"))]
 mod hardware {
     use super::{super::Game, Pads};
-    use horizon_client::gamepad::{PadState, Pulse, Rumble};
+    use horizon_client::gamepad::{Button, PadState, Pulse, Rumble};
     use serde_json::{Value, json};
 
     impl Pads {
@@ -73,11 +73,18 @@ mod hardware {
         }
     }
 
+    pub(in crate::game) type PadId = usize;
     #[derive(Default)]
     pub(in crate::game) struct PadRouter;
     impl PadRouter {
-        pub(in crate::game) fn read(&mut self, players: usize) -> Vec<PadState> {
-            vec![PadState::default(); players]
+        pub(in crate::game) fn presses(&mut self) -> Vec<(PadId, Button)> {
+            Vec::new()
+        }
+        pub(in crate::game) fn state(&self, _: PadId) -> PadState {
+            PadState::default()
+        }
+        pub(in crate::game) fn name(&self, _: PadId) -> String {
+            String::new()
         }
     }
 

@@ -15,9 +15,19 @@ pub struct Compositor {
 }
 
 impl Renderer {
-    /// A compositor for `window` on this renderer's device.
+    /// A compositor for `window` on this renderer's device, presenting on the surface it gave up.
     pub fn compositor(&self, window: Arc<Window>) -> Result<Compositor> {
-        let surface = self.instance.create_surface(window.clone())?;
+        // The surface this renderer set aside for its successor (`release_surface`), else a new
+        // one: a window can't keep two.
+        let spare = self
+            .spare_surface
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        let surface = match spare {
+            Some(surface) => surface,
+            None => self.instance.create_surface(window.clone())?,
+        };
         let caps = surface.get_capabilities(&self.adapter);
         // ponytail: a plain texture copy needs the offscreen frames' format; a blit pass would
         // take any surface format (Rgba8Unorm on some Linux drivers).

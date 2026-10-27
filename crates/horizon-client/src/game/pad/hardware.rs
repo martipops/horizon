@@ -157,46 +157,53 @@ fn state_of(pad: &gilrs::Gamepad) -> PadState {
     state
 }
 
-/// Splitscreen: one gilrs for every player's game in this process. A pad joins as the next
-/// player when one of its buttons is first pressed, and stays that player's.
+/// A controller, as splitscreen tells them apart.
+pub(in crate::game) type PadId = gilrs::GamepadId;
+
+/// Splitscreen: one gilrs for every player's game in this process. The split decides which
+/// player each pad drives; this reads them.
 #[derive(Default)]
 pub(in crate::game) struct PadRouter {
     gilrs: Option<gilrs::Gilrs>,
     started: bool,
-    players: Vec<gilrs::GamepadId>,
 }
 
 impl PadRouter {
-    /// Each of `players`' pad now (default: no pad joined as that player yet).
-    pub(in crate::game) fn read(&mut self, players: usize) -> Vec<PadState> {
+    /// The buttons pressed since the last call, by pad.
+    pub(in crate::game) fn presses(&mut self) -> Vec<(PadId, Button)> {
         if !self.started {
             self.started = true;
             self.gilrs = gilrs::Gilrs::new().ok();
         }
         let Some(gilrs) = self.gilrs.as_mut() else {
-            return vec![PadState::default(); players];
+            return Vec::new();
         };
+        let mut presses = Vec::new();
         while let Some(gilrs::Event { id, event, .. }) = gilrs.next_event() {
-            if matches!(event, gilrs::EventType::ButtonPressed(..))
-                && !self.players.contains(&id)
-                && self.players.len() < players
+            if let gilrs::EventType::ButtonPressed(pressed, _) = event
+                && let Some(button) = Button::ALL
+                    .into_iter()
+                    .find(|&b| gilrs_button(b) == pressed)
             {
-                log::info!(
-                    "Horizon: {} is player {}",
-                    gilrs.gamepad(id).name(),
-                    self.players.len() + 1
-                );
-                self.players.push(id);
+                presses.push((id, button));
             }
         }
-        (0..players)
-            .map(|i| {
-                self.players
-                    .get(i)
-                    .and_then(|&id| gilrs.connected_gamepad(id))
-                    .map_or_else(PadState::default, |pad| state_of(&pad))
-            })
-            .collect()
+        presses
+    }
+
+    /// The pad's state now (released when it is gone).
+    pub(in crate::game) fn state(&self, id: PadId) -> PadState {
+        self.gilrs
+            .as_ref()
+            .and_then(|g| g.connected_gamepad(id))
+            .map_or_else(PadState::default, |pad| state_of(&pad))
+    }
+
+    pub(in crate::game) fn name(&self, id: PadId) -> String {
+        self.gilrs
+            .as_ref()
+            .and_then(|g| g.connected_gamepad(id))
+            .map_or_else(|| "A controller".into(), |pad| pad.name().to_owned())
     }
 }
 
