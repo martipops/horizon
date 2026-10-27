@@ -115,9 +115,6 @@ pub struct Extras {
     /// Splitscreen: another controller in a world offers to join as a new player on this screen
     /// (`splitscreen`; off by default, from the next launch).
     pub splitscreen: bool,
-    /// Where the players' views go: 0 one window, 1 a window per monitor, 2 a window per player
-    /// (`splitscreenWindows`).
-    pub splitscreen_windows: u8,
     /// Two players in one window: 0 auto (side by side when wider than tall), 1 side by side,
     /// 2 top and bottom (`splitscreenTwo`).
     pub splitscreen_two: u8,
@@ -154,7 +151,6 @@ impl Default for Extras {
             agent_control: false,
             discord_presence: true,
             splitscreen: false,
-            splitscreen_windows: 0,
             splitscreen_two: 0,
         }
     }
@@ -231,9 +227,6 @@ impl Extras {
                 "agentControl" => e.agent_control = flag(e.agent_control),
                 "discordPresence" => e.discord_presence = flag(e.discord_presence),
                 "splitscreen" => e.splitscreen = flag(e.splitscreen),
-                "splitscreenWindows" => {
-                    e.splitscreen_windows = value.parse().unwrap_or(0).min(2);
-                }
                 "splitscreenTwo" => e.splitscreen_two = value.parse().unwrap_or(0).min(2),
                 _ => {}
             }
@@ -242,7 +235,7 @@ impl Extras {
     }
     pub fn serialize(&self) -> String {
         format!(
-            "fullbright:{}\ndynamicLights:{}\nzoom:{}\nzoomKey:{}\nzoomLevel:{}\nzoomSmooth:{}\nzoomSensitivity:{}\nfps:{}\nfpsCorner:{}\nfpsLows:{}\nkeystrokes:{}\nkeystrokesCorner:{}\nkeystrokesCps:{}\nmovedToMods:{}\nminimap:{}\nminimapCorner:{}\nminimapSize:{}\nminimapShape:{}\nminimapZoom:{}\nminimapRotate:{}\nautoReconnect:{}\nmouseTweaks:{}\nmouseTweaksWheel:{}\nsort:{}\nsortKey:{}\n{}:{}\nagentControl:{}\ndiscordPresence:{}\nsplitscreen:{}\nsplitscreenWindows:{}\nsplitscreenTwo:{}\n",
+            "fullbright:{}\ndynamicLights:{}\nzoom:{}\nzoomKey:{}\nzoomLevel:{}\nzoomSmooth:{}\nzoomSensitivity:{}\nfps:{}\nfpsCorner:{}\nfpsLows:{}\nkeystrokes:{}\nkeystrokesCorner:{}\nkeystrokesCps:{}\nmovedToMods:{}\nminimap:{}\nminimapCorner:{}\nminimapSize:{}\nminimapShape:{}\nminimapZoom:{}\nminimapRotate:{}\nautoReconnect:{}\nmouseTweaks:{}\nmouseTweaksWheel:{}\nsort:{}\nsortKey:{}\n{}:{}\nagentControl:{}\ndiscordPresence:{}\nsplitscreen:{}\nsplitscreenTwo:{}\n",
             bool_text(self.fullbright),
             bool_text(self.dynamic_lights),
             bool_text(self.zoom),
@@ -277,7 +270,6 @@ impl Extras {
             bool_text(self.agent_control),
             bool_text(self.discord_presence),
             bool_text(self.splitscreen),
-            self.splitscreen_windows,
             self.splitscreen_two,
         )
     }
@@ -408,8 +400,8 @@ pub enum Item {
     AgentControl,
     /// On the Horizon Settings page.
     DiscordPresence,
+    /// On the Splitscreen page, with each player's screen.
     Splitscreen,
-    SplitscreenWindows,
     SplitscreenTwo,
 }
 /// The Extras page: headers and items.
@@ -426,9 +418,6 @@ pub fn rows() -> Vec<Result<Item, &'static str>> {
         Ok(SortKey),
         Err("Multiplayer"),
         Ok(AutoReconnect),
-        Ok(Splitscreen),
-        Ok(SplitscreenWindows),
-        Ok(SplitscreenTwo),
     ]
 }
 impl Item {
@@ -445,8 +434,7 @@ impl Item {
             Item::AgentControl => "Agent Control",
             Item::DiscordPresence => "Discord Rich Presence",
             Item::Splitscreen => "Splitscreen",
-            Item::SplitscreenWindows => "Splitscreen windows",
-            Item::SplitscreenTwo => "Two players",
+            Item::SplitscreenTwo => "Two on a screen",
         }
     }
     /// The switch this setting belongs to: it does nothing while that is off.
@@ -455,7 +443,7 @@ impl Item {
         Some(match self {
             MouseTweaksWheel => MouseTweaks,
             SortKey => Sort,
-            SplitscreenWindows | SplitscreenTwo => Splitscreen,
+            SplitscreenTwo => Splitscreen,
             Fullbright | DynamicLights | MouseTweaks | Sort | AutoReconnect | NoAi
             | AgentControl | DiscordPresence | Splitscreen => {
                 return None;
@@ -490,14 +478,11 @@ impl Item {
             Item::DiscordPresence => {
                 "Shows Playing Horizon on your Discord profile while Discord runs: menus, single player or multiplayer, the dimension and the time played. Never a world's name or a server's address."
             }
-            Item::SplitscreenWindows => {
-                "One window for everyone, a window on each monitor (players spread across them), or a window per player to move anywhere."
-            }
             Item::SplitscreenTwo => {
-                "How two players share a window: side by side, top and bottom, or Auto (side by side when the window is wider than tall)."
+                "How two players share a screen: side by side, top and bottom, or Auto (side by side when it is wider than tall)."
             }
             Item::Splitscreen => {
-                "In a world, another controller can join as a new player on this screen: press A when it asks. From the next launch."
+                "In a world, another controller can join as a new player: press A when it asks, then pick a profile and where to play."
             }
             Item::AgentControl => {
                 "Your own AI agent can play this game through horizon-ctl or an MCP client, on this computer only."
@@ -536,9 +521,6 @@ impl Item {
     pub fn value(self, e: &Extras) -> String {
         match self {
             Item::SortKey => crate::keybinds::display_name(&e.sort_key).plain(),
-            Item::SplitscreenWindows => ["One window", "One per monitor", "One per player"]
-                [usize::from(e.splitscreen_windows.min(2))]
-            .into(),
             Item::SplitscreenTwo => ["Auto", "Side by side", "Top and bottom"]
                 [usize::from(e.splitscreen_two.min(2))]
             .into(),
@@ -564,7 +546,6 @@ impl Item {
             Item::AgentControl => e.agent_control = !e.agent_control,
             Item::DiscordPresence => e.discord_presence = !e.discord_presence,
             Item::Splitscreen => e.splitscreen = !e.splitscreen,
-            Item::SplitscreenWindows => e.splitscreen_windows = step(e.splitscreen_windows, back),
             Item::SplitscreenTwo => e.splitscreen_two = step(e.splitscreen_two, back),
             Item::SortKey => {}
         }

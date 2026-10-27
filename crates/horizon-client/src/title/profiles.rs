@@ -11,6 +11,7 @@ const NEW: u8 = 70;
 const CANCEL: u8 = 71;
 const CREATE: u8 = 72;
 const BACK: u8 = 73;
+const PLAY_ON: u8 = 74;
 /// Profile `i` is button `FIRST + i`.
 const FIRST: u8 = 80;
 /// ponytail: the first few profiles only; a scrolling list when someone has more.
@@ -25,14 +26,29 @@ pub fn valid_name(name: &str) -> bool {
 }
 
 impl Title {
-    /// The profile list for a joining player; `taken` are playing now and can't be picked.
-    pub fn profile_picker(&mut self, names: Vec<String>, taken: Vec<String>) {
+    /// The profile list for a joining player; `taken` are playing now and can't be picked;
+    /// `screens` are where it can play ("This screen", the monitors, "Own window").
+    pub fn profile_picker(&mut self, names: Vec<String>, taken: Vec<String>, screens: Vec<String>) {
         self.mode = Mode::Profiles { names, taken };
+        self.play_on = (screens, None);
     }
 
-    /// What the joining player chose: a profile's name, or `None` to leave. Taken once.
-    pub fn take_profile_choice(&mut self) -> Option<Option<String>> {
-        self.profile_choice.take()
+    /// What the joining player chose: a profile's name and where to play (`None`: where that
+    /// profile played last), or `None` to leave. Taken once.
+    pub fn take_profile_choice(&mut self) -> Option<Option<(String, Option<String>)>> {
+        let choice = self.profile_choice.take()?;
+        let (screens, picked) = &self.play_on;
+        let screen = picked.and_then(|i| screens.get(i).cloned());
+        Some(choice.map(|name| (name, screen)))
+    }
+
+    /// The Play on button: "As last time" until the player picks.
+    fn play_on_label(&self) -> String {
+        let (screens, picked) = &self.play_on;
+        let screen = picked
+            .and_then(|i| screens.get(i))
+            .map_or("As last time", String::as_str);
+        format!("Play on: {screen}")
     }
 
     pub(super) fn profile_buttons(&self, w: f32, h: f32) -> Vec<Button> {
@@ -63,8 +79,10 @@ impl Title {
                     .collect();
                 let y = 52.0 + names.len().min(SHOWN) as f32 * 24.0;
                 buttons.push(button(y, "New Profile...".into(), true, NEW));
+                let screens = !self.play_on.0.is_empty();
+                buttons.push(button(y + 24.0, self.play_on_label(), screens, PLAY_ON));
                 buttons.push(button(
-                    y + 24.0,
+                    y + 56.0,
                     lang::get_or("gui.cancel", "Cancel"),
                     true,
                     CANCEL,
@@ -131,6 +149,10 @@ impl Title {
                 };
             }
             (Mode::Profiles { .. }, Some(CANCEL)) => self.profile_choice = Some(None),
+            (Mode::Profiles { .. }, Some(PLAY_ON)) => {
+                let (screens, picked) = &mut self.play_on;
+                *picked = Some(picked.map_or(0, |i| i + 1) % screens.len().max(1));
+            }
             (Mode::NewProfile { .. }, Some(CREATE)) => self.confirm_profile(),
             (Mode::NewProfile { .. }, Some(BACK)) => self.profile_back(),
             (Mode::NewProfile { focused, .. }, None) => {

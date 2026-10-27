@@ -879,6 +879,8 @@ pub enum Page {
     Horizon,
     /// AI Agent: agent control on or off, whether an agent is connected, the connection details.
     Agent,
+    /// Splitscreen: on or off, how two share a screen, and where each player plays.
+    Splitscreen,
 }
 #[derive(Clone, Debug, PartialEq)]
 enum Act {
@@ -887,6 +889,8 @@ enum Act {
     Done,
     Cycle(Opt),
     Extra(crate::extras::Item),
+    /// The next screen for splitscreen player `n` (`split_requests`).
+    SplitScreen(usize),
     Key(&'static str),
     ResetKey(&'static str),
     ResetKeys,
@@ -1017,6 +1021,10 @@ pub struct OptionsUi {
     pub graphics: crate::graphics_ui::GraphicsUi,
     /// The AI Agent page's status lines (set by the game while it shows).
     pub agent_status: Vec<String>,
+    /// The Splitscreen page's players, "P2 Alex", and where each plays (set by the game).
+    pub split_players: Vec<(String, String)>,
+    /// Players whose screen was clicked, and whether backwards (taken by the game).
+    pub split_requests: Vec<(usize, bool)>,
 }
 impl Default for OptionsUi {
     fn default() -> Self {
@@ -1046,6 +1054,8 @@ impl Default for OptionsUi {
             center_language: false,
             graphics: Default::default(),
             agent_status: Vec::new(),
+            split_players: Vec::new(),
+            split_requests: Vec::new(),
         }
     }
 }
@@ -1102,6 +1112,7 @@ fn horizon_page_tooltip(page: Page) -> Option<&'static str> {
             "Optional additions, all off by default: the game stays vanilla until you turn one on."
         }
         Page::Agent => "Let your own AI agent play: horizon-ctl and MCP clients on this computer.",
+        Page::Splitscreen => "Friends join with a controller: where each player plays.",
         Page::ShaderPacks => {
             "Shader packs from the shaderpacks folder: Horizon's own and those in the shaders/ format. One runs at a time."
         }
@@ -1204,6 +1215,7 @@ impl OptionsUi {
             Page::Credits => "credits_and_attribution.screen.title",
             Page::Horizon => "Horizon Settings",
             Page::Agent => "AI Agent",
+            Page::Splitscreen => "Splitscreen",
         }
     }
     fn scrollbar_x(&self, width: f32) -> f32 {
@@ -1320,6 +1332,7 @@ impl OptionsUi {
                         open("Extras...", Page::Extras),
                         Some(open("Mods...", Page::Mods)),
                     ),
+                    Row::Buttons(open("Splitscreen...", Page::Splitscreen), None),
                     // No AI hides the AI Agent page and everything AI.
                     Row::Buttons(
                         self.extra_button(s, crate::extras::Item::DiscordPresence),
@@ -1337,6 +1350,34 @@ impl OptionsUi {
                     }),
                 )
                 .collect()
+            }
+            Page::Splitscreen => {
+                use crate::extras::Item;
+                let mut rows = vec![Row::Buttons(
+                    self.extra_button(s, Item::Splitscreen),
+                    Some(self.extra_button(s, Item::SplitscreenTwo)),
+                )];
+                if s.extras.splitscreen {
+                    rows.push(Row::Header("Players"));
+                    for (n, (who, screen)) in self.split_players.iter().enumerate() {
+                        let mut name = button(0.0, 0.0, 150.0, Text::literal(who), Act::None);
+                        if let WKind::Button { active, .. } = &mut name.kind {
+                            *active = false;
+                        }
+                        let screen = Text::literal(format!("Play on: {screen}"));
+                        rows.push(Row::Buttons(
+                            name,
+                            Some(button(0.0, 0.0, 150.0, screen, Act::SplitScreen(n))),
+                        ));
+                    }
+                    if self.split_players.len() < 2 {
+                        rows.push(Row::Note(
+                            "In a world, press a button on another controller, then A, to add a player."
+                                .into(),
+                        ));
+                    }
+                }
+                rows
             }
             Page::Agent => {
                 let mut rows = vec![Row::Buttons(
@@ -2535,6 +2576,7 @@ impl OptionsUi {
                             }
                             events.push(Event::Changed);
                         }
+                        Act::SplitScreen(n) => self.split_requests.push((n, right)),
                         Act::Extra(item) => {
                             if let Some(name) = item.key_name() {
                                 self.selected_key = Some(name);
@@ -4132,6 +4174,7 @@ mod tests {
                 Page::Controller,
                 Page::Extras,
                 Page::Mods,
+                Page::Splitscreen,
                 Page::Agent,
             ]
         );

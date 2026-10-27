@@ -65,6 +65,15 @@ impl Renderer {
     pub fn offscreen_frame(&self) -> Option<&wgpu::Texture> {
         self.offscreen.as_ref()
     }
+
+    /// Splitscreen turned off: a compositor's surface, set aside for the renderer that draws on
+    /// the window again (it takes it, as after `release_surface`).
+    pub fn take_back(&self, compositor: Compositor) {
+        *self
+            .spare_surface
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(compositor.surface);
+    }
 }
 
 impl Compositor {

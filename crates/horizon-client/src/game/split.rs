@@ -1,24 +1,24 @@
-//! Splitscreen (Horizon's Splitscreen setting, off by default): players drop in and out of P1's
-//! world on one screen, as on a console. P1 is the game as launched, with the keyboard, the mouse
-//! and the first controller used in a menu. In a world, another controller pressing a button is
+//! Splitscreen (Horizon's Splitscreen page, off by default): players drop in and out of P1's world
+//! on this computer, as on a console. P1 is the game as launched, with the keyboard, the mouse and
+//! the first controller used in a menu. In a world, another controller pressing a button is
 //! offered to join; pressing A adds a player, another `Game` in this process that joins P1's
-//! server thread through memory. A player who disconnects (pause menu) drops out; when P1 leaves
-//! the world, all do.
+//! server thread through memory, after it picks a profile and where to play in its view
+//! (`title/profiles.rs`). A player who disconnects (pause menu) drops out; when P1 leaves the
+//! world, all do.
 //!
-//! Every player renders offscreen on one device; each window's compositor copies the frames of
-//! the players placed in it. Splitscreen windows (the setting beside it) place them: all in one
-//! window (halves for two, side by side or top and bottom; quarters for three or four), spread
-//! across the monitors (a borderless fullscreen window on each one after P1's), or each in its own
-//! window. With the setting on, P1 renders this way from the start, so nothing is rebuilt when
-//! someone joins. Keyboard and mouse drive the player whose view was clicked last (Esc frees the
-//! mouse, then click another view); closing a player's own window drops that player. The players'
-//! frames are paced once, at the fastest any wants.
+//! Each player plays on a screen: this one (the game's window), a monitor (a borderless
+//! fullscreen window there, shared by everyone who picked it) or its own window. Players on one
+//! screen share it: halves for two (side by side or top and bottom), quarters for three or four.
+//! A profile remembers its screen (`profiles/<name>/screen.txt`, P1's `p1-screen.txt`); the
+//! Splitscreen page changes anyone's. Every player renders offscreen on one device and each
+//! window's compositor copies its players' frames. Turning splitscreen on rebuilds P1's renderer
+//! that way at once (the world is meshed again: a moment, in the menu); off, back.
 //!
-//! A joining player first picks a profile in its view, or makes one (`title/profiles.rs`): a name
-//! with its own options in `splitscreen/profiles/<name>/options.txt` (first a copy of P1's) and,
-//! on the server, its own inventory.
+//! Keyboard and mouse drive the player whose view was clicked last (Esc frees the mouse, then
+//! click another view); closing a player's own window drops that player. The players' frames are
+//! paced once, at the fastest any wants.
 //!
-//! `HORIZON_SPLIT=N` (testing): the setting on, and N-1 players without controllers join once P1
+//! `HORIZON_SPLIT=N` (testing): splitscreen on, and N-1 players without controllers join once P1
 //! is in a world, as P2, P3... (`HORIZON_SPLIT_PICK=1`: picking profiles instead). The player in
 //! seat N takes `horizon-ctl` on P1's socket path + "N".
 use super::{
@@ -44,17 +44,15 @@ use winit::{
     dpi::{LogicalSize, PhysicalPosition, PhysicalSize},
     event::{DeviceEvent, DeviceId, ElementState, WindowEvent},
     event_loop::ActiveEventLoop,
+    monitor::MonitorHandle,
     window::{Fullscreen, Window, WindowId},
 };
 
 const MAX_PLAYERS: usize = 4;
 /// How long a controller's offer to join stays up.
 const OFFER: Duration = Duration::from_secs(10);
-
-/// Splitscreen windows: `extras.splitscreen_windows`.
-const ONE_WINDOW: u8 = 0;
-const PER_MONITOR: u8 = 1;
-const PER_PLAYER: u8 = 2;
+const THIS_SCREEN: &str = "This screen";
+const OWN_WINDOW: &str = "Own window";
 
 thread_local! {
     /// The options file of the player whose turn it is (none for P1, whose is the game's own):
@@ -67,54 +65,93 @@ pub(super) fn options_path() -> Option<PathBuf> {
     OPTIONS.with_borrow(Clone::clone)
 }
 
-/// A player's view: its window, its corner in the window and its size.
+/// Where a player plays.
+#[derive(Clone, Debug, PartialEq)]
+enum Screen {
+    /// The game's window.
+    Main,
+    /// A monitor, by name: a borderless fullscreen window there.
+    Monitor(String),
+    /// A window of its own.
+    Own,
+}
+impl Screen {
+    /// As `screen.txt` keeps it.
+    fn load(path: &Path) -> Self {
+        match std::fs::read_to_string(path).unwrap_or_default().trim() {
+            "own" => Screen::Own,
+            text => text
+                .strip_prefix("monitor:")
+                .map_or(Screen::Main, |name| Screen::Monitor(name.to_owned())),
+        }
+    }
+    fn save(&self, path: &Path) {
+        let text = match self {
+            Screen::Main => "main".to_owned(),
+            Screen::Monitor(name) => format!("monitor:{name}"),
+            Screen::Own => "own".to_owned(),
+        };
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        if let Err(e) = std::fs::write(path, text + "\n") {
+            log::warn!("Horizon: splitscreen: {}: {e}", path.display());
+        }
+    }
+}
+
+/// Which window a view is in: the game's, a monitor's, or a player's own (by seat).
+#[derive(Clone, Debug, PartialEq)]
+enum Key {
+    Main,
+    Monitor(String),
+    Own(usize),
+}
+
+/// A player's view: its window (an index into the windows), its corner there and its size.
 type View = (usize, [u32; 2], PhysicalSize<u32>);
 
-/// Where `players` views go in windows of `sizes` (window 0 is P1's): all in window 0, spread
-/// over the windows (P1 and P3 in the first, P2 and P4 in the second...), or one window each.
-/// Within a window two take halves (`two`: 0 side by side when wider than tall, 1 side by side,
-/// 2 top and bottom), three or four its quarters.
-fn place(windows: u8, two: u8, players: usize, sizes: &[PhysicalSize<u32>]) -> Vec<View> {
-    let window_of = |i: usize| match windows {
-        ONE_WINDOW => 0,
-        PER_MONITOR => i % sizes.len().max(1),
-        _ => i.min(sizes.len().saturating_sub(1)),
-    };
-    let mut views = Vec::with_capacity(players);
-    for i in 0..players {
-        let window = window_of(i);
-        let here: Vec<usize> = (0..players).filter(|&p| window_of(p) == window).collect();
-        let slot = here.iter().position(|&p| p == i).unwrap_or(0) as u32;
-        let size = sizes
-            .get(window)
-            .copied()
-            .unwrap_or(PhysicalSize::new(1, 1));
-        let (w, h) = (size.width, size.height);
-        let side_by_side = match two {
-            1 => true,
-            2 => false,
-            _ => w >= h,
-        };
-        let (columns, rows) = match here.len() {
-            1 => (1, 1),
-            2 if side_by_side => (2, 1),
-            2 => (1, 2),
-            _ => (2, 2),
-        };
-        let (column, row) = (slot % columns, slot / columns);
-        let (x0, x1) = (w * column / columns, w * (column + 1) / columns);
-        let (y0, y1) = (h * row / rows, h * (row + 1) / rows);
-        views.push((
-            window,
-            [x0, y0],
-            PhysicalSize::new((x1 - x0).max(1), (y1 - y0).max(1)),
-        ));
-    }
-    views
+/// Each player's view, given the window each is in and the windows' sizes. Players in one window
+/// share it in the order they joined: two take halves (`two`: 0 side by side when wider than
+/// tall, 1 side by side, 2 top and bottom), three or four its quarters.
+fn place(windows: &[usize], sizes: &[PhysicalSize<u32>], two: u8) -> Vec<View> {
+    windows
+        .iter()
+        .enumerate()
+        .map(|(i, &window)| {
+            let here = windows.iter().filter(|&&w| w == window).count();
+            let slot = windows[..i].iter().filter(|&&w| w == window).count() as u32;
+            let size = sizes
+                .get(window)
+                .copied()
+                .unwrap_or(PhysicalSize::new(1, 1));
+            let (w, h) = (size.width, size.height);
+            let side_by_side = match two {
+                1 => true,
+                2 => false,
+                _ => w >= h,
+            };
+            let (columns, rows) = match here {
+                1 => (1, 1),
+                2 if side_by_side => (2, 1),
+                2 => (1, 2),
+                _ => (2, 2),
+            };
+            let (column, row) = (slot % columns, slot / columns);
+            let (x0, x1) = (w * column / columns, w * (column + 1) / columns);
+            let (y0, y1) = (h * row / rows, h * (row + 1) / rows);
+            (
+                window,
+                [x0, y0],
+                PhysicalSize::new((x1 - x0).max(1), (y1 - y0).max(1)),
+            )
+        })
+        .collect()
 }
 
 /// A window showing players' views, and the compositor that copies their frames into it.
 struct Surface {
+    key: Key,
     window: Arc<Window>,
     compositor: Compositor,
     size: PhysicalSize<u32>,
@@ -125,8 +162,9 @@ struct Guest {
     game: Game<'static>,
     /// The profile it plays as; `None` while it picks one.
     name: Option<String>,
-    /// Its place among the players (2 to 4), for its control socket.
+    /// Its place among the players (2 to 4), for its control socket and own window.
     seat: usize,
+    screen: Screen,
     pad: Option<PadId>,
     options: PathBuf,
     /// Its buttons and focus targets while another player's game runs.
@@ -136,19 +174,20 @@ struct Guest {
 pub(super) struct Split<'a> {
     pub(super) host: Game<'a>,
     guests: Vec<Guest>,
-    /// The setting is on (else every event goes straight to P1).
+    /// Splitscreen is on: every player renders through the compositors (else P1 draws on its
+    /// window and every event goes straight to it).
     enabled: bool,
     /// `HORIZON_SPLIT=N`: players without controllers still to add once P1 is in a world.
     test_players: usize,
     pads: PadRouter,
     p1_pad: Option<PadId>,
+    p1_screen: Screen,
     /// A controller offered to join, and since when.
     offer: Option<(PadId, Instant)>,
     /// Pads whose buttons still count as the press that joined them: released first.
     fresh: Vec<PadId>,
-    /// The windows (P1's first) and the layout they were made for (`splitscreen_windows`).
+    /// The game's window and its compositor first, then monitors' and players' own.
     surfaces: Vec<Surface>,
-    windows_mode: u8,
     /// The views the players were last fitted to.
     applied: Vec<View>,
     /// The player keyboard and mouse drive (0 = P1), and the pointer: its window and place.
@@ -168,7 +207,10 @@ impl<'a> Split<'a> {
             .ok()
             .and_then(|n| n.parse::<usize>().ok())
             .map_or(0, |n| n.clamp(1, MAX_PLAYERS) - 1);
-        let enabled = host.settings.extras.splitscreen || test_players > 0;
+        if test_players > 0 {
+            host.settings.extras.splitscreen = true;
+        }
+        let enabled = host.settings.extras.splitscreen;
         if enabled {
             host.options.offscreen = true;
             host.options.paced_by_split = true;
@@ -176,6 +218,7 @@ impl<'a> Split<'a> {
         // Made after the window on an ordinary launch (no `resumed` follows).
         let surfaces = match (compositor, &host.window) {
             (Some(compositor), Some(window)) => vec![Surface {
+                key: Key::Main,
                 window: window.clone(),
                 compositor,
                 size: window.inner_size(),
@@ -183,7 +226,8 @@ impl<'a> Split<'a> {
             }],
             _ => Vec::new(),
         };
-        let windows_mode = host.settings.extras.splitscreen_windows;
+        let p1_screen =
+            Self::folder().map_or(Screen::Main, |f| Screen::load(&f.join("p1-screen.txt")));
         Self {
             host,
             guests: Vec::new(),
@@ -191,10 +235,10 @@ impl<'a> Split<'a> {
             test_players,
             pads: PadRouter::default(),
             p1_pad: None,
+            p1_screen,
             offer: None,
             fresh: Vec::new(),
             surfaces,
-            windows_mode,
             applied: Vec::new(),
             focus: 0,
             cursor: (0, PhysicalPosition::new(0.0, 0.0)),
@@ -209,16 +253,94 @@ impl<'a> Split<'a> {
         1 + self.guests.len()
     }
 
-    /// Every player's view, as the settings place them now.
+    /// The splitscreen folder in the game folder: `profiles/<name>/` holds each profile.
+    fn folder() -> Result<PathBuf> {
+        Ok(std::env::current_dir()?.join("splitscreen"))
+    }
+
+    /// Where each player's screen choice is kept.
+    fn screen_file(&self, i: usize) -> Option<PathBuf> {
+        let folder = Self::folder().ok()?;
+        match i {
+            0 => Some(folder.join("p1-screen.txt")),
+            _ => Some(folder.join(format!(
+                "profiles/{}/screen.txt",
+                self.guests.get(i - 1)?.name.as_ref()?
+            ))),
+        }
+    }
+
+    fn screen(&self, i: usize) -> &Screen {
+        match i {
+            0 => &self.p1_screen,
+            _ => &self.guests[i - 1].screen,
+        }
+    }
+
+    /// The monitors, by name.
+    fn monitors(&self) -> Vec<MonitorHandle> {
+        self.surfaces
+            .first()
+            .map(|s| {
+                s.window
+                    .available_monitors()
+                    .filter(|m| m.name().is_some())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Where a player can play, as the screens say it: this screen, each monitor (numbered
+    /// left to right, with its size: the system's names are ids on some), its own window.
+    fn choices(&self) -> Vec<(String, Screen)> {
+        let mut monitors = self.monitors();
+        monitors.sort_by_key(|m| (m.position().x, m.position().y));
+        let monitors = monitors.iter().enumerate().filter_map(|(n, m)| {
+            let size = m.size();
+            let label = format!("Monitor {} ({}x{})", n + 1, size.width, size.height);
+            Some((label, Screen::Monitor(m.name()?)))
+        });
+        std::iter::once((THIS_SCREEN.to_owned(), Screen::Main))
+            .chain(monitors)
+            .chain(std::iter::once((OWN_WINDOW.to_owned(), Screen::Own)))
+            .collect()
+    }
+
+    /// How a screen is shown: a monitor that's gone, as this screen.
+    fn label(&self, screen: &Screen) -> String {
+        self.choices()
+            .into_iter()
+            .find(|(_, s)| s == screen)
+            .map_or_else(|| THIS_SCREEN.to_owned(), |(label, _)| label)
+    }
+
+    /// The window player `i` is in: a monitor that's gone means this screen.
+    fn key(&self, i: usize, monitors: &[String]) -> Key {
+        match self.screen(i) {
+            Screen::Monitor(name) if monitors.contains(name) => Key::Monitor(name.clone()),
+            Screen::Own => Key::Own(match i {
+                0 => 1,
+                _ => self.guests[i - 1].seat,
+            }),
+            _ => Key::Main,
+        }
+    }
+
+    /// Every player's view, in the windows there are now.
     fn views(&self) -> Vec<View> {
+        let monitors: Vec<_> = self
+            .monitors()
+            .iter()
+            .filter_map(MonitorHandle::name)
+            .collect();
+        let windows: Vec<usize> = (0..self.players())
+            .map(|i| {
+                let key = self.key(i, &monitors);
+                self.surfaces.iter().position(|s| s.key == key).unwrap_or(0)
+            })
+            .collect();
         let sizes: Vec<_> = self.surfaces.iter().map(|s| s.size).collect();
-        let e = &self.host.settings.extras;
-        place(
-            e.splitscreen_windows,
-            e.splitscreen_two,
-            self.players(),
-            &sizes,
-        )
+        place(&windows, &sizes, self.host.settings.extras.splitscreen_two)
     }
 
     /// Player `i`'s turn (0 = P1): its options file, and its own buttons and focus targets, which
@@ -302,45 +424,45 @@ impl<'a> Split<'a> {
         self.turn(0);
     }
 
-    /// The windows the layout needs: one, one per monitor the players use (P1's first), or one
-    /// per player. A new layout makes the others again. True when they changed.
+    /// The windows the players' screens need: the game's (hidden while nobody plays on it), one
+    /// on each monitor picked, one for each player who wants its own. True when they changed.
     fn sync_surfaces(&mut self, event_loop: &ActiveEventLoop) -> bool {
-        let Some(host_window) = self.surfaces.first().map(|s| s.window.clone()) else {
+        if self.surfaces.is_empty() {
             return false;
-        };
-        let mode = self.host.settings.extras.splitscreen_windows;
-        let mut changed = false;
-        if mode != self.windows_mode {
-            self.windows_mode = mode;
-            self.surfaces.truncate(1);
-            changed = true;
         }
-        // The monitors, the one P1's window is on first.
-        let current = host_window.current_monitor();
-        let mut monitors: Vec<_> = host_window
-            .available_monitors()
-            .filter(|m| Some(m) != current.as_ref())
-            .collect();
-        monitors.splice(0..0, current);
-        let want = match mode {
-            PER_MONITOR => self.players().min(monitors.len()).max(1),
-            PER_PLAYER => self.players(),
-            _ => 1,
-        };
-        if self.surfaces.len() > want {
-            self.surfaces.truncate(want);
-            changed = true;
-        }
-        while self.surfaces.len() < want {
-            let k = self.surfaces.len();
-            let attributes = Window::default_attributes()
-                .with_title(format!("Horizon - P{}", k + 1))
-                .with_window_icon(horizon_client::window::icon());
-            let attributes = match mode {
-                PER_MONITOR => attributes
-                    .with_fullscreen(Some(Fullscreen::Borderless(monitors.get(k).cloned()))),
-                _ => attributes.with_inner_size(LogicalSize::new(854.0, 480.0)),
-            };
+        let monitors = self.monitors();
+        let names: Vec<_> = monitors.iter().filter_map(MonitorHandle::name).collect();
+        let wanted: Vec<Key> = (0..self.players()).map(|i| self.key(i, &names)).collect();
+        let before = self.surfaces.len();
+        self.surfaces
+            .retain(|s| s.key == Key::Main || wanted.contains(&s.key));
+        let mut changed = self.surfaces.len() != before;
+        for (i, key) in wanted.iter().enumerate() {
+            if self.surfaces.iter().any(|s| &s.key == key) {
+                continue;
+            }
+            let attributes =
+                Window::default_attributes().with_window_icon(horizon_client::window::icon());
+            let attributes =
+                match key {
+                    Key::Monitor(name) => attributes.with_title("Horizon").with_fullscreen(Some(
+                        Fullscreen::Borderless(
+                            monitors
+                                .iter()
+                                .find(|m| m.name().as_ref() == Some(name))
+                                .cloned(),
+                        ),
+                    )),
+                    _ => {
+                        let who = match i {
+                            0 => self.host.options.player_name(),
+                            _ => self.guests[i - 1].name.clone().unwrap_or_default(),
+                        };
+                        attributes
+                            .with_title(format!("Horizon - {who}"))
+                            .with_inner_size(LogicalSize::new(854.0, 480.0))
+                    }
+                };
             let made = event_loop
                 .create_window(attributes)
                 .map_err(Into::into)
@@ -351,19 +473,160 @@ impl<'a> Split<'a> {
                 });
             match made {
                 Ok((window, compositor)) => self.surfaces.push(Surface {
+                    key: key.clone(),
                     size: window.inner_size(),
                     window,
                     compositor,
                     focused: false,
                 }),
-                Err(e) => {
-                    log::warn!("Horizon: splitscreen: no window for player {}: {e}", k + 1);
-                    break;
-                }
+                Err(e) => log::warn!("Horizon: splitscreen: no window for {key:?}: {e}"),
             }
             changed = true;
         }
+        // The game's window only while someone plays on it.
+        let main_used = wanted.contains(&Key::Main);
+        let main = &self.surfaces[0].window;
+        if main.is_visible() != Some(main_used) {
+            main.set_visible(main_used);
+        }
         changed
+    }
+
+    /// The Splitscreen page on every player's options: who plays where. Its clicks move them.
+    fn sync_page(&mut self) {
+        let choices = self.choices();
+        let mut requests = std::mem::take(&mut self.host.ui.options.split_requests);
+        for g in &mut self.guests {
+            requests.append(&mut g.game.ui.options.split_requests);
+        }
+        for (i, back) in requests {
+            if i >= self.players() {
+                continue;
+            }
+            let at = choices
+                .iter()
+                .position(|(_, s)| s == self.screen(i))
+                .unwrap_or(0);
+            let n = choices.len().max(1);
+            let next = choices[if back { (at + n - 1) % n } else { (at + 1) % n }]
+                .1
+                .clone();
+            if let Some(file) = self.screen_file(i) {
+                next.save(&file);
+            }
+            match i {
+                0 => self.p1_screen = next,
+                _ => self.guests[i - 1].screen = next,
+            }
+        }
+        let rows: Vec<(String, String)> = (0..self.players())
+            .map(|i| {
+                let who = match i {
+                    0 => self.host.options.player_name(),
+                    _ => self.guests[i - 1]
+                        .name
+                        .clone()
+                        .unwrap_or_else(|| "(choosing)".into()),
+                };
+                (format!("P{} {who}", i + 1), self.label(self.screen(i)))
+            })
+            .collect();
+        self.host.ui.options.split_players = rows.clone();
+        for g in &mut self.guests {
+            g.game.ui.options.split_players = rows.clone();
+        }
+    }
+
+    /// Splitscreen turned on: P1 renders offscreen on the same device and a compositor presents
+    /// on its window; the world is meshed again for the new renderer.
+    fn enable(&mut self) -> Result<()> {
+        let window = self.host.window.clone().ok_or("no window")?;
+        let mut old = self.host.renderer.take().ok_or("no renderer")?;
+        old.release_surface();
+        let api = self.host.settings.horizon.api;
+        let built = build_renderer(
+            window.clone(),
+            true,
+            &self.host.pack,
+            &self.host.gui,
+            Some(&old),
+            None,
+            api,
+        );
+        let renderer = match built {
+            Ok(r) => r,
+            Err(e) => {
+                old.recreate_surface()?;
+                self.host.renderer = Some(old);
+                return Err(e);
+            }
+        };
+        let compositor = old.compositor(window.clone())?;
+        self.host.renderer = Some(renderer);
+        self.host.options.offscreen = true;
+        self.host.options.paced_by_split = true;
+        // The new renderer takes the old one's present mode, settings and all: P1's again.
+        self.host.apply_settings();
+        self.host.clear_lod();
+        self.host.all_sections_changed();
+        self.surfaces = vec![Surface {
+            key: Key::Main,
+            size: window.inner_size(),
+            window,
+            compositor,
+            focused: true,
+        }];
+        self.enabled = true;
+        Ok(())
+    }
+
+    /// Splitscreen turned off: the others leave, and P1 draws on its window again.
+    fn disable(&mut self, event_loop: &ActiveEventLoop) -> Result<()> {
+        if let Some(server) = &self.host.integrated {
+            for g in &self.guests {
+                if let Some(name) = &g.name {
+                    server.leave_split(name);
+                }
+            }
+        }
+        self.guests.clear();
+        self.focus = 0;
+        self.host.pad.feed = None;
+        self.surfaces.truncate(1);
+        let Some(main) = self.surfaces.pop() else {
+            self.enabled = false;
+            return Ok(());
+        };
+        main.window.set_visible(true);
+        let old = self.host.renderer.take().ok_or("no renderer")?;
+        old.take_back(main.compositor);
+        let api = self.host.settings.horizon.api;
+        let renderer = build_renderer(
+            main.window.clone(),
+            false,
+            &self.host.pack,
+            &self.host.gui,
+            Some(&old),
+            None,
+            api,
+        )?;
+        drop(old);
+        self.host.renderer = Some(renderer);
+        self.host.window = Some(main.window.clone());
+        self.host.options.offscreen = false;
+        self.host.options.paced_by_split = false;
+        // From the offscreen renderer it took no vsync: P1's settings again.
+        self.host.apply_settings();
+        self.host.clear_lod();
+        self.host.all_sections_changed();
+        let id = main.window.id();
+        self.host.window_event(
+            event_loop,
+            id,
+            WindowEvent::Resized(main.window.inner_size()),
+        );
+        self.enabled = false;
+        Ok(())
     }
 
     /// P1 is playing in a world others can join.
@@ -442,13 +705,8 @@ impl<'a> Split<'a> {
         join
     }
 
-    /// The splitscreen folder in the game folder: `profiles/<name>/` holds each profile.
-    fn folder() -> Result<PathBuf> {
-        Ok(std::env::current_dir()?.join("splitscreen"))
-    }
-
-    /// Add a player driven by `pad`: it picks a profile in its view first, unless `name` is
-    /// given (tests).
+    /// Add a player driven by `pad`: it picks a profile and where to play in its view first,
+    /// unless `name` is given (tests).
     fn join(&mut self, pad: Option<PadId>, name: Option<String>) -> Result<()> {
         let seat = (2..=MAX_PLAYERS)
             .find(|n| self.guests.iter().all(|g| g.seat != *n))
@@ -472,19 +730,22 @@ impl<'a> Split<'a> {
             .filter(|n| horizon_client::title::valid_profile_name(n))
             .collect();
         names.sort_by_key(|n| n.to_lowercase());
+        let taken = self.taken();
+        let labels = self.choices().into_iter().map(|(label, _)| label).collect();
         if let Some(title) = game.title.as_mut() {
-            title.profile_picker(names, self.taken());
+            title.profile_picker(names, taken, labels);
         }
         self.guests.push(Guest {
             game,
             name: None,
             seat,
+            screen: Screen::Main,
             pad,
             options,
             widgets: Default::default(),
         });
         if let Some(name) = name {
-            self.enter(self.guests.len() - 1, name)?;
+            self.enter(self.guests.len() - 1, name, None)?;
         }
         Ok(())
     }
@@ -496,18 +757,33 @@ impl<'a> Split<'a> {
             .collect()
     }
 
-    /// Guest `i` plays as profile `name`: its options, then into P1's world.
-    fn enter(&mut self, i: usize, name: String) -> Result<()> {
+    /// Guest `i` plays as profile `name` on `screen` (`None`: where the profile played last):
+    /// its options, then into P1's world.
+    fn enter(&mut self, i: usize, name: String, screen: Option<String>) -> Result<()> {
         if self.taken().contains(&name) {
             return Err(format!("{name} is already playing").into());
         }
-        let options = Self::folder()?.join(format!("profiles/{name}/options.txt"));
+        let profile = Self::folder()?.join(format!("profiles/{name}"));
+        let options = profile.join("options.txt");
         let mut settings = if options.exists() {
             horizon_client::settings::Settings::load(&options)
         } else {
-            std::fs::create_dir_all(options.parent().ok_or("bad options path")?)?;
+            std::fs::create_dir_all(&profile)?;
             self.host.settings.save(&options);
             self.host.settings.clone()
+        };
+        let picked = screen.and_then(|label| {
+            self.choices()
+                .into_iter()
+                .find(|(l, _)| *l == label)
+                .map(|(_, s)| s)
+        });
+        let screen = match picked {
+            Some(screen) => {
+                screen.save(&profile.join("screen.txt"));
+                screen
+            }
+            None => Screen::load(&profile.join("screen.txt")),
         };
         let pipe = self
             .host
@@ -516,6 +792,7 @@ impl<'a> Split<'a> {
             .and_then(|server| server.join_split(&name))
             .ok_or("P1's world is not on its server thread")?;
         self.guests[i].options = options;
+        self.guests[i].screen = screen;
         self.turn(i + 1);
         let guest = &mut self.guests[i];
         settings.extras.agent_control &= guest.game.options.control.is_some();
@@ -543,8 +820,11 @@ impl<'a> Split<'a> {
                 Some(_) => None,
             };
             let leave = match choice {
-                Some(Some(name)) => match self.enter(i, name) {
-                    Ok(()) => false,
+                Some(Some((name, screen))) => match self.enter(i, name, screen) {
+                    Ok(()) => {
+                        changed = true;
+                        false
+                    }
                     Err(e) => {
                         log::warn!("Horizon: splitscreen: {e}");
                         true
@@ -632,18 +912,23 @@ impl<'a> Split<'a> {
         self.guests.len() != before
     }
 
-    /// A player's own window was closed: that player leaves (P1's closes the game).
+    /// A window other than the game's was closed: its players leave, P1 goes back to this screen.
     fn close_window(&mut self, surface: usize) -> Result<()> {
         let views = self.views();
-        for i in (1..self.players()).rev() {
-            if views.get(i).is_some_and(|v| v.0 == surface) {
-                let guest = &mut self.guests[i - 1];
-                if guest.game.remote.is_some() {
-                    guest.game.leave_server(None)?;
-                } else if let Some(title) = guest.game.title.as_mut() {
-                    // Still picking a profile: as if it pressed Cancel.
-                    title.escape();
-                }
+        for i in (0..self.players()).rev() {
+            if views.get(i).is_none_or(|v| v.0 != surface) {
+                continue;
+            }
+            if i == 0 {
+                self.p1_screen = Screen::Main;
+                continue;
+            }
+            let guest = &mut self.guests[i - 1];
+            if guest.game.remote.is_some() {
+                guest.game.leave_server(None)?;
+            } else if let Some(title) = guest.game.title.as_mut() {
+                // Still picking a profile: as if it pressed Cancel.
+                title.escape();
             }
         }
         Ok(())
@@ -662,6 +947,7 @@ impl ApplicationHandler for Split<'_> {
         if self.surfaces.is_empty() {
             match renderer.compositor(window.clone()) {
                 Ok(compositor) => self.surfaces.push(Surface {
+                    key: Key::Main,
                     window: window.clone(),
                     compositor,
                     size: window.inner_size(),
@@ -693,10 +979,12 @@ impl ApplicationHandler for Split<'_> {
             }
             // The views draw themselves offscreen; the compositors present in about_to_wait.
             WindowEvent::RedrawRequested => {}
-            // P1's window: P1's to handle (it saves the world, then quits); a player's game would
-            // end the event loop before that. Another window: its players leave.
+            // The game's window: P1's to handle (it saves the world, then quits); a player's game
+            // would end the event loop before that. Another window: its players leave.
             WindowEvent::CloseRequested if surface == 0 => {
-                self.host.window_event(event_loop, id, event)
+                if let Some((host, id)) = self.player(0) {
+                    host.window_event(event_loop, id, WindowEvent::CloseRequested);
+                }
             }
             WindowEvent::CloseRequested => {
                 if let Err(e) = self.close_window(surface) {
@@ -787,6 +1075,22 @@ impl ApplicationHandler for Split<'_> {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        // The Splitscreen switch, turned on or off in P1's settings: applied at once.
+        if self.host.settings.extras.splitscreen != self.enabled && self.host.window.is_some() {
+            let switched = if self.enabled {
+                self.disable(event_loop)
+            } else {
+                self.enable()
+            };
+            match switched {
+                Ok(()) if self.enabled => self.relayout(event_loop),
+                Ok(()) => {}
+                Err(e) => {
+                    log::warn!("Horizon: splitscreen could not switch: {e}");
+                    self.host.settings.extras.splitscreen = self.enabled;
+                }
+            }
+        }
         if !self.enabled {
             return self.host.about_to_wait(event_loop);
         }
@@ -819,8 +1123,9 @@ impl ApplicationHandler for Split<'_> {
                 }
             }
         }
+        self.sync_page();
         changed |= self.sync_surfaces(event_loop);
-        // Also a new arrangement from the settings (Two players).
+        // Also a new arrangement from the settings (a screen, Two on a screen).
         if changed || self.views() != self.applied {
             self.relayout(event_loop);
         }
@@ -833,8 +1138,8 @@ impl ApplicationHandler for Split<'_> {
             }
         }
         self.turn(0);
-        // Each window shows its players' frames. Only P1's waits for the display (vsync): two
-        // windows each waiting would halve the rate.
+        // Each window shows its players' frames. Only the game's waits for the display (vsync):
+        // windows each waiting would divide the rate.
         let views = self.views();
         let renderers: Vec<_> = std::iter::once(&self.host.renderer)
             .chain(self.guests.iter().map(|g| &g.game.renderer))
@@ -886,34 +1191,33 @@ mod tests {
     }
 
     #[test]
-    fn one_window_tiles_halves_then_quarters() {
+    fn players_on_one_screen_share_it() {
         let wide = [size(1920, 1080)];
-        let two = place(ONE_WINDOW, 0, 2, &wide);
-        assert_eq!(two[1], (0, [960, 0], size(960, 1080)));
-        let stacked = place(ONE_WINDOW, 2, 2, &wide);
-        assert_eq!(stacked[1], (0, [0, 540], size(1920, 540)));
-        // Auto on a tall window: top and bottom.
-        assert_eq!(place(ONE_WINDOW, 0, 2, &[size(1080, 1920)])[1].1, [0, 960]);
-        let four = place(ONE_WINDOW, 0, 4, &wide);
-        assert_eq!(four[3], (0, [960, 540], size(960, 540)));
+        assert_eq!(place(&[0, 0], &wide, 0)[1], (0, [960, 0], size(960, 1080)));
+        assert_eq!(place(&[0, 0], &wide, 2)[1], (0, [0, 540], size(1920, 540)));
+        // Auto on a tall screen: top and bottom.
+        assert_eq!(place(&[0, 0], &[size(1080, 1920)], 0)[1].1, [0, 960]);
+        assert_eq!(place(&[0; 4], &wide, 0)[3], (0, [960, 540], size(960, 540)));
     }
 
     #[test]
-    fn per_monitor_spreads_players_first() {
-        let monitors = [size(1920, 1080), size(2560, 1440)];
-        let three = place(PER_MONITOR, 0, 3, &monitors);
-        // P1 and P3 share the first monitor; P2 has the second to itself.
-        assert_eq!(three[0], (0, [0, 0], size(960, 1080)));
-        assert_eq!(three[1], (1, [0, 0], size(2560, 1440)));
-        assert_eq!(three[2], (0, [960, 0], size(960, 1080)));
+    fn desk_and_couch() {
+        // P1 alone at the desk; P2 and P3 share the TV.
+        let screens = [size(3024, 1964), size(3840, 2160)];
+        let views = place(&[0, 1, 1], &screens, 0);
+        assert_eq!(views[0], (0, [0, 0], size(3024, 1964)));
+        assert_eq!(views[1], (1, [0, 0], size(1920, 2160)));
+        assert_eq!(views[2], (1, [1920, 0], size(1920, 2160)));
     }
 
     #[test]
-    fn per_player_fills_each_window() {
-        let windows = [size(800, 600), size(854, 480)];
-        assert_eq!(
-            place(PER_PLAYER, 0, 2, &windows),
-            vec![(0, [0, 0], size(800, 600)), (1, [0, 0], size(854, 480))]
-        );
+    fn screen_choices_round_trip() {
+        let dir = std::env::temp_dir().join(format!("horizon-split-screen-{}", std::process::id()));
+        let file = dir.join("screen.txt");
+        for screen in [Screen::Main, Screen::Own, Screen::Monitor("LG TV".into())] {
+            screen.save(&file);
+            assert_eq!(Screen::load(&file), screen);
+        }
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
