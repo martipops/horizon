@@ -234,6 +234,13 @@ fn decode(path: &Path) -> Option<(Vec<f32>, u32)> {
     }
     Some((mono, rate))
 }
+/// A sound file without its variant number (`mob/creeper/say2.ogg` is `mob/creeper/say`): each
+/// player's game picks its own variant of the same event.
+// ponytail: variants named by a trailing number, as vanilla's are; the event name if a pack breaks it.
+fn variantless(key: &str) -> &str {
+    key.trim_end_matches(".ogg")
+        .trim_end_matches(|c: char| c.is_ascii_digit())
+}
 impl MixerBackend {
     /// Splitscreen: another player's game started this same sound here just now (both clients
     /// heard it); this copy stays stopped, the first is heard from the nearest camera.
@@ -330,7 +337,7 @@ impl Backend for MixerBackend {
         let (namespace, path) = sound.path();
         let file = self.root.join("assets").join(namespace).join(&path);
         // A looping sound follows its entity in one client's tracking only: each keeps its own.
-        if !looping && self.duplicate(channel, &format!("{namespace}:{path}")) {
+        if !looping && self.duplicate(channel, &variantless(&format!("{namespace}:{path}"))) {
             return;
         }
         if sound.stream {
@@ -1216,6 +1223,22 @@ mod tests {
         let mut data = [0.0; 2];
         mix(&mut m, &mut data, 2, 48_000);
         assert_eq!(data, [0.0; 2]);
+    }
+
+    #[test]
+    fn variants_of_one_sound_are_the_same_sound() {
+        assert_eq!(
+            variantless("minecraft:mob/creeper/say1.ogg"),
+            "minecraft:mob/creeper/say"
+        );
+        assert_eq!(
+            variantless("minecraft:step/grass6.ogg"),
+            "minecraft:step/grass"
+        );
+        assert_eq!(
+            variantless("minecraft:random/click.ogg"),
+            "minecraft:random/click"
+        );
     }
 
     #[test]
