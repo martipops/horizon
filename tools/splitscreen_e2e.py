@@ -12,6 +12,7 @@ Scenarios:
   three    three in a window: one wide on top, one tall on the left, side by side
   live     splitscreen off and on again from the Splitscreen page, in a world
   picker   a joining player makes a profile, picks New window, and joins in it
+  eight    eight players in one window: rows of three, three and two, every view drawing
   fullscreen  a player whose options say fullscreen joins: the window stays as P1 has it; its F11
               in a window of its own toggles that window only
 
@@ -305,6 +306,27 @@ def scenario_fullscreen():
         g.quit()
 
 
+def scenario_eight():
+    print('eight: eight players in one window')
+    g = Game(8)
+    try:
+        sizes = g.sizes(range(1, 9))
+        near = lambda a, b: abs(a - b) <= 1  # thirds of an odd width differ by a pixel
+        # Rows of three, three and two: six equal views, then two wider ones; all the same height.
+        check(f'rows of 3, 3 and 2: {sizes}',
+              all(near(x[0], sizes[0][0]) and near(x[1], sizes[0][1]) for x in sizes[:6])
+              and near(sizes[6][0], sizes[7][0]) and sizes[6][0] > sizes[0][0] + 100
+              and all(near(x[1], sizes[0][1]) for x in sizes), True)
+        drawing = lambda: all(g.ctl(n, 'status')['fps'] > 10 for n in range(1, 9))
+        try:
+            g.wait(drawing, 'every view drawing', seconds=20)
+        except RuntimeError:
+            pass
+        check('every view draws', drawing(), True)
+    finally:
+        g.quit()
+
+
 SCENARIOS = {
     'join': scenario_join,
     'windows': scenario_windows,
@@ -312,6 +334,7 @@ SCENARIOS = {
     'live': scenario_live,
     'picker': scenario_picker,
     'fullscreen': scenario_fullscreen,
+    'eight': scenario_eight,
 }
 
 
