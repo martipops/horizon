@@ -129,7 +129,9 @@ impl SplitUi {
         }
         let (aw, ah) = (
             f64::from(w) - 40.0,
-            (f64::from(h - TOP - BOTTOM) - 8.0).max(10.0),
+            // Room under the monitors for their names; the move row's too while nobody is picked.
+            (f64::from(h - TOP - BOTTOM + if self.spots().is_empty() { ROW } else { 0.0 }) - 18.0)
+                .max(10.0),
         );
         let k = (aw / (x1 - x0)).min(ah / (y1 - y0));
         let (ox, oy) = (
@@ -341,7 +343,7 @@ impl SplitUi {
         STYLE.title(batch, atlas, &Text::literal("Splitscreen Setup"));
         let (monitors, windows, tiles) = self.map(w, h);
         let grey = rgba(160, 160, 160, 255);
-        for (n, [x, y, mw, mh]) in monitors.into_iter().enumerate() {
+        for &[x, y, mw, mh] in &monitors {
             batch.fill(atlas, x, y, mw, mh, rgba(255, 255, 255, 60));
             batch.fill(
                 atlas,
@@ -351,8 +353,6 @@ impl SplitUi {
                 mh - 2.0,
                 rgba(0, 0, 0, 170),
             );
-            let label = Text::literal(format!("Monitor {}", n + 1));
-            batch.text_styled(atlas, &label, x + 3.0, y + mh - 11.0, grey, true);
         }
         let buttons = self.buttons(w, h);
         let yellow = rgba(255, 255, 85, 255);
@@ -395,6 +395,11 @@ impl SplitUi {
                 true,
                 true,
             );
+        }
+        // The monitors' names under them, where no window covers them.
+        for (n, [x, y, _, mh]) in monitors.into_iter().enumerate() {
+            let label = Text::literal(format!("Monitor {}", n + 1));
+            batch.text_styled(atlas, &label, x + 1.0, y + mh + 2.0, grey, true);
         }
         self.draw_notes(batch, atlas);
     }
