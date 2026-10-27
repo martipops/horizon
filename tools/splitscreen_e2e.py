@@ -111,7 +111,7 @@ class Game:
         return self.sizes(players)
 
     def labels(self, n=1):
-        return [w['label'] for w in self.ctl(n, 'ui')['widgets']]
+        return [w.get('label', '') for w in self.ctl(n, 'ui')['widgets']]
 
     def page(self, n=1):
         """Open player n's Splitscreen page (once it is drawn); its widgets."""
@@ -140,7 +140,7 @@ class Game:
         for _ in range(6):
             if self.screens(by)[player - 1] == f'Play on: {where}':
                 break
-            row = [w for w in self.ctl(by, 'ui')['widgets'] if w['label'].startswith('Play on:')]
+            row = [w for w in self.ctl(by, 'ui')['widgets'] if w.get('label', '').startswith('Play on:')]
             self.ctl(by, 'click', row[player - 1]['id'])
             time.sleep(0.3)
         check(f'P{player} plays on {where}', self.screens(by)[player - 1], f'Play on: {where}')
@@ -171,6 +171,9 @@ def scenario_join():
         quarters = g.sizes([1, 2, 3, 4])
         check('four take equal quarters', len(set(quarters)), 1)
         w, h = quarters[0]
+        g.ctl(4, 'key', 'esc', 'tap')
+        g.wait(lambda: 'Leave' in g.labels(4), "P4's pause menu", seconds=5)
+        check("P4's pause menu says Leave", 'Leave' in g.labels(4), True)
         g.ctl(4, 'disconnect')
         three = g.settle([1, 2, 3], [(2 * w, h), (w, h), (w, h)])
         check('three: one wide on top, two below', three, [(2 * w, h), (w, h), (w, h)])

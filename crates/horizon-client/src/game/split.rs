@@ -31,7 +31,6 @@ use horizon_client::{
     Result,
     gamepad::{Button, PadState},
     gfx::compositor::Compositor,
-    text::Text,
     widgets,
 };
 use std::{
@@ -499,6 +498,18 @@ impl<'a> Split<'a> {
         self.turn(0);
     }
 
+    /// The same toast for every player in the world.
+    fn toast_all(&mut self, title: &str, message: &str) {
+        let toast =
+            || horizon_client::toasts::SystemToast::new(title.to_owned(), Some(message.to_owned()));
+        self.host.split_tag = Some(toast());
+        for g in &mut self.guests {
+            if g.name.is_some() {
+                g.game.split_tag = Some(toast());
+            }
+        }
+    }
+
     /// Player `i`'s name tag: "P2 · Alex" and where it plays (or `note`).
     fn tag(&mut self, i: usize, note: Option<&str>) {
         let who = match i {
@@ -841,22 +852,24 @@ impl<'a> Split<'a> {
                     Button::East => self.offer = None,
                     _ => {}
                 },
-                _ if self.players() < MAX_PLAYERS => self.offer = Some((id, now)),
+                _ if self.players() < MAX_PLAYERS => {
+                    self.offer = Some((id, now));
+                    // Every player sees it, whatever it is doing (not only P1's action bar).
+                    let ask = if self.p1_pad.is_none() {
+                        "A to join, Y to play as P1, B no"
+                    } else {
+                        "A to join, B no"
+                    };
+                    let message = format!("{}: {ask}", self.pads.name(id));
+                    self.toast_all("Controller found", &message);
+                }
                 _ => {}
             }
         }
-        if let Some((id, since)) = self.offer {
-            if now - since > OFFER || !self.in_world() {
-                self.offer = None;
-            } else {
-                let ask = if self.p1_pad.is_none() {
-                    "press A to join, Y to play as P1"
-                } else {
-                    "press A to join"
-                };
-                let text = Text::literal(format!("{}: {ask}", self.pads.name(id)));
-                self.host.titles.set_overlay(text, false);
-            }
+        if let Some((_, since)) = self.offer
+            && (now - since > OFFER || !self.in_world())
+        {
+            self.offer = None;
         }
         let p1 = self.pad_state(self.p1_pad);
         self.host.pad.feed = Some(p1);
@@ -1304,6 +1317,18 @@ impl ApplicationHandler for Split<'_> {
         if changed || self.views() != self.applied {
             self.relayout(event_loop);
         }
+        // The frame round the view keyboard and mouse drive, where its window has others too.
+        let views = self.views();
+        for i in 0..self.players() {
+            let shared = views
+                .get(i)
+                .is_some_and(|v| views.iter().filter(|o| o.0 == v.0).count() > 1);
+            let framed = i == self.focus && shared;
+            match i {
+                0 => self.host.split_focus = framed,
+                _ => self.guests[i - 1].game.split_focus = framed,
+            }
+        }
         let master = self.host.audio.master;
         for i in 0..self.guests.len() {
             self.turn(i + 1);
@@ -1367,6 +1392,19 @@ impl Game<'_> {
         batch: &mut horizon_client::hud::HudBatch,
         slot: usize,
     ) {
+        if self.split_focus {
+            // A one-pixel white frame round the view keyboard and mouse drive.
+            let (w, h) = (batch.width, batch.height);
+            let white = horizon_client::hud::rgba(255, 255, 255, 255);
+            for [x, y, fw, fh] in [
+                [0.0, 0.0, w, 1.0],
+                [0.0, h - 1.0, w, 1.0],
+                [0.0, 0.0, 1.0, h],
+                [w - 1.0, 0.0, 1.0, h],
+            ] {
+                batch.fill(&self.gui.atlas, x, y, fw, fh, white);
+            }
+        }
         let multiplier = f64::from(self.settings.notification_display_time);
         let Some(tag) = &mut self.split_tag else {
             return;

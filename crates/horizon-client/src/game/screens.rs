@@ -129,7 +129,12 @@ impl Game<'_> {
                 y,
                 bw,
                 20.0,
-                &Text::translate(key, &[]),
+                // Splitscreen: another player leaves P1's world, the game goes on.
+                &if self.options.split_guest && key == "menu.disconnect" {
+                    Text::literal("Leave")
+                } else {
+                    Text::translate(key, &[])
+                },
                 active,
                 hover,
             );
