@@ -298,6 +298,8 @@ pub(super) struct Split<'a> {
     fresh: Vec<PadId>,
     /// Players whose controller disconnected, longest waiting first.
     lost: Vec<Lost<PadId>>,
+    /// `HORIZON_SPLIT_STATS`: when the frame times were last printed.
+    stats: Option<Instant>,
     /// The game's window and its compositor first, then monitors' and players' own.
     surfaces: Vec<Surface>,
     /// The views the players were last fitted to.
@@ -368,6 +370,7 @@ impl<'a> Split<'a> {
             p1_hold: HoldSelect::default(),
             fresh: Vec::new(),
             lost: Vec::new(),
+            stats: std::env::var_os("HORIZON_SPLIT_STATS").map(|_| Instant::now()),
             surfaces,
             applied: Vec::new(),
             window_rects: Default::default(),
@@ -812,6 +815,34 @@ impl<'a> Split<'a> {
             }
             Hold::Nothing => {}
         }
+    }
+
+    /// `HORIZON_SPLIT_STATS=1`: every 5 s, each player's frame rate and its CPU and GPU time a
+    /// frame, in the log (the dev launcher's Performance readout).
+    fn print_stats(&mut self) {
+        let Some(since) = self.stats else {
+            return;
+        };
+        if since.elapsed() < Duration::from_secs(5) {
+            return;
+        }
+        self.stats = Some(Instant::now());
+        let games =
+            std::iter::once(&mut self.host).chain(self.guests.iter_mut().map(|g| &mut g.game));
+        let mut line = String::new();
+        for (i, game) in games.enumerate() {
+            let s = game.frame_stats.summary();
+            let ms = |k: &str| s[k]["avg_ms"].as_f64().unwrap_or(0.0);
+            line += &format!(
+                "  P{}: {:.0} fps, cpu {:.2} ms, gpu {:.2} ms",
+                i + 1,
+                s["avg_fps"].as_f64().unwrap_or(0.0),
+                ms("cpu"),
+                ms("gpu"),
+            );
+            game.frame_stats.reset();
+        }
+        log::info!("Horizon: splitscreen frames:{line}");
     }
 
     /// The join question on every player's view in the world (a strip at the top), or gone.
@@ -2054,6 +2085,15 @@ impl ApplicationHandler for Split<'_> {
             surface.compositor.set_vsync(vsync && k == 0);
             surface.compositor.present(&frames);
         }
+        // The players' GPU work waits here, once every player has submitted: one player's CPU
+        // work overlapped the GPU drawing another's.
+        let renderers = std::iter::once(&mut self.host.renderer)
+            .chain(self.guests.iter_mut().map(|g| &mut g.game.renderer));
+        for renderer in renderers.flatten() {
+            renderer.paced_elsewhere = true;
+            renderer.wait_in_flight();
+        }
+        self.print_stats();
         // One pace for all: the fastest any player wants, so an idle one (vanilla's AFK limit)
         // can't slow the others. With vsync the display paces anything at or above its refresh
         // rate; the limiter on top would miss refreshes.

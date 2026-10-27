@@ -33,9 +33,11 @@ ROWS = [
     ('audio', 'Audio', ['on', 'off']),
     ('home', 'Game folder', ['dev/home', 'fresh (deleted after)']),
     ('build', 'Build before launch', ['on', 'off']),
+    ('stats', 'Performance readout (every 5 s)', ['off', 'on']),
 ]
 DEFAULTS = {'world': 'Splitscreen', 'mode': 'creative', 'splitscreen': 'on', 'test_players': '0',
-            'size': '1600x900', 'audio': 'on', 'home': 'dev/home', 'build': 'on'}
+            'size': '1600x900', 'audio': 'on', 'home': 'dev/home', 'build': 'on',
+            'stats': 'off'}
 
 
 def load():
@@ -80,6 +82,8 @@ def launch(c):
     env.pop('HORIZON_SPLIT', None)
     if c['test_players'] != '0':
         env['HORIZON_SPLIT'] = str(int(c['test_players']) + 1)
+    if c['stats'] == 'on':
+        env['HORIZON_SPLIT_STATS'] = '1'
     if c['audio'] == 'off':
         env['HORIZON_NO_AUDIO'] = '1'
     width, height = c['size'].split('x')
