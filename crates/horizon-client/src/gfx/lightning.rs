@@ -13,8 +13,8 @@ pub struct Bolt {
 }
 
 #[derive(Default)]
-pub struct Input {
-    pub bolts: Vec<Bolt>,
+pub struct Input<'a> {
+    pub bolts: &'a [Bolt],
     /// Current atlas white texel; a changed rect invalidates retained vertices.
     pub uv: [f32; 2],
 }
@@ -107,7 +107,7 @@ impl<T> Cache<T> {
         }
     }
 
-    fn prepare(&mut self, input: &Input, mut build: impl FnMut(i64, [f32; 2]) -> T) {
+    fn prepare(&mut self, input: &Input<'_>, mut build: impl FnMut(i64, [f32; 2]) -> T) {
         if self.uv != Some(input.uv) {
             self.meshes.clear();
             self.uv = Some(input.uv);
@@ -115,7 +115,7 @@ impl<T> Cache<T> {
         for cached in self.meshes.values_mut() {
             cached.used = false;
         }
-        for bolt in &input.bolts {
+        for bolt in input.bolts {
             self.meshes
                 .entry(bolt.seed)
                 .or_insert_with(|| Cached {
@@ -158,7 +158,7 @@ impl Renderer {
         device: &wgpu::Device,
         uploads: &mut Uploads,
         encoder: &mut wgpu::CommandEncoder,
-        input: &Input,
+        input: &Input<'_>,
         camera: DVec3,
     ) {
         self.cache.prepare(input, |seed, uv| {
@@ -195,7 +195,7 @@ impl Renderer {
         );
     }
 
-    pub(super) fn draw(&self, pass: &mut wgpu::RenderPass<'_>, input: &Input) {
+    pub(super) fn draw(&self, pass: &mut wgpu::RenderPass<'_>, input: &Input<'_>) {
         let Some(instances) = &self.instances else {
             return;
         };

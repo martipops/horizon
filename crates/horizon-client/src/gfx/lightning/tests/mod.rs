@@ -149,9 +149,9 @@ fn cache_tracks_seed_lifecycle_movement_and_atlas_reload() {
             at: [1.0; 3],
         },
     ];
-    fn input(bolts: &[Bolt]) -> Input {
+    fn input(bolts: &[Bolt]) -> Input<'_> {
         Input {
-            bolts: bolts.to_vec(),
+            bolts,
             uv: [0.25, 0.5],
         }
     }
@@ -177,7 +177,7 @@ fn cache_tracks_seed_lifecycle_movement_and_atlas_reload() {
     // Atlas replacement must update white texel UVs without changing the seed.
     cache.prepare(
         &Input {
-            bolts: bolts.to_vec(),
+            bolts: &bolts,
             uv: [0.75, 0.25],
         },
         build,
@@ -198,7 +198,7 @@ fn long_flash_sequence_keeps_only_active_seeds() {
     for seed in 0..10_000 {
         cache.prepare(
             &Input {
-                bolts: vec![Bolt { seed, at: [0.0; 3] }],
+                bolts: &[Bolt { seed, at: [0.0; 3] }],
                 uv: [0.0; 2],
             },
             |seed, _| seed,
@@ -402,7 +402,7 @@ fn retained_gpu_draw_matches_transient_additive_draw() {
             bolts[0].seed = 789;
         }
         let input = Input {
-            bolts: bolts[..if frame == 3 { 1 } else { 3 }].to_vec(),
+            bolts: &bolts[..if frame == 3 { 1 } else { 3 }],
             uv: if frame == 3 { [0.75; 2] } else { [0.5; 2] },
         };
         let expected: Vec<_> = input
