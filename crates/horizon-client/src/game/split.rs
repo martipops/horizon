@@ -131,12 +131,16 @@ pub(super) struct Split<'a> {
     lost: Vec<Lost<PadId>>,
     /// `HORIZON_SPLIT_STATS`: when the frame times were last printed.
     stats: Option<Instant>,
-    /// For the readout: where a frame's wall time goes (the turns with their renders, presents,
-    /// the GPU wait, outside `about_to_wait`), summed since the last print, and when this frame
-    /// started.
-    spent: [Duration; 4],
+    /// For the readout: where a frame's wall time goes (turns, renders, presents, the GPU wait,
+    /// outside `about_to_wait`), summed since the last print, and when this frame started.
+    spent: [Duration; 5],
     spent_frames: u32,
     frame_started: Option<Instant>,
+    /// `HORIZON_SPLIT_THREADS=1`: the players' renders on threads, one each (measured slower on
+    /// a Ryzen 7 3700X: the renders hold each other up inside wgpu); else one after another.
+    threads: bool,
+    /// The render workers (`threads`), started as players need them; dropped, they stop.
+    workers: Vec<frames::RenderWorker>,
     /// P1's name and when it was read: without `--name` reading it opens horizon-player.txt,
     /// too slow for every frame (the badge, the titles).
     p1_name: (String, Instant),
@@ -215,6 +219,8 @@ impl<'a> Split<'a> {
             spent: Default::default(),
             spent_frames: 0,
             frame_started: None,
+            threads: std::env::var("HORIZON_SPLIT_THREADS").is_ok_and(|v| v == "1"),
+            workers: Vec::new(),
             p1_name: (p1_name, Instant::now()),
             surfaces,
             applied: Vec::new(),
@@ -615,7 +621,7 @@ impl ApplicationHandler for Split<'_> {
         let started = Instant::now();
         if let Some(previous) = self.frame_started.replace(started) {
             // What the last frame left after its own work: events, the limiter, the OS.
-            self.spent[3] += started.saturating_duration_since(previous);
+            self.spent[4] += started.saturating_duration_since(previous);
         }
         if self.p1_name.1.elapsed() >= Duration::from_secs(1) {
             self.p1_name = (self.host.options.player_name(), Instant::now());
@@ -713,6 +719,8 @@ impl ApplicationHandler for Split<'_> {
         }
         self.turn(0);
         self.p1_holds_select();
+        let turns = Instant::now();
+        self.render_all();
         let rendered = Instant::now();
         // Each window shows its players' frames. Only the game's waits for the display (vsync):
         // windows each waiting would divide the rate.
@@ -741,14 +749,19 @@ impl ApplicationHandler for Split<'_> {
             renderer.wait_in_flight();
         }
         let waited = Instant::now();
-        for (k, d) in [rendered - started, presented - rendered, waited - presented]
-            .into_iter()
-            .enumerate()
+        for (k, d) in [
+            turns - started,
+            rendered - turns,
+            presented - rendered,
+            waited - presented,
+        ]
+        .into_iter()
+        .enumerate()
         {
             self.spent[k] += d;
         }
         // The rest of the frame (the limiter, the OS) counts as outside, from `waited` on.
-        self.spent[3] = self.spent[3].saturating_sub(waited - started);
+        self.spent[4] = self.spent[4].saturating_sub(waited - started);
         self.spent_frames += 1;
         self.print_stats();
         // One pace for all: the fastest any player wants, so an idle one (vanilla's AFK limit)

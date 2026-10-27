@@ -244,7 +244,7 @@ impl Game<'_> {
             "Saving world...",
             progress,
         );
-        renderer.render(&loading_frame(&hud))?;
+        renderer.render(&loading_frame(hud))?;
         Ok(())
     }
 }

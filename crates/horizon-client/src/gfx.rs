@@ -215,7 +215,9 @@ const SECTION_UPLOAD_CHUNK: u64 = 4 << 20;
 /// Section copies are submitted early past this many staged bytes, which
 /// bounds the staging memory frames that are not drawn can hold.
 const SECTION_COPY_LIMIT: u64 = 64 << 20;
-pub struct Frame<'a> {
+/// One frame to draw. It owns what it draws, so a splitscreen player's frame can wait for the
+/// others' and render on another thread (`game/split.rs`).
+pub struct Frame {
     pub camera: DVec3,
     pub yaw: f32,
     pub pitch: f32,
@@ -258,12 +260,12 @@ pub struct Frame<'a> {
     /// `lines` with a colour and pixel width (`gizmos::camera_relative`):
     /// the fishing line and debug gizmos, depth tested, then gizmos drawn
     /// over everything.
-    pub debug_lines: &'a [[f32; 8]],
-    pub debug_lines_on_top: &'a [[f32; 8]],
+    pub debug_lines: Vec<[f32; 8]>,
+    pub debug_lines_on_top: Vec<[f32; 8]>,
     /// `DebugCrosshairRenderer`'s axes, camera relative like `debug_lines`:
     /// drawn after the hand at its projection, without the bob or fog.
-    pub debug_crosshair: &'a [[f32; 8]],
-    pub hud: &'a HudBatch,
+    pub debug_crosshair: Vec<[f32; 8]>,
+    pub hud: HudBatch,
     /// `GlintAlpha` (accessibility Glint Strength); the entity shader uses it
     /// for held/world items, independent of what the HUD batch last drew.
     pub glint_alpha: f32,
@@ -273,38 +275,38 @@ pub struct Frame<'a> {
     /// CardinalLighting.Type.NETHER, otherwise DEFAULT.
     pub nether_lighting: bool,
     /// Camera-relative entity geometry textured from the shared atlas.
-    pub entities: &'a [Vertex],
+    pub entities: Vec<Vertex>,
     /// The glowing entities' silhouettes in their team colours (`OutlineBufferSource`),
     /// outlined through walls after the hand.
-    pub glowing: &'a [Vertex],
+    pub glowing: Vec<Vertex>,
     /// Runs of `entities` by entity, while a shader pack draws them (`pack_draw::EntitySpan`).
-    pub entity_spans: &'a [pack_draw::EntitySpan],
-    pub weather: &'a [crate::weather::Vertex],
+    pub entity_spans: Vec<pack_draw::EntitySpan>,
+    pub weather: Vec<crate::weather::Vertex>,
     pub weather_time: crate::weather::Time,
     /// Horizon Extras' dynamic lights, nearest first (`dynamic_light::select`); empty when off.
-    pub dynamic_lights: &'a [[f32; 4]],
+    pub dynamic_lights: Vec<[f32; 4]>,
     /// Cloud mesh inputs; geometry and GPU storage are retained by the renderer.
-    pub clouds: Option<crate::clouds::Input<'a>>,
+    pub clouds: Option<crate::clouds::Input>,
     /// Retained lightning bolts, drawn before the other additive entities.
-    pub lightning: lightning::Input<'a>,
+    pub lightning: lightning::Input,
     /// Additive translucent geometry after lightning (dragon rays).
-    pub additive: &'a [Vertex],
+    pub additive: Vec<Vertex>,
     /// Name tags over everything, without depth (`TEXT_SEE_THROUGH`).
-    pub see_through: &'a [Vertex],
+    pub see_through: Vec<Vertex>,
     /// Camera-relative sun and moon, or the animated End flash (additive,
     /// behind everything and after the resident End sky box).
-    pub celestial: &'a [Vertex],
+    pub celestial: Vec<Vertex>,
     /// The stars, drawn from their static buffer after the sun and moon:
     /// the sky's rotation (camera-relative world from star space) and the
     /// star brightness.
     pub stars: Option<(Mat4, f32)>,
     /// First-person hand and held item, drawn after clearing depth.
-    pub hand: &'a [Vertex],
+    pub hand: Vec<Vertex>,
     /// `CameraRenderState.hudFov`: the hand's own field of view
     /// (`GameRenderer.render3dHud`).
     pub hand_fov_degrees: f32,
     /// Full-screen camera effects drawn over the world and hand, under the HUD.
-    pub screen: &'a [crate::screen_effects::ScreenQuad],
+    pub screen: Vec<crate::screen_effects::ScreenQuad>,
     /// What a shader pack's uniforms need from the game.
     pub pack: pack_uniforms::PackInputs,
     /// The world border wall, when near enough to be drawn.
@@ -3690,7 +3692,7 @@ impl Renderer {
             outline_params: outline_params(self.config.width, self.config.height),
             dynamic_lights: {
                 let mut lights = [[0.0; 4]; crate::dynamic_light::MAX];
-                for (to, from) in lights.iter_mut().zip(frame.dynamic_lights) {
+                for (to, from) in lights.iter_mut().zip(&frame.dynamic_lights) {
                     *to = *from;
                 }
                 lights
@@ -4136,8 +4138,8 @@ impl Renderer {
             let all: Vec<[f32; 8]> = frame
                 .debug_lines
                 .iter()
-                .chain(frame.debug_lines_on_top)
-                .chain(frame.debug_crosshair)
+                .chain(&frame.debug_lines_on_top)
+                .chain(&frame.debug_crosshair)
                 .copied()
                 .collect();
             self.uploads.buffer(
@@ -4151,7 +4153,7 @@ impl Renderer {
             &self.device,
             &mut encoder,
             &mut self.uploads,
-            frame.weather,
+            &frame.weather,
             frame.weather_time,
         );
         let outline_edges = frame.outline.len().min(MAX_OUTLINE_EDGES as usize);
@@ -4181,7 +4183,7 @@ impl Renderer {
         }
         // While a shader pack draws entities, the runs of `entity_spans` its programs draw are
         // left out of Horizon's own entity draw.
-        let mut entities = frame.entities;
+        let mut entities: &[Vertex] = &frame.entities;
         if !frame.title
             && let Some((_, Some(post))) = &mut self.pack_post
             && post.has_entities()
@@ -4189,8 +4191,8 @@ impl Renderer {
             post.prepare_entities(
                 &self.device,
                 &self.queue,
-                frame.entities,
-                frame.entity_spans,
+                &frame.entities,
+                &frame.entity_spans,
                 &mut self.pack_entity_rest,
             );
             entities = &self.pack_entity_rest;
@@ -4206,7 +4208,7 @@ impl Renderer {
             translucent_item_quads,
         ] = self
             .entity_batch
-            .update(entities, frame.additive, frame.hand, frame.see_through);
+            .update(entities, &frame.additive, &frame.hand, &frame.see_through);
         let weather_quads = frame.weather.len() as u32 / 4;
         let world_quads = entity_quads
             + crumbling_quads
@@ -4280,7 +4282,7 @@ impl Renderer {
             &self.device,
             &mut self.uploads,
             &mut encoder,
-            frame.glowing,
+            &frame.glowing,
             [self.config.width, self.config.height],
         );
         if let Some((rotation, brightness)) = frame.stars {
@@ -4368,7 +4370,7 @@ impl Renderer {
             &self.device,
             &mut self.uploads,
             &mut encoder,
-            frame.hud,
+            &frame.hud,
             [self.config.width, self.config.height],
         );
         if culling && let Some(cull) = &mut self.cull {
@@ -4939,7 +4941,7 @@ impl Renderer {
                         &mut encoder,
                         &mut self.uploads,
                         atlas,
-                        frame.weather,
+                        &frame.weather,
                         frame.weather_time,
                         &self.indices,
                     ),
@@ -5141,7 +5143,7 @@ impl Renderer {
             &mut encoder,
             &view_target,
             &self.depth,
-            frame.hud,
+            &frame.hud,
             [self.config.width, self.config.height],
             0..blur_at,
         );
@@ -5164,7 +5166,7 @@ impl Renderer {
             &mut encoder,
             &view_target,
             &self.depth,
-            frame.hud,
+            &frame.hud,
             [self.config.width, self.config.height],
             blur_at..frame.hud.vertices.len() as u32,
         );
