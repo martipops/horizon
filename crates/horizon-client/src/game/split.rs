@@ -86,7 +86,7 @@ pub(super) fn options_path() -> Option<PathBuf> {
 }
 
 struct Guest<'a> {
-    game: Game<'a>,
+    game: Box<Game<'a>>,
     /// The profile it plays as; `None` while it picks one.
     name: Option<String>,
     /// Its seat (2 to `MAX_PLAYERS`): its number on screen (P2...), its control socket, its sounds.
@@ -285,14 +285,14 @@ impl<'a> Split<'a> {
     fn game(&self, i: usize) -> Option<&Game<'a>> {
         match i {
             0 => Some(&self.host),
-            _ => self.guests.get(i - 1).map(|g| &g.game),
+            _ => self.guests.get(i - 1).map(|g| &*g.game),
         }
     }
 
     fn game_mut(&mut self, i: usize) -> Option<&mut Game<'a>> {
         match i {
             0 => Some(&mut self.host),
-            _ => self.guests.get_mut(i - 1).map(|g| &mut g.game),
+            _ => self.guests.get_mut(i - 1).map(|g| &mut *g.game),
         }
     }
 
@@ -329,6 +329,7 @@ impl<'a> Split<'a> {
 
     /// Splitscreen turned on: P1 renders offscreen on the same device and a compositor presents
     /// on its window; the world is meshed again for the new renderer.
+    #[inline(never)]
     fn enable(&mut self) -> Result<()> {
         let window = self.host.window.clone().ok_or("no window")?;
         let mut old = self.host.renderer.take().ok_or("no renderer")?;
@@ -382,6 +383,7 @@ impl<'a> Split<'a> {
     }
 
     /// Splitscreen turned off: the others leave, and P1 draws on its window again.
+    #[inline(never)]
     fn disable(&mut self, event_loop: &ActiveEventLoop) -> Result<()> {
         // P1's own buttons and focus targets back first: the others' go with them.
         for k in (0..self.guests.len()).rev() {

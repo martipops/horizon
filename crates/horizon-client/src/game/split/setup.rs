@@ -128,7 +128,7 @@ impl<'a> Split<'a> {
         let moved = std::mem::replace(&mut self.setup_seats, seats) != self.setup_seats;
         let (mut applied, mut identify) = (Vec::new(), false);
         let games =
-            std::iter::once(&mut self.host).chain(self.guests.iter_mut().map(|g| &mut g.game));
+            std::iter::once(&mut self.host).chain(self.guests.iter_mut().map(|g| &mut *g.game));
         for (i, game) in games.enumerate() {
             let setup = &mut game.ui.options.split_setup;
             // Someone joined or left: every draft would put the players in the wrong places.

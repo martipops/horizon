@@ -14,7 +14,7 @@ impl<'a> Split<'a> {
         }
         self.stats = Some(Instant::now());
         let games =
-            std::iter::once(&mut self.host).chain(self.guests.iter_mut().map(|g| &mut g.game));
+            std::iter::once(&mut self.host).chain(self.guests.iter_mut().map(|g| &mut *g.game));
         let frames = self.spent_frames.max(1);
         let [turns, presents, wait, outside] =
             std::mem::take(&mut self.spent).map(|d| d.as_secs_f64() * 1000.0 / f64::from(frames));

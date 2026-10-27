@@ -18,6 +18,17 @@ pub(super) fn turned_away(game: &Game<'_>) -> Option<String> {
     })
 }
 
+/// The `Game` `start` makes (~67 KB, by value) into a box, in a frame of its own that is gone
+/// once it is: the copies stay out of the caller's frame, deep in the event loop.
+#[inline(never)]
+fn boxed(start: impl FnOnce() -> Result<Option<Game<'static>>>) -> Result<Box<Game<'static>>> {
+    match start() {
+        Ok(Some(game)) => Ok(Box::new(game)),
+        Ok(None) => Err("the player's game did not start".into()),
+        Err(e) => Err(e),
+    }
+}
+
 impl<'a> Split<'a> {
     /// Add a player driven by `pad`: it picks a profile and where to play in its view first,
     /// unless `name` is given (tests).
@@ -154,12 +165,15 @@ impl<'a> Split<'a> {
         changed
     }
 
-    /// A new player's game in its seat, on its title screen until it has a profile.
+    /// A new player's game in its seat, on its title screen until it has a profile. Boxed as it
+    /// comes out of `start_game`, and never inlined: a `Game` is ~67 KB, and copies of it in the
+    /// event loop's frames overflowed Windows' 1 MB main stack.
+    #[inline(never)]
     pub(super) fn start_guest(
         &mut self,
         seat: usize,
         options_file: &Path,
-    ) -> Result<Game<'static>> {
+    ) -> Result<Box<Game<'static>>> {
         // The players' games borrow P1's resources for the process's lifetime: one copy for all.
         if self.res.is_none() {
             self.res = Some(Box::leak(Box::new(self.host.res.clone())));
@@ -184,20 +198,23 @@ impl<'a> Split<'a> {
         // P1's output, heard from this player's camera too (`Audio::share`).
         let audio = host.audio.share(seat as u8);
         let window = host.window.clone().ok_or("no window")?;
-        let mut guest = start_game(
-            res,
-            host.pack.clone(),
-            gui,
-            options,
-            None,
-            audio,
-            host.options.resources.clone(),
-            Instant::now(),
-            None,
-            Some(settings),
-            None,
-        )?
-        .ok_or("the player's game did not start")?;
+        let pack = host.pack.clone();
+        let resources = host.options.resources.clone();
+        let mut guest = boxed(|| {
+            start_game(
+                res,
+                pack,
+                gui,
+                options,
+                None,
+                audio,
+                resources,
+                Instant::now(),
+                None,
+                Some(settings),
+                None,
+            )
+        })?;
         guest.renderer = Some(build_renderer(
             window.clone(),
             true,
