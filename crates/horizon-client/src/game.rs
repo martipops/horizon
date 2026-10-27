@@ -11917,7 +11917,7 @@ impl ApplicationHandler for Game<'_> {
                 WindowEvent::RedrawRequested => {
                     if let Err(error) = self.render_closing_save() {
                         self.error = Some(error);
-                        event_loop.exit();
+                        self.exit_on_error(event_loop);
                     }
                 }
                 _ => {}
@@ -12671,7 +12671,7 @@ impl ApplicationHandler for Game<'_> {
         })();
         if let Err(e) = result {
             self.error = Some(e);
-            event_loop.exit();
+            self.exit_on_error(event_loop);
         }
     }
     fn device_event(&mut self, _: &ActiveEventLoop, _: DeviceId, event: DeviceEvent) {
@@ -12701,14 +12701,14 @@ impl ApplicationHandler for Game<'_> {
                 }
                 Err(error) => {
                     self.error = Some(error);
-                    event_loop.exit();
+                    self.exit_on_error(event_loop);
                 }
             }
             return;
         }
         if let Err(error) = self.resume_world_entry() {
             self.error = Some(error);
-            event_loop.exit();
+            self.exit_on_error(event_loop);
             return;
         }
         self.tick_server_packs();

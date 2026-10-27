@@ -91,6 +91,10 @@ impl Drop for MixerBackend {
         }
     }
 }
+/// Splitscreen: each shared backend's channel ids start at a block of their own, never handed out
+/// again, so a player in a seat used before never reuses an id a departed one's decoder may
+/// still attach to. The game's own backend counts from 0, as before.
+static SHARED_CHANNELS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 /// Two players' copies of one sound: started within this of each other.
 const SAME_SOUND: std::time::Duration = std::time::Duration::from_millis(150);
 /// Decoded samples and their rate (`None`: the file did not load).
@@ -237,13 +241,17 @@ impl MixerBackend {
         let Ok(mut m) = self.mixer.lock() else {
             return false;
         };
-        let Some(c) = m.channels.get(&channel) else {
+        // Alone (no other player's camera), or a sound by the listener (a click, music): its own.
+        let Some(c) = m.channels.get(&channel).filter(|c| !c.relative) else {
             return false;
         };
-        let (at, relative) = (c.at, c.relative);
+        if m.listeners.is_empty() {
+            return false;
+        }
+        let at = c.at;
         let twin = m.channels.values().any(|o| {
             o.owner != self.owner
-                && o.relative == relative
+                && !o.relative
                 && o.started
                     .as_ref()
                     .is_some_and(|(k, t)| k == key && t.elapsed() < SAME_SOUND)
@@ -269,8 +277,7 @@ impl MixerBackend {
 impl Backend for MixerBackend {
     fn create(&mut self, _streaming: bool) -> Option<ChannelId> {
         self.next += 1;
-        // Each owner's channels in a range of their own: they share one mixer.
-        let id = (ChannelId::from(self.owner) << 48) | self.next;
+        let id = self.next;
         self.mixer.lock().ok()?.channels.insert(
             id,
             Channel {
@@ -322,7 +329,8 @@ impl Backend for MixerBackend {
         }
         let (namespace, path) = sound.path();
         let file = self.root.join("assets").join(namespace).join(&path);
-        if self.duplicate(channel, &format!("{namespace}:{path}")) {
+        // A looping sound follows its entity in one client's tracking only: each keeps its own.
+        if !looping && self.duplicate(channel, &format!("{namespace}:{path}")) {
             return;
         }
         if sound.stream {
@@ -754,7 +762,8 @@ impl Audio {
                 root: self.backend.root.clone(),
                 cache: self.backend.cache.clone(),
                 decoder: None,
-                next: 0,
+                next: (SHARED_CHANNELS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1)
+                    << 40,
                 live: self.backend.live,
                 owner,
             },
@@ -1222,11 +1231,17 @@ mod tests {
             root: PathBuf::new(),
             cache: Arc::default(),
             decoder: None,
-            next: 0,
+            next: (u64::from(owner)) << 40,
             live: true,
             owner,
         };
         let (mut p1, mut p2) = (backend(0), backend(1));
+        // P2 is listening (its camera is in the mixer), so two players share the speakers.
+        mixer
+            .lock()
+            .unwrap()
+            .listeners
+            .insert(1, ([0.0; 3], 0.0, 0.0));
         let started = |b: &mut MixerBackend, at: [f64; 3]| {
             let id = b.create(false).unwrap();
             b.set_position(id, at);

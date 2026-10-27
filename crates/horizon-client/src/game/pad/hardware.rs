@@ -199,6 +199,16 @@ impl PadRouter {
             .map_or_else(PadState::default, |pad| state_of(&pad))
     }
 
+    /// Its glyphs (Xbox, PlayStation, Nintendo), as `read` finds them for the active pad.
+    pub(in crate::game) fn style(&self, id: PadId) -> GlyphStyle {
+        self.gilrs
+            .as_ref()
+            .and_then(|g| g.connected_gamepad(id))
+            .map_or(GlyphStyle::Auto, |pad| {
+                GlyphStyle::of_vendor(pad.vendor_id())
+            })
+    }
+
     pub(in crate::game) fn name(&self, id: PadId) -> String {
         self.gilrs
             .as_ref()

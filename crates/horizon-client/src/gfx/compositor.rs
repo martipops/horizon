@@ -1,4 +1,4 @@
-//! Splitscreen (spike): several players' renderers draw offscreen on one device, and the
+//! Splitscreen: several players' renderers draw offscreen on one device, and the
 //! compositor copies each frame into its place on a window's surface. A window holds views but
 //! never owns them, so a view can later move to another window (another monitor, detached).
 use super::Renderer;
@@ -98,17 +98,17 @@ impl Compositor {
     }
 
     /// Copy each view's frame to its top-left corner on the window and present. Frames that
-    /// don't fit are clipped; uncovered parts of the window keep whatever was there. False when
-    /// the window had no frame to give (occluded, resized, timed out).
-    pub fn present(&mut self, views: &[(&wgpu::Texture, [u32; 2])]) -> bool {
+    /// don't fit are clipped; uncovered parts of the window keep whatever was there. Nothing when
+    /// the window has no frame to give (occluded, resized, timed out).
+    pub fn present(&mut self, views: &[(&wgpu::Texture, [u32; 2])]) {
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(f)
             | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
             wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
                 self.surface.configure(&self.device, &self.config);
-                return false;
+                return;
             }
-            _ => return false,
+            _ => return,
         };
         let mut encoder = self
             .device
@@ -136,6 +136,5 @@ impl Compositor {
         }
         self.queue.submit([encoder.finish()]);
         self.queue.present(frame);
-        true
     }
 }

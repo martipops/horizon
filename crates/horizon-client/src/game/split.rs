@@ -36,7 +36,7 @@ use horizon_client::{
     hud::{HudBatch, rgba},
     widgets,
 };
-use layout::{View, place};
+use layout::{MAX_PLAYERS, View, place};
 use std::{
     cell::RefCell,
     path::{Path, PathBuf},
@@ -52,7 +52,6 @@ use winit::{
     window::{Window, WindowId},
 };
 
-const MAX_PLAYERS: usize = layout::MAX_PLAYERS;
 /// How long a controller's offer to join stays up.
 const OFFER: Duration = Duration::from_secs(10);
 /// The game's window, the first of the numbered ones.
@@ -97,6 +96,49 @@ enum Ask {
     Controller,
 }
 
+/// Holding Select 2 s asks a question the controller then answers; meanwhile its buttons answer
+/// that, not the game.
+#[derive(Default)]
+struct HoldSelect {
+    since: Option<Instant>,
+    last: PadState,
+    asking: bool,
+}
+
+/// What holding Select did this frame.
+enum Hold {
+    Nothing,
+    /// Held 2 s: ask now.
+    Ask,
+    /// One of the answers, pressed while asked.
+    Answer(Button),
+}
+
+impl HoldSelect {
+    fn update(&mut self, pad: PadState, answers: &[Button]) -> Hold {
+        let last = std::mem::replace(&mut self.last, pad);
+        if self.asking {
+            return match answers.iter().find(|&&b| pad.held(b) && !last.held(b)) {
+                Some(&b) => {
+                    self.asking = false;
+                    Hold::Answer(b)
+                }
+                None => Hold::Nothing,
+            };
+        }
+        if !pad.held(Button::Select) {
+            self.since = None;
+            return Hold::Nothing;
+        }
+        if self.since.get_or_insert_with(Instant::now).elapsed() < Duration::from_secs(2) {
+            return Hold::Nothing;
+        }
+        self.since = None;
+        self.asking = true;
+        Hold::Ask
+    }
+}
+
 /// Where a player plays.
 #[derive(Clone, Debug, PartialEq)]
 enum Screen {
@@ -108,14 +150,6 @@ enum Screen {
     /// first free number when it opens.
     Window(u8),
 }
-/// Which window a view is in: the game's, a monitor's, or a numbered one.
-#[derive(Clone, Debug, PartialEq)]
-enum Key {
-    Main,
-    Monitor(String),
-    Window(u8),
-}
-
 /// Player `game` into `window`; when it `moved` from another, the mouse it held there goes free
 /// (a click takes it in the new one).
 fn into_window(game: &mut Game<'_>, window: Arc<Window>, moved: bool) {
@@ -127,7 +161,8 @@ fn into_window(game: &mut Game<'_>, window: Arc<Window>, moved: bool) {
 
 /// A window showing players' views, and the compositor that copies their frames into it.
 struct Surface {
-    key: Key,
+    /// Which window this is (never `Window(0)`).
+    key: Screen,
     window: Arc<Window>,
     compositor: Compositor,
     size: PhysicalSize<u32>,
@@ -136,11 +171,11 @@ struct Surface {
     title: String,
 }
 
-struct Guest {
-    game: Game<'static>,
+struct Guest<'a> {
+    game: Game<'a>,
     /// The profile it plays as; `None` while it picks one.
     name: Option<String>,
-    /// Its place among the players (2 to 4), for its control socket and own window.
+    /// Its seat (2 to `MAX_PLAYERS`): its number on screen (P2...), its control socket, its sounds.
     seat: usize,
     screen: Screen,
     pad: Option<PadId>,
@@ -149,16 +184,13 @@ struct Guest {
     widgets: widgets::Saved,
     /// The bumpers it held at the last frame (LB, RB), while it chooses where to play.
     bumpers: [bool; 2],
-    /// Leaving from the controller: since when Select is held, the pad as last read, and
-    /// whether "Leave splitscreen?" is asked (its buttons answer, not the game).
-    select_since: Option<Instant>,
-    last_pad: PadState,
-    leaving: bool,
+    /// Leaving from the controller (hold Select).
+    hold: HoldSelect,
 }
 
 pub(super) struct Split<'a> {
     pub(super) host: Game<'a>,
-    guests: Vec<Guest>,
+    guests: Vec<Guest<'a>>,
     /// Splitscreen is on: every player renders through the compositors (else P1 draws on its
     /// window and every event goes straight to it).
     enabled: bool,
@@ -172,11 +204,9 @@ pub(super) struct Split<'a> {
     /// Players switching profile from the controller: its pad and where it played, to choose
     /// again there once it has left.
     rejoin: Vec<(Option<PadId>, Screen)>,
-    /// P1's controller: since when Select is held, the pad as last read, and whether "remove
-    /// it from P1?" is asked (P1 hosts: it leaves from the pause menu, but its controller can go).
-    p1_select: Option<Instant>,
-    p1_last: PadState,
-    p1_asking: bool,
+    /// P1's controller: holding Select asks whether it goes (P1 hosts: it leaves from the pause
+    /// menu, but its controller can go).
+    p1_hold: HoldSelect,
     /// Pads whose buttons still count as the press that joined them: released first.
     fresh: Vec<PadId>,
     /// The game's window and its compositor first, then monitors' and players' own.
@@ -185,11 +215,13 @@ pub(super) struct Split<'a> {
     applied: Vec<View>,
     /// Where each numbered window was when it closed, to open there again (this session).
     window_rects: std::collections::HashMap<u8, (PhysicalPosition<i32>, PhysicalSize<u32>)>,
-    /// The player keyboard and mouse drive (0 = P1), and the pointer: its window and place.
+    /// The player keyboard and mouse drive (0 = P1), and the pointer in the window it moved in.
     focus: usize,
-    cursor: (usize, PhysicalPosition<f64>),
+    cursor: PhysicalPosition<f64>,
     limiter: horizon_client::window::FramerateLimiter,
     clock: horizon_client::window::SystemClock,
+    /// P1's resources, shared by the other players' games for the process's lifetime.
+    res: Option<&'static Arc<super::Resources>>,
     /// Whose game runs now (0 = P1), and P1's buttons while another's does.
     turn: usize,
     host_widgets: widgets::Saved,
@@ -213,7 +245,7 @@ impl<'a> Split<'a> {
         // Made after the window on an ordinary launch (no `resumed` follows).
         let surfaces = match (compositor, &host.window) {
             (Some(compositor), Some(window)) => vec![Surface {
-                key: Key::Main,
+                key: Screen::Main,
                 window: window.clone(),
                 compositor,
                 size: window.inner_size(),
@@ -233,17 +265,16 @@ impl<'a> Split<'a> {
             p1_screen,
             offers: Vec::new(),
             rejoin: Vec::new(),
-            p1_select: None,
-            p1_last: PadState::default(),
-            p1_asking: false,
+            p1_hold: HoldSelect::default(),
             fresh: Vec::new(),
             surfaces,
             applied: Vec::new(),
             window_rects: Default::default(),
             focus: 0,
-            cursor: (0, PhysicalPosition::new(0.0, 0.0)),
+            cursor: PhysicalPosition::new(0.0, 0.0),
             limiter: horizon_client::window::FramerateLimiter::new(0),
             clock: Default::default(),
+            res: None,
             turn: 0,
             host_widgets: Default::default(),
         }
@@ -251,6 +282,11 @@ impl<'a> Split<'a> {
 
     fn players(&self) -> usize {
         1 + self.guests.len()
+    }
+
+    /// The first seat free (2 to `MAX_PLAYERS`).
+    fn free_seat(&self) -> Option<usize> {
+        (2..=MAX_PLAYERS).find(|n| self.guests.iter().all(|g| g.seat != *n))
     }
 
     /// The splitscreen folder in the game folder: `profiles/<name>/` holds each profile.
@@ -286,7 +322,8 @@ impl<'a> Split<'a> {
     /// Where player `i` can play, as the screens say it: Window 1 (the game's), the windows open,
     /// a new window (unless it is alone in one), and each monitor but Window 1's (numbered left
     /// to right, with its size: the system's names are ids on some). `i` past the players: one
-    /// joining. The page cycles through them forward (buttons take the left click only).
+    /// joining. The page's button steps forward through them (buttons take the left click
+    /// only), a joining player's bumpers both ways.
     fn choices(&self, i: usize) -> Vec<(String, Screen)> {
         let main = self.main_monitor();
         let mut monitors = self.monitors();
@@ -340,15 +377,15 @@ impl<'a> Split<'a> {
 
     /// The window player `i` is in: a monitor that's gone, or the one Window 1 is on, means
     /// Window 1.
-    fn key(&self, i: usize, monitors: &[String]) -> Key {
+    fn key(&self, i: usize, monitors: &[String]) -> Screen {
         match self.screen(i) {
             Screen::Monitor(name)
                 if monitors.contains(name) && Some(name) != self.main_monitor().as_ref() =>
             {
-                Key::Monitor(name.clone())
+                Screen::Monitor(name.clone())
             }
-            Screen::Window(n) if *n > 0 => Key::Window(*n),
-            _ => Key::Main,
+            Screen::Window(n) if *n > 0 => Screen::Window(*n),
+            _ => Screen::Main,
         }
     }
 
@@ -402,39 +439,54 @@ impl<'a> Split<'a> {
         self.turn = i;
     }
 
-    /// Player `i`'s game (0 = P1), in its turn, and its window's id (a game only takes its own
-    /// window's events).
-    fn player(&mut self, i: usize) -> Option<(&mut dyn ApplicationHandler, WindowId)> {
-        self.turn(i);
-        let id = match i {
-            0 => self.host.window.as_ref()?.id(),
-            _ => self.guests.get(i - 1)?.game.window.as_ref()?.id(),
-        };
+    /// Player `i`'s game (0 = P1).
+    fn game(&self, i: usize) -> Option<&Game<'a>> {
         match i {
-            0 => Some((&mut self.host as &mut dyn ApplicationHandler, id)),
-            _ => self
-                .guests
-                .get_mut(i - 1)
-                .map(|g| (&mut g.game as &mut dyn ApplicationHandler, id)),
+            0 => Some(&self.host),
+            _ => self.guests.get(i - 1).map(|g| &g.game),
         }
     }
 
-    fn captured(&self, i: usize) -> bool {
+    fn game_mut(&mut self, i: usize) -> Option<&mut Game<'a>> {
         match i {
-            0 => self.host.captured,
-            _ => self.guests.get(i - 1).is_some_and(|g| g.game.captured),
+            0 => Some(&mut self.host),
+            _ => self.guests.get_mut(i - 1).map(|g| &mut g.game),
         }
+    }
+
+    /// Player `i`'s seat (P1's is 1) and name ("choosing" while it picks its profile).
+    fn who(&self, i: usize) -> (usize, String) {
+        match i {
+            0 => (1, self.host.options.player_name()),
+            _ => {
+                let g = &self.guests[i - 1];
+                (g.seat, g.name.clone().unwrap_or_else(|| "choosing".into()))
+            }
+        }
+    }
+
+    /// Player `i`'s game, in its turn, and its window's id (a game only takes its own window's
+    /// events).
+    fn player(&mut self, i: usize) -> Option<(&mut dyn ApplicationHandler, WindowId)> {
+        self.turn(i);
+        let game = self.game_mut(i)?;
+        let id = game.window.as_ref()?.id();
+        Some((game, id))
+    }
+
+    fn captured(&self, i: usize) -> bool {
+        self.game(i).is_some_and(|g| g.captured)
     }
 
     /// The pointer as the focused player sees it: from its view's corner.
     fn cursor_in_focus(&self) -> PhysicalPosition<f64> {
         let [x, y] = self.views().get(self.focus).map_or([0, 0], |v| v.1);
-        let (_, at) = self.cursor;
+        let at = self.cursor;
         PhysicalPosition::new(at.x - f64::from(x), at.y - f64::from(y))
     }
 
     /// Every player into its view: its window, then its size. Keyboard and mouse follow their
-    /// player into another window; a player whose view moved or grew shows its name tag.
+    /// player into another window; a player whose view moved or grew shows where on its badge.
     fn relayout(&mut self, event_loop: &ActiveEventLoop) {
         let views = self.views();
         let before = std::mem::replace(&mut self.applied, views);
@@ -443,9 +495,8 @@ impl<'a> Split<'a> {
                 continue;
             };
             let moved = before.get(i).is_none_or(|b| b.0 != surface);
-            match i {
-                0 => into_window(&mut self.host, window.clone(), moved),
-                _ => into_window(&mut self.guests[i - 1].game, window.clone(), moved),
+            if let Some(game) = self.game_mut(i) {
+                into_window(game, window.clone(), moved);
             }
             if moved && i == self.focus && before.get(i).is_some() {
                 window.focus_window();
@@ -460,9 +511,9 @@ impl<'a> Split<'a> {
         self.turn(0);
     }
 
-    /// A joining player's bumper: its view moves to the next place it could play (`back`: the
-    /// one before), at once, so it sees where it will be; choosing its profile keeps it there.
-    fn place_joining(&mut self, i: usize, back: bool) {
+    /// Player `i` to the next place it could play (`back`: the one before); a new window is
+    /// numbered now.
+    fn step_screen(&mut self, i: usize, back: bool) {
         let choices = self.choices(i);
         let n = choices.len();
         if n == 0 {
@@ -478,7 +529,16 @@ impl<'a> Split<'a> {
         if next == Screen::Window(0) {
             next = Screen::Window(self.free_window());
         }
-        self.guests[i - 1].screen = next;
+        match i {
+            0 => self.p1_screen = next,
+            _ => self.guests[i - 1].screen = next,
+        }
+    }
+
+    /// A joining player's bumper: its view moves to the next place it could play (`back`: the
+    /// one before), at once, so it sees where it will be; choosing its profile keeps it there.
+    fn place_joining(&mut self, i: usize, back: bool) {
+        self.step_screen(i, back);
         let shown = self.label(self.screen(i));
         self.guests[i - 1].game.split_hud.place = Some((
             format!("LB < {shown} > RB"),
@@ -486,53 +546,49 @@ impl<'a> Split<'a> {
         ));
     }
 
+    /// Player `i`'s pad as its game read it (the controller or `horizon-ctl pad`), with the
+    /// controller itself while its buttons are kept from the game.
+    fn pad_now(&self, i: usize) -> PadState {
+        let (state, pad) = match i {
+            0 => (self.host.pad.state, self.p1_pad),
+            _ => (self.guests[i - 1].game.pad.state, self.guests[i - 1].pad),
+        };
+        pad.map_or(state, |p| state.merge(&self.pads.state(p)))
+    }
+
     /// Player `i` (not P1) holding Select 2 s is asked "Leave splitscreen?": A leaves, X
     /// switches profile (leaves, then chooses again where it was), B stays.
     fn leave_by_controller(&mut self, i: usize) {
-        const HOLD: Duration = Duration::from_secs(2);
-        // Its game's pad (the controller or `horizon-ctl pad`), and the controller itself while
-        // its buttons are kept from the game.
-        let raw = self.guests[i - 1].pad.map(|p| self.pads.state(p));
+        let pad = self.pad_now(i);
         let g = &mut self.guests[i - 1];
-        let mut pad = g.game.pad.state;
-        if let Some(raw) = raw {
-            pad = pad.merge(&raw);
-        }
-        let last = std::mem::replace(&mut g.last_pad, pad);
-        let pressed = |b: Button| pad.held(b) && !last.held(b);
-        let ask = || {
-            Some(Prompt {
-                ask: Ask::Leave,
-                title: "Leave splitscreen?".to_owned(),
-                choices: vec![
-                    (Button::South, "Leave"),
-                    (Button::West, "Switch profile"),
-                    (Button::East, "Stay"),
-                ],
-            })
-        };
-        if g.leaving {
-            if pressed(Button::South) || pressed(Button::West) {
-                g.leaving = false;
+        match g
+            .hold
+            .update(pad, &[Button::South, Button::West, Button::East])
+        {
+            Hold::Ask => {
+                g.game.split_hud.prompt = Some(Prompt {
+                    ask: Ask::Leave,
+                    title: "Leave splitscreen?".to_owned(),
+                    choices: vec![
+                        (Button::South, "Leave"),
+                        (Button::West, "Switch profile"),
+                        (Button::East, "Stay"),
+                    ],
+                });
+            }
+            Hold::Answer(answer) => {
                 g.game.split_hud.prompt = None;
-                if pressed(Button::West) {
+                if answer == Button::East {
+                    return;
+                }
+                if answer == Button::West {
                     self.rejoin.push((g.pad, g.screen.clone()));
                 }
                 if let Err(e) = g.game.leave_server(None) {
                     log::warn!("Horizon: splitscreen: {e}");
                 }
-            } else if pressed(Button::East) {
-                g.leaving = false;
-                g.game.split_hud.prompt = None;
             }
-            return;
-        }
-        if !pad.held(Button::Select) {
-            g.select_since = None;
-        } else if g.select_since.get_or_insert_with(Instant::now).elapsed() >= HOLD {
-            g.select_since = None;
-            g.leaving = true;
-            g.game.split_hud.prompt = ask();
+            Hold::Nothing => {}
         }
     }
 
@@ -540,48 +596,31 @@ impl<'a> Split<'a> {
     /// from the pause menu), but its controller can go: A takes it from P1 (keyboard and mouse
     /// stay), and in a world a button on it then offers to join as a new player; B keeps it.
     fn p1_holds_select(&mut self) {
-        let raw = self.p1_pad.map(|p| self.pads.state(p));
-        let mut pad = self.host.pad.state;
-        if let Some(raw) = raw {
-            pad = pad.merge(&raw);
-        }
-        let last = std::mem::replace(&mut self.p1_last, pad);
-        let pressed = |b: Button| pad.held(b) && !last.held(b);
-        let ask = || {
-            Some(Prompt {
-                ask: Ask::Controller,
-                title: "P1's controller".to_owned(),
-                choices: vec![
-                    (Button::South, "Remove it from P1"),
-                    (Button::East, "Keep it"),
-                ],
-            })
-        };
-        if self.p1_asking {
-            if pressed(Button::South) {
-                self.p1_asking = false;
-                if let Some(id) = self.p1_pad.take() {
-                    self.fresh.retain(|&p| p != id);
-                }
-                self.host.split_hud.prompt = None;
-                self.host.split_hud.notice = Some(horizon_client::toasts::SystemToast::new(
-                    "Controller removed".to_owned(),
-                    Some("Press a button on it to join as a new player".to_owned()),
-                ));
-            } else if pressed(Button::East) {
-                self.p1_asking = false;
-                self.host.split_hud.prompt = None;
+        let pad = self.pad_now(0);
+        match self.p1_hold.update(pad, &[Button::South, Button::East]) {
+            Hold::Ask => {
+                self.host.split_hud.prompt = Some(Prompt {
+                    ask: Ask::Controller,
+                    title: "P1's controller".to_owned(),
+                    choices: vec![
+                        (Button::South, "Remove it from P1"),
+                        (Button::East, "Keep it"),
+                    ],
+                });
             }
-            return;
-        }
-        if !pad.held(Button::Select) {
-            self.p1_select = None;
-        } else if self.p1_select.get_or_insert_with(Instant::now).elapsed()
-            >= Duration::from_secs(2)
-        {
-            self.p1_select = None;
-            self.p1_asking = true;
-            self.host.split_hud.prompt = ask();
+            Hold::Answer(answer) => {
+                self.host.split_hud.prompt = None;
+                if answer == Button::South
+                    && let Some(id) = self.p1_pad.take()
+                {
+                    self.fresh.retain(|&p| p != id);
+                    self.host.split_hud.notice = Some(horizon_client::toasts::SystemToast::new(
+                        "Controller removed".to_owned(),
+                        Some("Press a button on it to join as a new player".to_owned()),
+                    ));
+                }
+            }
+            Hold::Nothing => {}
         }
     }
 
@@ -616,9 +655,8 @@ impl<'a> Split<'a> {
         }
         let note = note.map_or_else(|| self.label(self.screen(i)), str::to_owned);
         let place = Some((note, Instant::now() + Duration::from_secs(3)));
-        match i {
-            0 => self.host.split_hud.place = place,
-            _ => self.guests[i - 1].game.split_hud.place = place,
+        if let Some(game) = self.game_mut(i) {
+            game.split_hud.place = place;
         }
     }
 
@@ -627,17 +665,11 @@ impl<'a> Split<'a> {
         let views = &self.applied;
         let who: Vec<String> = (0..self.players())
             .filter(|&i| views.get(i).is_some_and(|v| v.0 == k))
-            .map(|i| match i {
-                0 => self.host.options.player_name(),
-                _ => self.guests[i - 1]
-                    .name
-                    .clone()
-                    .unwrap_or_else(|| "...".into()),
-            })
+            .map(|i| self.who(i).1)
             .collect();
         let name = match &self.surfaces[k].key {
-            Key::Window(n) => format!(" - Window {n}"),
-            Key::Main if self.surfaces.len() > 1 => format!(" - {WINDOW_1}"),
+            Screen::Window(n) => format!(" - Window {n}"),
+            Screen::Main if self.surfaces.len() > 1 => format!(" - {WINDOW_1}"),
             _ => String::new(),
         };
         if self.players() > 1 && !who.is_empty() {
@@ -655,10 +687,10 @@ impl<'a> Split<'a> {
         }
         let monitors = self.monitors();
         let names: Vec<_> = monitors.iter().filter_map(MonitorHandle::name).collect();
-        let wanted: Vec<Key> = (0..self.players()).map(|i| self.key(i, &names)).collect();
+        let wanted: Vec<Screen> = (0..self.players()).map(|i| self.key(i, &names)).collect();
         let before = self.surfaces.len();
         for s in &self.surfaces {
-            if let Key::Window(n) = s.key
+            if let Screen::Window(n) = s.key
                 && !wanted.contains(&s.key)
                 && let Ok(at) = s.window.outer_position()
             {
@@ -666,7 +698,7 @@ impl<'a> Split<'a> {
             }
         }
         self.surfaces
-            .retain(|s| s.key == Key::Main || wanted.contains(&s.key));
+            .retain(|s| s.key == Screen::Main || wanted.contains(&s.key));
         let mut changed = self.surfaces.len() != before;
         // macOS would join new windows to the game's as tabs (when the system prefers tabs).
         #[cfg(target_os = "macos")]
@@ -685,7 +717,7 @@ impl<'a> Split<'a> {
             // A monitor's window covers it, borderless; not the system's fullscreen, which on
             // macOS is a Space of its own that hides the other windows as it slides in.
             let cover = match key {
-                Key::Monitor(name) => monitors
+                Screen::Monitor(name) => monitors
                     .iter()
                     .find(|m| m.name().as_ref() == Some(name))
                     .map(|m| (m.position(), m.size())),
@@ -700,7 +732,7 @@ impl<'a> Split<'a> {
                 // A numbered window where it was last, else 854 x 480.
                 None => {
                     let last = match key {
-                        Key::Window(n) => self.window_rects.get(n).copied(),
+                        Screen::Window(n) => self.window_rects.get(n).copied(),
                         _ => None,
                     };
                     match last {
@@ -738,7 +770,7 @@ impl<'a> Split<'a> {
             changed = true;
         }
         // The game's window only while someone plays on it.
-        let main_used = wanted.contains(&Key::Main);
+        let main_used = wanted.contains(&Screen::Main);
         let main = &self.surfaces[0].window;
         if main.is_visible() != Some(main_used) {
             main.set_visible(main_used);
@@ -760,36 +792,14 @@ impl<'a> Split<'a> {
             requests.append(&mut g.game.ui.options.split_requests);
         }
         for (i, back) in requests {
-            if i >= self.players() {
-                continue;
-            }
-            let choices = self.choices(i);
-            let at = choices
-                .iter()
-                .position(|(_, s)| s == self.screen(i))
-                .unwrap_or(0);
-            let n = choices.len().max(1);
-            let mut next = choices[if back { (at + n - 1) % n } else { (at + 1) % n }]
-                .1
-                .clone();
-            if next == Screen::Window(0) {
-                next = Screen::Window(self.free_window());
-            }
-            match i {
-                0 => self.p1_screen = next,
-                _ => self.guests[i - 1].screen = next,
+            if i < self.players() {
+                self.step_screen(i, back);
             }
         }
         let rows: Vec<(String, String)> = (0..self.players())
             .map(|i| {
-                let who = match i {
-                    0 => self.host.options.player_name(),
-                    _ => self.guests[i - 1]
-                        .name
-                        .clone()
-                        .unwrap_or_else(|| "(choosing)".into()),
-                };
-                (format!("P{} {who}", i + 1), self.label(self.screen(i)))
+                let (seat, who) = self.who(i);
+                (format!("P{seat} {who}"), self.label(self.screen(i)))
             })
             .collect();
         self.host.ui.options.split_players = rows.clone();
@@ -840,7 +850,7 @@ impl<'a> Split<'a> {
         self.host.clear_lod();
         self.host.all_sections_changed();
         self.surfaces = vec![Surface {
-            key: Key::Main,
+            key: Screen::Main,
             size: window.inner_size(),
             window,
             compositor,
@@ -975,9 +985,18 @@ impl<'a> Split<'a> {
         } else if self.offers.len() != before || !joins.is_empty() {
             self.ask_to_join();
         }
+        // Each player's glyphs follow its own controller (its game never reads the pads itself).
+        if let Some(id) = self.p1_pad {
+            self.host.pad.style = self.pads.style(id);
+        }
+        for g in &mut self.guests {
+            if let Some(id) = g.pad {
+                g.game.pad.style = self.pads.style(id);
+            }
+        }
         let p1 = self.pad_state(self.p1_pad);
         // Asked about its controller, P1's buttons answer that, not the game.
-        self.host.pad.feed = Some(if self.p1_asking {
+        self.host.pad.feed = Some(if self.p1_hold.asking {
             PadState::default()
         } else {
             p1
@@ -985,7 +1004,7 @@ impl<'a> Split<'a> {
         for i in 0..self.guests.len() {
             let state = self.pad_state(self.guests[i].pad);
             // Asked whether to leave, its buttons answer that, not the game.
-            let state = if self.guests[i].leaving {
+            let state = if self.guests[i].hold.asking {
                 PadState::default()
             } else {
                 state
@@ -1016,9 +1035,7 @@ impl<'a> Split<'a> {
     /// Add a player driven by `pad`: it picks a profile and where to play in its view first,
     /// unless `name` is given (tests).
     fn join(&mut self, pad: Option<PadId>, name: Option<String>) -> Result<()> {
-        let seat = (2..=MAX_PLAYERS)
-            .find(|n| self.guests.iter().all(|g| g.seat != *n))
-            .ok_or("every seat is taken")?;
+        let seat = self.free_seat().ok_or("every seat is taken")?;
         // Until it has a profile, a scratch options file: never P1's.
         let options = Self::folder()?.join(".joining/options.txt");
         OPTIONS.set(Some(options.clone()));
@@ -1051,9 +1068,7 @@ impl<'a> Split<'a> {
             options,
             widgets: Default::default(),
             bumpers: [false; 2],
-            select_since: None,
-            last_pad: PadState::default(),
-            leaving: false,
+            hold: HoldSelect::default(),
         });
         if let Some(name) = name {
             self.enter(self.guests.len() - 1, name)?;
@@ -1148,6 +1163,11 @@ impl<'a> Split<'a> {
 
     /// A new player's game in its seat, on its title screen until it has a profile.
     fn start_guest(&mut self, seat: usize, options_file: &Path) -> Result<Game<'static>> {
+        // The players' games borrow P1's resources for the process's lifetime: one copy for all.
+        if self.res.is_none() {
+            self.res = Some(Box::leak(Box::new(self.host.res.clone())));
+        }
+        let res = self.res.ok_or("no resources")?;
         let host = &mut self.host;
         std::fs::create_dir_all(options_file.parent().ok_or("bad options path")?)?;
         let mut options = host.options.clone();
@@ -1164,7 +1184,6 @@ impl<'a> Split<'a> {
         let mut settings = host.settings.clone();
         settings.extras.agent_control &= options.control.is_some();
         let gui = UiResources::load(&options.resources, &options.resources)?;
-        let res: &'static Arc<_> = Box::leak(Box::new(host.res.clone()));
         // P1's output, heard from this player's camera too (`Audio::share`).
         let audio = host.audio.share(seat as u8);
         let window = host.window.clone().ok_or("no window")?;
@@ -1268,7 +1287,7 @@ impl ApplicationHandler for Split<'_> {
         if self.surfaces.is_empty() {
             match renderer.compositor(window.clone()) {
                 Ok(compositor) => self.surfaces.push(Surface {
-                    key: Key::Main,
+                    key: Screen::Main,
                     window: window.clone(),
                     compositor,
                     size: window.inner_size(),
@@ -1327,7 +1346,7 @@ impl ApplicationHandler for Split<'_> {
                 device_id,
                 position,
             } => {
-                self.cursor = (surface, position);
+                self.cursor = position;
                 let position = self.cursor_in_focus();
                 let focus = self.focus;
                 if self.views().get(focus).is_some_and(|v| v.0 == surface)
@@ -1350,7 +1369,7 @@ impl ApplicationHandler for Split<'_> {
             } => {
                 // A click on another player's view gives it keyboard and mouse, unless the
                 // focused player holds the mouse (playing): Esc frees it first, as in vanilla.
-                let (x, y) = (self.cursor.1.x as u32, self.cursor.1.y as u32);
+                let (x, y) = (self.cursor.x as u32, self.cursor.y as u32);
                 let clicked = self.views().iter().position(|(s, [vx, vy], size)| {
                     *s == surface
                         && (*vx..vx + size.width).contains(&x)
@@ -1450,7 +1469,7 @@ impl ApplicationHandler for Split<'_> {
             // HORIZON_SPLIT_PICK: they pick a profile like a controller's player, else P2...
             let name = std::env::var_os("HORIZON_SPLIT_PICK")
                 .is_none()
-                .then(|| format!("P{}", self.players() + 1));
+                .then(|| format!("P{}", self.free_seat().unwrap_or(0)));
             match self.join(None, name) {
                 Ok(()) => {
                     self.test_players -= 1;
@@ -1473,9 +1492,9 @@ impl ApplicationHandler for Split<'_> {
         let together = self.players() > 1;
         self.host.split_hud.badge =
             together.then(|| format!("P1 · {}", self.host.options.player_name()));
-        for (k, g) in self.guests.iter_mut().enumerate() {
+        for g in &mut self.guests {
             let who = g.name.as_deref().unwrap_or("choosing");
-            g.game.split_hud.badge = Some(format!("P{} · {who}", k + 2));
+            g.game.split_hud.badge = Some(format!("P{} · {who}", g.seat));
         }
         let master = self.host.audio.master;
         for i in 0..self.guests.len() {
@@ -1552,7 +1571,14 @@ impl ApplicationHandler for Split<'_> {
 }
 
 impl Game<'_> {
-    /// The splitscreen name tag, in the toast slot after the others (`ToastManager`).
+    /// An error stops the event loop, as ever, but not in another splitscreen player's game:
+    /// that player drops out (`Split::drop_out`), the others play on.
+    pub(super) fn exit_on_error(&self, event_loop: &ActiveEventLoop) {
+        if !self.options.split_guest {
+            event_loop.exit();
+        }
+    }
+
     /// Splitscreen over this player's view, above the other toasts (`ToastManager`'s slots).
     pub(super) fn draw_split_hud(&mut self, batch: &mut HudBatch, slot: usize) {
         let atlas = &self.gui.atlas;

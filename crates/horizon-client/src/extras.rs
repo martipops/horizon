@@ -113,7 +113,7 @@ pub struct Extras {
     /// "Playing Horizon" on the player's Discord profile (`discord_presence`; on by default).
     pub discord_presence: bool,
     /// Splitscreen: another controller in a world offers to join as a new player on this screen
-    /// (`splitscreen`; off by default, from the next launch).
+    /// (`splitscreen`; off by default; turning it on or off applies at once).
     pub splitscreen: bool,
     /// Two players in one window: 0 auto (side by side when wider than tall), 1 side by side,
     /// 2 top and bottom (`splitscreenTwo`).

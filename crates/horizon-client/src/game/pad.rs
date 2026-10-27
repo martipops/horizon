@@ -86,6 +86,9 @@ mod hardware {
         pub(in crate::game) fn name(&self, _: PadId) -> String {
             String::new()
         }
+        pub(in crate::game) fn style(&self, _: PadId) -> horizon_client::gamepad::GlyphStyle {
+            horizon_client::gamepad::GlyphStyle::Auto
+        }
     }
 
     impl Game<'_> {

@@ -78,7 +78,7 @@ impl Title {
                     button(
                         top + 64.0,
                         "Create".into(),
-                        valid_name(name) && !taken.iter().any(|t| t == name),
+                        valid_name(name) && !taken.iter().any(|t| t.eq_ignore_ascii_case(name)),
                         CREATE,
                     ),
                     button(top + 89.0, lang::get_or("gui.back", "Back"), true, BACK),
@@ -150,7 +150,7 @@ impl Title {
     pub(super) fn confirm_profile(&mut self) {
         if let Mode::NewProfile { name, taken, .. } = &self.mode {
             let name = name.trim();
-            if valid_name(name) && !taken.iter().any(|t| t == name) {
+            if valid_name(name) && !taken.iter().any(|t| t.eq_ignore_ascii_case(name)) {
                 self.profile_choice = Some(Some(name.to_owned()));
             }
         }
