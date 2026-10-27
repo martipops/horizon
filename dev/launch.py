@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Local splitscreen dev launcher (temporary, on the splitscreen branch).
 
-    cd dev && uv run launch.py      (or: python3 dev/launch.py)
+    cd dev && uv run launch.py      (or, outside Windows: python3 dev/launch.py)
 
 Up/down picks a row, left/right (or Enter) changes it, L launches, B builds, Q quits.
 The game plays from dev/home (its worlds, options and splitscreen profiles), never your
@@ -38,13 +38,20 @@ ROWS = [
 DEFAULTS = {'world': 'Splitscreen', 'mode': 'creative', 'splitscreen': 'on', 'test_players': '0',
             'size': '1600x900', 'audio': 'on', 'home': 'dev/home', 'build': 'on',
             'stats': 'off'}
+# Windows curses sends the keypad's Enter as PADENTER.
+ENTER = (10, 13, curses.KEY_ENTER, getattr(curses, 'PADENTER', curses.KEY_ENTER))
 
 
 def load():
     try:
-        return {**DEFAULTS, **json.loads(SAVED.read_text())}
+        c = {**DEFAULTS, **json.loads(SAVED.read_text())}
     except (OSError, ValueError):
         return dict(DEFAULTS)
+    # A saved choice a row no longer offers goes back to its default.
+    for key, _, choices in ROWS:
+        if choices and c[key] not in choices:
+            c[key] = DEFAULTS[key]
+    return c
 
 
 def set_extra(home, key, value):
@@ -123,7 +130,7 @@ def tui(screen, c):
             row = (row - 1) % len(ROWS)
         elif key == curses.KEY_DOWN:
             row = (row + 1) % len(ROWS)
-        elif choices is None and key in (10, 13, curses.KEY_RIGHT):
+        elif choices is None and key in (*ENTER, curses.KEY_RIGHT):
             curses.echo()
             curses.curs_set(1)
             screen.addstr(3 + row, 41, ' ' * 30)
@@ -132,7 +139,7 @@ def tui(screen, c):
             curses.curs_set(0)
             if text:
                 c[name] = text
-        elif choices and key in (curses.KEY_RIGHT, curses.KEY_LEFT, 10, 13):
+        elif choices and key in (curses.KEY_RIGHT, curses.KEY_LEFT, *ENTER):
             step = -1 if key == curses.KEY_LEFT else 1
             c[name] = choices[(choices.index(c[name]) + step) % len(choices)]
         SAVED.write_text(json.dumps(c, indent=2))
