@@ -96,7 +96,7 @@ impl Launcher {
         }
     }
 
-    fn select_instance(&mut self, instance: &Instance) {
+    pub(super) fn select_instance(&mut self, instance: &Instance) {
         self.settings.instance =
             (instance.kind != InstanceKind::Default).then(|| instance.id.clone());
         self.settings.save();
@@ -541,7 +541,8 @@ impl Launcher {
         )
     }
 
-    /// The Play page's row for the selected instance: its folder, and changing or copying it.
+    /// The Play page's row for the selected instance: its folder, and changing, copying or
+    /// exporting it.
     pub(super) fn instance_row(&mut self, n: usize, cx: &mut Context<Self>) -> Option<Div> {
         let t = self.theme;
         let instance = self.selected_instance()?.clone();
@@ -574,6 +575,22 @@ impl Launcher {
                 )),
             )
             .child(
+                button(
+                    "instance-export",
+                    if self.export.is_some() {
+                        "Close export"
+                    } else {
+                        "Export…"
+                    },
+                    Kind::Ghost,
+                    &t,
+                )
+                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                    this.toggle_export();
+                    cx.notify();
+                })),
+            )
+            .child(
                 button("instance-folder", "Open folder", Kind::Ghost, &t).on_click(
                     move |_, _, cx| {
                         let _ = std::fs::create_dir_all(&home);
@@ -584,10 +601,34 @@ impl Launcher {
         Some(index_row(
             n,
             "Instance",
-            Some(div().child(instance.name.clone()).into_any_element()),
+            Some(
+                div()
+                    .flex()
+                    .items_baseline()
+                    .gap(px(10.))
+                    .child(instance.name.clone())
+                    .child(
+                        text(theme::CAPTION)
+                            .text_color(t.muted)
+                            .child(played_line(&instance)),
+                    )
+                    .into_any_element(),
+            ),
             Some(actions.into_any_element()),
             &t,
         ))
+    }
+}
+
+/// "3 h 05 min in total · last played today", or "Not played yet".
+fn played_line(instance: &Instance) -> String {
+    match instance.last_played {
+        Some(when) => format!(
+            "{} in total · last played {}",
+            instances::play_time(instance.played),
+            worlds_page::ago(when)
+        ),
+        None => "Not played yet".into(),
     }
 }
 
