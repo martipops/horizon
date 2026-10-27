@@ -44,7 +44,7 @@ use std::{
 };
 use winit::{
     application::ApplicationHandler,
-    dpi::{LogicalSize, PhysicalPosition, PhysicalSize},
+    dpi::{LogicalPosition, LogicalSize, PhysicalPosition, PhysicalSize},
     event::{DeviceEvent, DeviceId, ElementState, WindowEvent},
     event_loop::ActiveEventLoop,
     monitor::MonitorHandle,
@@ -226,7 +226,14 @@ pub(super) struct Split<'a> {
     /// The views the players were last fitted to.
     applied: Vec<View>,
     /// Where each numbered window was when it closed, to open there again (this session).
-    window_rects: std::collections::HashMap<u8, (PhysicalPosition<i32>, PhysicalSize<u32>)>,
+    window_rects: std::collections::HashMap<u8, (LogicalPosition<f64>, LogicalSize<f64>)>,
+    /// The monitors with their names, left to right, and the one Window 1 is on: read once a
+    /// frame (`refresh_monitors`), the system's names are slow to ask for.
+    screens: Vec<(String, MonitorHandle)>,
+    main_screen: Option<String>,
+    /// The seats the Setup screens last showed: a draft is by place in this list, so a change
+    /// drops every draft.
+    setup_seats: Vec<usize>,
     /// The player keyboard and mouse drive (0 = P1), and the pointer in the window it moved in.
     focus: usize,
     cursor: PhysicalPosition<f64>,
@@ -286,6 +293,9 @@ impl<'a> Split<'a> {
             surfaces,
             applied: Vec::new(),
             window_rects: Default::default(),
+            screens: Vec::new(),
+            main_screen: None,
+            setup_seats: Vec::new(),
             focus: 0,
             cursor: PhysicalPosition::new(0.0, 0.0),
             limiter: horizon_client::window::FramerateLimiter::new(0),
@@ -332,33 +342,38 @@ impl<'a> Split<'a> {
             .map(|w| &w.placement)
     }
 
-    /// The monitors, by name.
-    fn monitors(&self) -> Vec<MonitorHandle> {
-        self.surfaces
-            .first()
-            .map(|s| {
-                s.window
-                    .available_monitors()
-                    .filter(|m| m.name().is_some())
-                    .collect()
-            })
-            .unwrap_or_default()
+    /// The monitors now, with their names, left to right, and the one Window 1 is on.
+    fn refresh_monitors(&mut self) {
+        let Some(window) = self.surfaces.first().map(|s| s.window.clone()) else {
+            return;
+        };
+        self.screens = window
+            .available_monitors()
+            .filter_map(|m| Some((m.name()?, m)))
+            .collect();
+        self.screens
+            .sort_by_key(|(_, m)| (m.position().x, m.position().y));
+        self.main_screen = window.current_monitor().and_then(|m| m.name());
+    }
+
+    /// The monitors, by name, left to right (as of this frame).
+    fn monitors(&self) -> &[(String, MonitorHandle)] {
+        &self.screens
     }
 
     /// The monitor the game's window is on: Window 1 already shows there.
-    fn main_monitor(&self) -> Option<String> {
-        self.surfaces.first()?.window.current_monitor()?.name()
+    fn main_monitor(&self) -> Option<&String> {
+        self.main_screen.as_ref()
     }
 
     /// How a monitor is called: numbered left to right, with its size (the system's names are
     /// ids on some).
     fn monitor_label(&self, name: &str) -> Option<String> {
-        let mut monitors = self.monitors();
-        monitors.sort_by_key(|m| (m.position().x, m.position().y));
-        let (n, m) = monitors
+        let (n, (_, m)) = self
+            .monitors()
             .iter()
             .enumerate()
-            .find(|(_, m)| m.name().as_deref() == Some(name))?;
+            .find(|(_, (n, _))| n == name)?;
         let size = m.size();
         Some(format!(
             "Monitor {} ({}x{})",
@@ -374,11 +389,7 @@ impl<'a> Split<'a> {
         let number = self.window_number(i);
         let shown = match self.placement(number) {
             Some(Placement::Fill(name)) => {
-                Some(name) != self.main_monitor().as_ref()
-                    && self
-                        .monitors()
-                        .iter()
-                        .any(|m| m.name().as_ref() == Some(name))
+                Some(name) != self.main_monitor() && self.monitors().iter().any(|(n, _)| n == name)
             }
             Some(Placement::Free(_)) => true,
             None => false,
@@ -408,13 +419,11 @@ impl<'a> Split<'a> {
             })
             .collect();
         let main = self.main_monitor();
-        let mut monitors = self.monitors();
-        monitors.sort_by_key(|m| (m.position().x, m.position().y));
-        let monitors = monitors.iter().filter_map(|m| {
-            let name = m
-                .name()
-                .filter(|n| Some(n) != main.as_ref() && !filled.contains(&n))?;
-            Some((self.monitor_label(&name)?, Spot::Fill(name)))
+        let monitors = self.monitors().iter().filter_map(|(name, _)| {
+            if Some(name) == main || filled.contains(&name) {
+                return None;
+            }
+            Some((self.monitor_label(name)?, Spot::Fill(name.clone())))
         });
         std::iter::once((WINDOW_1.to_owned(), Spot::Window(1)))
             .chain(
@@ -788,7 +797,7 @@ impl<'a> Split<'a> {
             return false;
         }
         self.forget_empty_windows();
-        let monitors = self.monitors();
+        let monitors = self.monitors().to_vec();
         let wanted: Vec<u8> = (0..self.players()).map(|i| self.window_of(i)).collect();
         let placements: std::collections::HashMap<u8, Placement> = self
             .windows
@@ -801,7 +810,11 @@ impl<'a> Split<'a> {
                 && !wanted.contains(&s.key)
                 && let Ok(at) = s.window.outer_position()
             {
-                self.window_rects.insert(s.key, (at, s.window.inner_size()));
+                // In points: a window from a 1x TV opens there again beside a 2x screen.
+                let scale = s.window.scale_factor();
+                let size = s.window.inner_size().to_logical(scale);
+                self.window_rects
+                    .insert(s.key, (at.to_logical(scale), size));
             }
         }
         self.surfaces.retain(|s| {
@@ -828,8 +841,8 @@ impl<'a> Split<'a> {
             let cover = match &placement {
                 Some(Placement::Fill(name)) => monitors
                     .iter()
-                    .find(|m| m.name().as_ref() == Some(name))
-                    .map(cover),
+                    .find(|(n, _)| n == name)
+                    .map(|(_, m)| cover(m)),
                 _ => None,
             };
             let attributes = match cover {
@@ -840,13 +853,7 @@ impl<'a> Split<'a> {
                     .with_inner_size(size),
                 // A numbered window where it was last, else 854 x 480.
                 None => {
-                    let last = match placement {
-                        Some(Placement::Free(Some((at, size)))) => Some((
-                            PhysicalPosition::new(at[0], at[1]),
-                            PhysicalSize::new(size[0], size[1]),
-                        )),
-                        _ => self.window_rects.get(key).copied(),
-                    };
+                    let last = self.window_rects.get(key).copied();
                     match last {
                         Some((at, size)) => attributes.with_position(at).with_inner_size(size),
                         None => attributes.with_inner_size(LogicalSize::new(854.0, 480.0)),
@@ -962,20 +969,17 @@ impl<'a> Split<'a> {
     /// The monitors for the Setup screen, left to right (as `monitor_label` numbers them), and
     /// the one Window 1 is on.
     fn setup_monitors(&self) -> (Vec<layout::Monitor>, String) {
-        let mut monitors: Vec<layout::Monitor> = self
+        let monitors = self
             .monitors()
             .iter()
-            .filter_map(|m| {
-                Some(layout::Monitor {
-                    name: m.name()?,
-                    at: [m.position().x, m.position().y],
-                    size: [m.size().width, m.size().height],
-                    scale: m.scale_factor(),
-                })
+            .map(|(name, m)| layout::Monitor {
+                name: name.clone(),
+                at: [m.position().x, m.position().y],
+                size: [m.size().width, m.size().height],
+                scale: m.scale_factor(),
             })
             .collect();
-        monitors.sort_by_key(|m| (m.at[0], m.at[1]));
-        (monitors, self.main_monitor().unwrap_or_default())
+        (monitors, self.main_monitor().cloned().unwrap_or_default())
     }
 
     /// The Setup screen applied: its windows, and every player in its window. Windows nobody
@@ -1042,13 +1046,22 @@ impl<'a> Split<'a> {
                 format!("P{seat} {who}")
             })
             .collect();
-        let (mut applied, mut identify) = (None, false);
+        let seats: Vec<usize> = (0..self.players()).map(|i| self.who(i).0).collect();
+        let moved = std::mem::replace(&mut self.setup_seats, seats) != self.setup_seats;
+        let (mut applied, mut identify) = (Vec::new(), false);
         let games =
             std::iter::once(&mut self.host).chain(self.guests.iter_mut().map(|g| &mut g.game));
         for (i, game) in games.enumerate() {
             let setup = &mut game.ui.options.split_setup;
-            if let Some(draft) = setup.apply.take() {
-                applied = Some(draft);
+            // Someone joined or left: every draft would put the players in the wrong places.
+            if moved {
+                setup.reset();
+            }
+            if let Some(draft) = setup.apply.take().filter(|_| i == 0) {
+                applied.push((i, Ok(draft)));
+            }
+            if let Some(spot) = setup.apply_move.take().filter(|_| i > 0) {
+                applied.push((i, Err(spot)));
             }
             identify |= std::mem::take(&mut setup.identify);
             // P1 arranges everyone; the others, themselves.
@@ -1059,9 +1072,16 @@ impl<'a> Split<'a> {
             setup.main = main.clone();
             setup.names = names.clone();
         }
-        let changed = applied.is_some();
-        if let Some(draft) = applied {
-            self.apply(draft);
+        let changed = !applied.is_empty();
+        for (i, change) in applied {
+            match change {
+                Ok(draft) => self.apply(draft),
+                // Another player's move: a window it named may have closed since.
+                Err(Spot::Window(n)) if self.placement(n).is_none() => {
+                    self.choose(i, Spot::Window(1))
+                }
+                Err(spot) => self.choose(i, spot),
+            }
         }
         // Every view says where it is: after a change, or asked.
         if changed || identify {
@@ -1683,6 +1703,7 @@ impl ApplicationHandler for Split<'_> {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        self.refresh_monitors();
         // The Splitscreen switch, turned on or off in P1's settings: applied at once.
         if self.host.settings.extras.splitscreen != self.enabled && self.host.window.is_some() {
             let switched = if self.enabled {

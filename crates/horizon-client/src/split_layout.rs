@@ -148,6 +148,8 @@ pub enum Warning {
     Empty(u8),
     /// This window fills a monitor that isn't there: its players play in Window 1.
     Unplugged(u8, String),
+    /// This window fills the monitor Window 1 is on: its players play in Window 1.
+    OnWindow1(u8),
 }
 
 /// The setup screen's arrangement until Apply: the windows, each player's window (by number, P1
@@ -230,37 +232,27 @@ impl Draft {
 
     /// Player `i` to `spot`: a new window opens for it (a window it leaves stays, empty).
     pub fn place_player(&mut self, i: usize, spot: Spot) {
+        if i >= self.players.len() {
+            return;
+        }
         let number = match spot {
             Spot::Window(n) => n,
             Spot::New => self.add_window(),
             Spot::Fill(name) => self.open(Placement::Fill(name)),
         };
-        if let Some(p) = self.players.get_mut(i) {
-            *p = number;
-        }
-    }
-
-    /// Window `number` closes (never Window 1): its players go back to Window 1.
-    pub fn remove_window(&mut self, number: u8) {
-        if number == 1 {
-            return;
-        }
-        self.windows.retain(|w| w.number != number);
-        for p in &mut self.players {
-            if *p == number {
-                *p = 1;
-            }
-        }
+        self.players[i] = number;
     }
 
     /// What to tell before Apply, in window order.
-    pub fn warnings(&self, monitors: &[Monitor]) -> Vec<Warning> {
+    pub fn warnings(&self, monitors: &[Monitor], main: &str) -> Vec<Warning> {
         let mut out = Vec::new();
         for w in &self.windows {
             if let Placement::Fill(name) = &w.placement
                 && !monitors.iter().any(|m| &m.name == name)
             {
                 out.push(Warning::Unplugged(w.number, name.clone()));
+            } else if w.number != 1 && w.placement == Placement::Fill(main.to_owned()) {
+                out.push(Warning::OnWindow1(w.number));
             } else if !self.players.contains(&w.number) {
                 out.push(Warning::Empty(w.number));
             }
@@ -270,7 +262,8 @@ impl Draft {
 
     /// Where each window would be: its corner on the desktop (`Monitor::desktop`'s units) and its
     /// size in pixels, in `windows` order: free ones where they were (new ones at `main`'s
-    /// corner), the others over their monitor; a window over a missing monitor: `None`.
+    /// corner), the others over their monitor; a window over a missing monitor or Window 1's
+    /// (its players play in Window 1, as the game does): `None`.
     pub fn rects(&self, monitors: &[Monitor], main: &str) -> Vec<Option<([i32; 2], [u32; 2])>> {
         let home = monitors
             .iter()
@@ -285,6 +278,7 @@ impl Draft {
                     let size = NEW_WINDOW.map(|v| (v * scale).round() as u32);
                     Some(([at[0] as i32, at[1] as i32], size))
                 }
+                Placement::Fill(name) if w.number != 1 && name == main => None,
                 Placement::Fill(name) => monitors.iter().find(|m| &m.name == name).map(|m| {
                     let at = m.desktop();
                     ([at[0] as i32, at[1] as i32], m.size)
@@ -458,7 +452,7 @@ mod tests {
         assert_eq!(apart.players, [1, 2, 3]);
         assert_eq!(apart.windows[2].placement, Placement::Free(None));
         assert_eq!(apart.rects(&m, "Built-in")[2], Some(([0, 0], [1708, 960])));
-        assert!(apart.warnings(&m).is_empty());
+        assert!(apart.warnings(&m, "Built-in").is_empty());
     }
 
     #[test]
@@ -470,26 +464,32 @@ mod tests {
         assert_eq!(d.players, [1, 2, 2]);
         d.place_player(2, Spot::New);
         assert_eq!(d.players, [1, 2, 3]);
-        assert!(d.warnings(&m).is_empty());
+        assert!(d.warnings(&m, "Built-in").is_empty());
         // The window left behind stays, empty, with a warning.
         d.place_player(1, Spot::Window(1));
-        assert_eq!(d.warnings(&m), [Warning::Empty(2)]);
+        assert_eq!(d.warnings(&m, "Built-in"), [Warning::Empty(2)]);
     }
 
     #[test]
-    fn windows_added_and_removed() {
+    fn windows_numbered_lowest_free() {
         let mut d = here(3);
         assert_eq!(d.add_window(), 2);
         assert_eq!(d.add_window(), 3);
-        d.players[2] = 3;
-        d.remove_window(2);
-        // The lowest number free comes back.
+        d.windows.retain(|w| w.number != 2);
         assert_eq!(d.add_window(), 2);
-        d.players[1] = 2;
-        d.remove_window(2);
-        assert_eq!(d.players, [1, 1, 3]);
-        d.remove_window(1);
-        assert_eq!(d.windows[0].number, 1);
+        // Nobody to place: no window opens for it.
+        d.place_player(9, Spot::New);
+        assert_eq!(d.windows.len(), 3);
+    }
+
+    #[test]
+    fn a_window_over_window_1s_monitor() {
+        let m = monitors();
+        let mut d = here(2);
+        d.place_player(1, Spot::Fill("Built-in".into()));
+        assert_eq!(d.warnings(&m, "Built-in"), [Warning::OnWindow1(2)]);
+        // As the game does: P2 beside P1 in Window 1.
+        assert_eq!(d.preview(&m, "Built-in")[1].0, 0);
     }
 
     #[test]
@@ -497,17 +497,17 @@ mod tests {
         let m = monitors();
         let mut d = here(2).desk_and_tv(&m, "Built-in").unwrap();
         let three = d.add_window();
-        assert_eq!(d.warnings(&m), [Warning::Empty(three)]);
+        assert_eq!(d.warnings(&m, "Built-in"), [Warning::Empty(three)]);
         // The TV unplugged: its player plays in Window 1 beside P1.
         assert_eq!(
-            d.warnings(&m[..1]),
+            d.warnings(&m[..1], "Built-in"),
             [Warning::Unplugged(2, "TV".into()), Warning::Empty(three)]
         );
         let views = d.preview(&m[..1], "Built-in");
         assert_eq!(views[1], (0, [1000, 0], size(1000, 1200)));
         // P1 elsewhere: Window 1 is blank.
         d.players = vec![2, 2];
-        assert_eq!(d.warnings(&m)[0], Warning::Empty(1));
+        assert_eq!(d.warnings(&m, "Built-in")[0], Warning::Empty(1));
     }
 
     #[test]

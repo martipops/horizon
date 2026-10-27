@@ -889,8 +889,6 @@ pub enum Page {
     ShaderPacks,
     /// Horizon's graphics settings (`graphics_ui`).
     Graphics,
-    /// Splitscreen's windows and who plays where (`split_ui`).
-    SplitSetup,
     GraphicsAdvanced,
     /// Horizon's controller settings and button binds.
     Controller,
@@ -905,6 +903,8 @@ pub enum Page {
     Agent,
     /// Splitscreen: on or off, how two share a screen, and where each player plays.
     Splitscreen,
+    /// Splitscreen's windows and who plays where (`split_ui`).
+    SplitSetup,
 }
 #[derive(Clone, Debug, PartialEq)]
 enum Act {

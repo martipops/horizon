@@ -23,13 +23,17 @@ pub struct SplitUi {
     /// Whose screen this is (0 = P1), and whether it arranges everyone (P1) or only itself.
     pub me: usize,
     pub host: bool,
-    /// Apply pressed: the arrangement for the game to make.
+    /// Apply pressed: the arrangement for the game to make (P1's screen), or where this player
+    /// goes (another's: its draft may be older than P1's changes, so only its move counts).
     pub apply: Option<Draft>,
+    pub apply_move: Option<Spot>,
     /// Identify pressed: every view says which window it is in.
     pub identify: bool,
     /// The changes not applied yet.
     edit: Option<Draft>,
     selected: Option<usize>,
+    /// This player's last move in the draft (another player's screen).
+    moved: Option<Spot>,
     /// A tile held by the mouse: whose, and where the pointer is (`None` until it moves).
     drag: Option<(usize, Option<(f32, f32)>)>,
     /// The screen's size at the last press (a release doesn't say).
@@ -76,6 +80,8 @@ impl SplitUi {
     /// Opened: the arrangement as it is.
     pub fn reset(&mut self) {
         self.edit = None;
+        self.moved = None;
+        self.apply_move = None;
         self.selected = None;
         self.apply = None;
         self.drag = None;
@@ -155,6 +161,7 @@ impl SplitUi {
                         let [mx, my, mw, mh] = m.desktop();
                         x >= mx && x < mx + mw && y >= my && y < my + mh
                     })
+                    .or_else(|| self.monitors.iter().find(|m| m.name == self.main))
                     .map_or(1.0, |m| m.desktop()[2] / f64::from(m.size[0]));
                 let size = [f64::from(pw) * scale, f64::from(ph) * scale];
                 Some((win.number, to_map([x, y, size[0], size[1]])))
@@ -313,11 +320,14 @@ impl SplitUi {
             return Vec::new();
         };
         draft
-            .warnings(&self.monitors)
+            .warnings(&self.monitors, &self.main)
             .into_iter()
             .map(|w| match w {
-                Warning::Empty(1) => "Nobody plays in Window 1: it stays open, empty".to_owned(),
+                Warning::Empty(1) => "Nobody plays in Window 1: it hides".to_owned(),
                 Warning::Empty(n) => format!("Nobody plays in Window {n}: it won't open"),
+                Warning::OnWindow1(n) => {
+                    format!("Window {n} fills Window 1's monitor: its players play in Window 1")
+                }
                 Warning::Unplugged(n, _) => {
                     format!("Window {n}'s monitor is not connected: its players play in Window 1")
                 }
@@ -466,10 +476,8 @@ impl SplitUi {
                 self.drag = Some((i, None));
             }
             Target::Move(spot) => {
-                if let Some(i) = self.selected
-                    && let Some(draft) = self.editing()
-                {
-                    draft.place_player(i, spot);
+                if let Some(i) = self.selected.filter(|&i| self.may_move(i)) {
+                    self.place(i, spot);
                 }
             }
             Target::Preset(preset) => {
@@ -504,8 +512,17 @@ impl SplitUi {
                 }
             }
             Target::Identify => self.identify = true,
-            Target::Revert => self.edit = None,
-            Target::Apply => self.apply = self.edit.take(),
+            Target::Revert => {
+                self.edit = None;
+                self.moved = None;
+            }
+            Target::Apply => {
+                let draft = self.edit.take();
+                match self.host {
+                    true => self.apply = draft,
+                    false => self.apply_move = self.moved.take(),
+                }
+            }
             Target::Done => {
                 self.reset();
                 return Click::Done;
@@ -520,6 +537,9 @@ impl SplitUi {
         let Some((i, Some(at))) = self.drag.take() else {
             return false;
         };
+        if !self.may_move(i) {
+            return false;
+        }
         let Some(spot) = self.drop_spot(at, w, h) else {
             return false;
         };
@@ -531,10 +551,18 @@ impl SplitUi {
         {
             return false;
         }
+        self.place(i, spot);
+        true
+    }
+
+    /// Player `i` to `spot` in the draft.
+    fn place(&mut self, i: usize, spot: Spot) {
+        if !self.host {
+            self.moved = Some(spot.clone());
+        }
         if let Some(draft) = self.editing() {
             draft.place_player(i, spot);
         }
-        true
     }
 }
 
@@ -689,5 +717,17 @@ mod tests {
         assert!(!buttons.iter().any(|b| b.1 == "Everyone here"));
         press(&mut ui, "P3");
         assert_eq!(ui.selected, None);
+        // A selection left from before someone left: no move for another player.
+        ui.selected = Some(2);
+        press(&mut ui, "New window");
+        assert_eq!(ui.edit, None);
+        // Its Apply says only where it goes.
+        press(&mut ui, "P2");
+        press(&mut ui, "New window");
+        press(&mut ui, "Apply");
+        assert_eq!(
+            (ui.apply.as_ref(), ui.apply_move.as_ref()),
+            (None, Some(&Spot::New))
+        );
     }
 }
