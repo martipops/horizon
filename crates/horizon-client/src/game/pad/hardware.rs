@@ -80,6 +80,19 @@ impl Pads {
         };
     }
 
+    /// Splitscreen reads the pads for every player (`PadRouter`): this game's own gilrs closes, or
+    /// its events would queue up unread. It opens again if this game reads the pads itself.
+    pub(in crate::game) fn release_hardware(&mut self) {
+        if self.devices.started {
+            self.devices.gilrs = None;
+            self.devices.started = false;
+            self.devices.active = None;
+            self.devices.rumbles.clear();
+            self.devices.dualsense = false;
+            self.devices.output = None;
+        }
+    }
+
     /// Drain gilrs' events and read the active pad (opening gilrs the first time).
     pub(super) fn read(&mut self) -> PadState {
         self.start();

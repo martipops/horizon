@@ -1422,6 +1422,7 @@ impl<'a> Split<'a> {
                 g.game.pad.style = self.pads.style(id);
             }
         }
+        self.host.pad.release_hardware();
         let p1 = self.pad_state(self.p1_pad);
         // Asked about its controller, P1's buttons answer that, not the game.
         self.host.pad.feed = Some(if self.p1_hold.asking {
@@ -1749,6 +1750,8 @@ impl<'a> Split<'a> {
         guest.window = Some(window);
         guest.world_renderer_ready = true;
         guest.apply_settings();
+        // Its pad comes from the split from its first frame: it never opens the pads itself.
+        guest.pad.feed = Some(PadState::default());
         Ok(guest)
     }
 

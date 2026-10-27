@@ -81,6 +81,7 @@ mod hardware {
         pub(super) fn read(&mut self) -> PadState {
             PadState::default()
         }
+        pub(in crate::game) fn release_hardware(&mut self) {}
     }
 
     pub(in crate::game) type PadId = usize;
