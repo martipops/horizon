@@ -3,7 +3,7 @@
 //! server build) has the stub in pad.rs instead, and only `horizon-ctl pad`'s virtual pad.
 use super::{
     super::{Game, Screen},
-    Pads,
+    PadEvent, Pads,
 };
 use horizon_client::gamepad::{self, Button, GlyphStyle, PadState, Rumble, TriggerFeel};
 use serde_json::{Value, json};
@@ -169,8 +169,8 @@ pub(in crate::game) struct PadRouter {
 }
 
 impl PadRouter {
-    /// The buttons pressed since the last call, by pad.
-    pub(in crate::game) fn presses(&mut self) -> Vec<(PadId, Button)> {
+    /// The buttons pressed and the controllers gone or back since the last call, in order.
+    pub(in crate::game) fn events(&mut self) -> Vec<PadEvent> {
         if !self.started {
             self.started = true;
             self.gilrs = gilrs::Gilrs::new().ok();
@@ -178,17 +178,40 @@ impl PadRouter {
         let Some(gilrs) = self.gilrs.as_mut() else {
             return Vec::new();
         };
-        let mut presses = Vec::new();
+        let mut events = Vec::new();
         while let Some(gilrs::Event { id, event, .. }) = gilrs.next_event() {
-            if let gilrs::EventType::ButtonPressed(pressed, _) = event
-                && let Some(button) = Button::ALL
-                    .into_iter()
-                    .find(|&b| gilrs_button(b) == pressed)
-            {
-                presses.push((id, button));
+            match event {
+                gilrs::EventType::ButtonPressed(pressed, _) => {
+                    if let Some(button) = Button::ALL
+                        .into_iter()
+                        .find(|&b| gilrs_button(b) == pressed)
+                    {
+                        events.push(PadEvent::Press(id, button));
+                    }
+                }
+                gilrs::EventType::Disconnected => {
+                    log::info!("Controller disconnected: {}", gilrs.gamepad(id).name());
+                    events.push(PadEvent::Gone(id));
+                }
+                gilrs::EventType::Connected => events.push(PadEvent::Back(id)),
+                _ => {}
             }
         }
-        presses
+        events
+    }
+
+    pub(in crate::game) fn connected(&self, id: PadId) -> bool {
+        self.gilrs
+            .as_ref()
+            .is_some_and(|g| g.connected_gamepad(id).is_some())
+    }
+
+    /// The kind of controller (its maker, model and bus; two of one model share it), to know it
+    /// back when it reconnects under a new id; zero when the system doesn't say.
+    pub(in crate::game) fn uuid(&self, id: PadId) -> [u8; 16] {
+        self.gilrs
+            .as_ref()
+            .map_or([0; 16], |g| g.gamepad(id).uuid())
     }
 
     /// The pad's state now (released when it is gone).

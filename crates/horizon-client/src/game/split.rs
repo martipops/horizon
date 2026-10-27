@@ -15,6 +15,11 @@
 //! window's compositor copies its players' frames. Turning splitscreen on rebuilds P1's renderer
 //! that way at once (the world is meshed again: a moment, in the menu); off, back.
 //!
+//! A controller that disconnects leaves its player waiting, its view dimmed: the same controller
+//! reconnecting takes it back, A on another takes it over, B on another lets the player leave; a
+//! player still picking a profile leaves at once. P1 keeps the keyboard and the mouse (a notice,
+//! not a question).
+//!
 //! Keyboard and mouse drive the player whose view was clicked last (Esc frees the mouse, then
 //! click another view); closing a player's own window drops that player. The players' frames are
 //! paced once, at the fastest any wants.
@@ -25,7 +30,7 @@
 
 use super::{
     Game, UiResources, build_renderer,
-    pad::{PadId, PadRouter},
+    pad::{PadEvent, PadId, PadRouter},
     start_game,
 };
 use horizon_client::split_layout::{self as layout, MAX_PLAYERS, Placement, Spot, View, place};
@@ -93,6 +98,57 @@ enum Ask {
     Join,
     Leave,
     Controller,
+    /// Its controller disconnected: any controller answers.
+    Lost,
+}
+
+/// A player whose controller disconnected, waiting for one: its seat (1 = P1), and the
+/// controller's id and kind (`PadRouter::uuid`) to know it back.
+struct Lost<Id> {
+    seat: usize,
+    id: Id,
+    uuid: [u8; 16],
+}
+
+/// What a button on a controller no player has does while players wait for one.
+#[derive(Debug, PartialEq)]
+enum Claim {
+    /// It goes to `lost[k]`.
+    Give(usize),
+    /// `lost[k]` leaves instead.
+    Leave(usize),
+    /// Nothing: the others wait (no offer to join meanwhile).
+    Wait,
+    /// Nobody but P1 waits, and P1 has the keyboard: as if nobody did.
+    Pass,
+}
+
+/// The same kind of controller back (a new id on macOS) takes back its player with any button;
+/// another takes over the player waiting longest with A, or lets it leave with B. P1 is only
+/// given its own back (another joins as P1 through the offer to join).
+fn claim<Id>(lost: &[Lost<Id>], uuid: [u8; 16], button: Button) -> Claim {
+    if uuid != [0; 16]
+        && let Some(k) = lost.iter().position(|l| l.uuid == uuid)
+    {
+        return Claim::Give(k);
+    }
+    let Some(k) = lost.iter().position(|l| l.seat != 1) else {
+        return Claim::Pass;
+    };
+    match button {
+        Button::South => Claim::Give(k),
+        Button::East => Claim::Leave(k),
+        _ => Claim::Wait,
+    }
+}
+
+/// The question on a waiting player's view.
+fn lost_prompt(seat: usize) -> Prompt {
+    Prompt {
+        ask: Ask::Lost,
+        title: format!("P{seat}: controller disconnected"),
+        choices: vec![(Button::South, "Use another"), (Button::East, "Leave")],
+    }
 }
 
 /// Holding Select 2 s asks a question the controller then answers; meanwhile its buttons answer
@@ -240,6 +296,8 @@ pub(super) struct Split<'a> {
     p1_hold: HoldSelect,
     /// Pads whose buttons still count as the press that joined them: released first.
     fresh: Vec<PadId>,
+    /// Players whose controller disconnected, longest waiting first.
+    lost: Vec<Lost<PadId>>,
     /// The game's window and its compositor first, then monitors' and players' own.
     surfaces: Vec<Surface>,
     /// The views the players were last fitted to.
@@ -309,6 +367,7 @@ impl<'a> Split<'a> {
             rejoin: Vec::new(),
             p1_hold: HoldSelect::default(),
             fresh: Vec::new(),
+            lost: Vec::new(),
             surfaces,
             applied: Vec::new(),
             window_rects: Default::default(),
@@ -1071,7 +1130,11 @@ impl<'a> Split<'a> {
         let names: Vec<String> = (0..self.players())
             .map(|i| {
                 let (seat, who) = self.who(i);
-                format!("P{seat} {who}")
+                if self.lost.iter().any(|l| l.seat == seat) {
+                    format!("P{seat} {who} (no controller)")
+                } else {
+                    format!("P{seat} {who}")
+                }
             })
             .collect();
         let seats: Vec<usize> = (0..self.players()).map(|i| self.who(i).0).collect();
@@ -1253,8 +1316,26 @@ impl<'a> Split<'a> {
     fn route_pads(&mut self) -> Vec<PadId> {
         let now = Instant::now();
         let mut joins = Vec::new();
-        for (id, button) in self.pads.presses() {
+        let mut presses = Vec::new();
+        for event in self.pads.events() {
+            match event {
+                PadEvent::Press(id, button) => presses.push((id, button)),
+                PadEvent::Gone(id) => self.pad_gone(id),
+                PadEvent::Back(id) => {
+                    if let Some(k) = self.lost.iter().position(|l| l.id == id) {
+                        let seat = self.lost.remove(k).seat;
+                        self.give_pad(seat, id);
+                    }
+                }
+            }
+        }
+        self.forget_lost();
+        for (id, button) in presses {
             if Some(id) == self.p1_pad || self.guests.iter().any(|g| g.pad == Some(id)) {
+                continue;
+            }
+            // Pressed, then gone in the same frame.
+            if !self.pads.connected(id) {
                 continue;
             }
             if !self.in_world() {
@@ -1262,6 +1343,9 @@ impl<'a> Split<'a> {
                     self.p1_pad = Some(id);
                     self.fresh.push(id);
                 }
+                continue;
+            }
+            if self.claim_for_lost(id, button) {
                 continue;
             }
             match self.offers.iter().position(|(o, _)| *o == id) {
@@ -1325,6 +1409,114 @@ impl<'a> Split<'a> {
             self.guests[i].game.pad.feed = Some(state);
         }
         joins
+    }
+
+    /// A controller disconnected: its offer, rejoin and fresh press go; its player waits for one
+    /// (P1 keeps the keyboard and mouse; a player picking a profile leaves).
+    fn pad_gone(&mut self, id: PadId) {
+        self.fresh.retain(|&p| p != id);
+        self.rejoin.retain(|(p, _)| *p != Some(id));
+        let offered = self.offers.len();
+        self.offers.retain(|(p, _)| *p != id);
+        if self.offers.len() != offered && !self.offers.is_empty() {
+            self.ask_to_join();
+        }
+        let uuid = self.pads.uuid(id);
+        if self.p1_pad == Some(id) {
+            self.p1_pad = None;
+            self.p1_hold = HoldSelect::default();
+            if self
+                .host
+                .split_hud
+                .prompt
+                .as_ref()
+                .is_some_and(|p| p.ask == Ask::Controller)
+            {
+                self.host.split_hud.prompt = None;
+            }
+            if self.in_world() {
+                self.lost.push(Lost { seat: 1, id, uuid });
+                self.host.split_hud.notice = Some(horizon_client::toasts::SystemToast::new(
+                    "Controller disconnected".to_owned(),
+                    Some("Reconnect it, or press a button on another".to_owned()),
+                ));
+            }
+            return;
+        }
+        let Some(g) = self.guests.iter_mut().find(|g| g.pad == Some(id)) else {
+            return;
+        };
+        g.pad = None;
+        g.hold = HoldSelect::default();
+        if g.name.is_none() {
+            // Still picking a profile: as if it pressed Cancel.
+            if let Some(title) = g.game.title.as_mut() {
+                title.escape();
+            }
+            return;
+        }
+        self.lost.push(Lost {
+            seat: g.seat,
+            id,
+            uuid,
+        });
+        g.game.split_hud.prompt = Some(lost_prompt(g.seat));
+    }
+
+    /// Player in `seat` plays with controller `id` (back, or another): its question goes.
+    fn give_pad(&mut self, seat: usize, id: PadId) {
+        self.fresh.push(id);
+        let hud = if seat == 1 {
+            self.p1_pad = Some(id);
+            &mut self.host.split_hud
+        } else {
+            let Some(g) = self.guests.iter_mut().find(|g| g.seat == seat) else {
+                return;
+            };
+            g.pad = Some(id);
+            &mut g.game.split_hud
+        };
+        if hud.prompt.as_ref().is_some_and(|p| p.ask == Ask::Lost) {
+            hud.prompt = None;
+        }
+        hud.notice = Some(horizon_client::toasts::SystemToast::new(
+            "Controller connected".to_owned(),
+            None,
+        ));
+    }
+
+    /// A button on a controller nobody has while players wait for one: true when it answered
+    /// them (`claim`).
+    fn claim_for_lost(&mut self, id: PadId, button: Button) -> bool {
+        match claim(&self.lost, self.pads.uuid(id), button) {
+            Claim::Give(k) => {
+                let seat = self.lost.remove(k).seat;
+                self.give_pad(seat, id);
+            }
+            Claim::Leave(k) => {
+                let seat = self.lost.remove(k).seat;
+                if let Some(g) = self.guests.iter_mut().find(|g| g.seat == seat) {
+                    g.game.split_hud.prompt = None;
+                    if let Err(e) = g.game.leave_server(None) {
+                        log::warn!("Horizon: splitscreen: {e}");
+                    }
+                }
+            }
+            Claim::Wait => {}
+            Claim::Pass => return false,
+        }
+        true
+    }
+
+    /// Nobody waits for a player who left or has a controller again (another way), nor for P1
+    /// out of a world.
+    fn forget_lost(&mut self) {
+        let p1 = self.in_world() && self.p1_pad.is_none();
+        let guests = &self.guests;
+        self.lost.retain(|l| match l.seat {
+            1 => p1,
+            seat => guests.iter().any(|g| g.seat == seat && g.pad.is_none()),
+        });
     }
 
     /// Every player sees the controllers waiting to join, whatever it is doing.
@@ -1995,5 +2187,53 @@ impl Game<'_> {
             return;
         }
         notice.draw(&self.gui.atlas, batch, 32.0 * slot as f32);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const PAD: [u8; 16] = [7; 16];
+    const OTHER: [u8; 16] = [9; 16];
+
+    fn lost(seat: usize, uuid: [u8; 16]) -> Lost<usize> {
+        Lost {
+            seat,
+            id: seat,
+            uuid,
+        }
+    }
+
+    #[test]
+    fn the_same_controller_back_takes_its_player_with_any_button() {
+        let waiting = [lost(2, OTHER), lost(3, PAD)];
+        assert_eq!(claim(&waiting, PAD, Button::DPadUp), Claim::Give(1));
+        // P1's own comes back too.
+        assert_eq!(claim(&[lost(1, PAD)], PAD, Button::West), Claim::Give(0));
+    }
+
+    #[test]
+    fn another_controller_takes_over_or_lets_go_the_longest_waiting() {
+        let waiting = [lost(1, OTHER), lost(3, OTHER), lost(2, OTHER)];
+        assert_eq!(claim(&waiting, PAD, Button::South), Claim::Give(1));
+        assert_eq!(claim(&waiting, PAD, Button::East), Claim::Leave(1));
+        // Any other button: the others wait, nobody is offered to join meanwhile.
+        assert_eq!(claim(&waiting, PAD, Button::North), Claim::Wait);
+    }
+
+    #[test]
+    fn only_p1_waiting_leaves_the_offer_to_join() {
+        assert_eq!(claim(&[lost(1, OTHER)], PAD, Button::South), Claim::Pass);
+        assert_eq!(claim::<usize>(&[], PAD, Button::South), Claim::Pass);
+    }
+
+    #[test]
+    fn a_controller_the_system_does_not_describe_is_not_known_back() {
+        let unknown = [0; 16];
+        assert_eq!(
+            claim(&[lost(2, unknown)], unknown, Button::West),
+            Claim::Wait
+        );
     }
 }

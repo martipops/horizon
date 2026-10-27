@@ -337,7 +337,7 @@ impl Backend for MixerBackend {
         let (namespace, path) = sound.path();
         let file = self.root.join("assets").join(namespace).join(&path);
         // A looping sound follows its entity in one client's tracking only: each keeps its own.
-        if !looping && self.duplicate(channel, &variantless(&format!("{namespace}:{path}"))) {
+        if !looping && self.duplicate(channel, variantless(&format!("{namespace}:{path}"))) {
             return;
         }
         if sound.stream {

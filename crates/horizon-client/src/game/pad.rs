@@ -59,12 +59,22 @@ pub(super) struct Pads {
 mod hardware;
 pub(super) use hardware::{PadId, PadRouter};
 
+/// What a controller did since the last frame.
+#[cfg_attr(not(feature = "controllers"), allow(dead_code))]
+pub(in crate::game) enum PadEvent {
+    Press(PadId, Button),
+    /// Disconnected (out of battery, unplugged, out of range).
+    Gone(PadId),
+    /// Connected again under the same id (Windows keeps it; macOS gives a new one).
+    Back(PadId),
+}
+
 /// A build without the `controllers` feature (the server build, which must not need libudev): no
 /// hardware pads, only `horizon-ctl pad`'s virtual one.
 #[cfg(not(feature = "controllers"))]
 mod hardware {
     use super::{super::Game, Pads};
-    use horizon_client::gamepad::{Button, PadState, Pulse, Rumble};
+    use horizon_client::gamepad::{PadState, Pulse, Rumble};
     use serde_json::{Value, json};
 
     impl Pads {
@@ -77,8 +87,14 @@ mod hardware {
     #[derive(Default)]
     pub(in crate::game) struct PadRouter;
     impl PadRouter {
-        pub(in crate::game) fn presses(&mut self) -> Vec<(PadId, Button)> {
+        pub(in crate::game) fn events(&mut self) -> Vec<super::PadEvent> {
             Vec::new()
+        }
+        pub(in crate::game) fn connected(&self, _: PadId) -> bool {
+            false
+        }
+        pub(in crate::game) fn uuid(&self, _: PadId) -> [u8; 16] {
+            [0; 16]
         }
         pub(in crate::game) fn state(&self, _: PadId) -> PadState {
             PadState::default()
