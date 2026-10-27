@@ -1242,6 +1242,16 @@ mod tests {
     }
 
     #[test]
+    fn two_windows_two_players_each() {
+        // P1 and P2 at the desk, P3 and P4 on the TV: halves in each window.
+        let screens = [size(3024, 1964), size(3840, 2160)];
+        let views = place(&[0, 0, 1, 1], &screens, 0);
+        assert_eq!(views[1], (0, [1512, 0], size(1512, 1964)));
+        assert_eq!(views[2], (1, [0, 0], size(1920, 2160)));
+        assert_eq!(views[3], (1, [1920, 0], size(1920, 2160)));
+    }
+
+    #[test]
     fn screen_choices_round_trip() {
         let dir = std::env::temp_dir().join(format!("horizon-split-screen-{}", std::process::id()));
         let file = dir.join("screen.txt");
