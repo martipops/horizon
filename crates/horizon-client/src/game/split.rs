@@ -95,6 +95,11 @@ impl<'a> Split<'a> {
             host.options.offscreen = true;
             host.options.paced_by_split = true;
         }
+        // Made after the window on an ordinary launch (no `resumed` follows): its size now.
+        let size = host
+            .window
+            .as_ref()
+            .map_or(PhysicalSize::new(1, 1), |w| w.inner_size());
         Self {
             host,
             guests: Vec::new(),
@@ -105,7 +110,7 @@ impl<'a> Split<'a> {
             offer: None,
             fresh: Vec::new(),
             compositor,
-            size: PhysicalSize::new(1, 1),
+            size,
             focus: 0,
             cursor: PhysicalPosition::new(0.0, 0.0),
             limiter: horizon_client::window::FramerateLimiter::new(0),
