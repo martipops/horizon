@@ -445,7 +445,7 @@ impl Game<'_> {
             toast.draw(&self.gui.atlas, batch, 32.0 * slot as f32);
             slot += 1;
         }
-        self.draw_split_tag(batch, slot);
+        self.draw_split_hud(batch, slot);
     }
     /// A left click on the prompt: its answer when it hit a button.
     pub(super) fn pack_prompt_click(&mut self) -> Result<()> {

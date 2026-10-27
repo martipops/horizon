@@ -33,6 +33,7 @@ use horizon_client::{
     Result,
     gamepad::{Button, PadState},
     gfx::compositor::Compositor,
+    hud::{HudBatch, rgba},
     widgets,
 };
 use layout::{View, place};
@@ -67,6 +68,35 @@ thread_local! {
 /// The `options.txt` of the player whose turn it is; `None` for P1.
 pub(super) fn options_path() -> Option<PathBuf> {
     OPTIONS.with_borrow(Clone::clone)
+}
+
+/// What splitscreen draws over a player's view (`Game::split_hud`): its corner badge (who, and a
+/// moment where), the frame while keyboard and mouse come to it, a question its controller
+/// answers, and notices nobody has to answer.
+#[derive(Default)]
+pub(super) struct Hud {
+    badge: Option<String>,
+    place: Option<(String, Instant)>,
+    framed: Option<Instant>,
+    prompt: Option<Prompt>,
+    notice: Option<horizon_client::toasts::SystemToast>,
+}
+
+/// A question on a player's view, answered with its controller's buttons.
+#[derive(Clone, PartialEq)]
+pub(super) struct Prompt {
+    ask: Ask,
+    title: String,
+    choices: Vec<(Button, &'static str)>,
+}
+
+/// What a prompt asks: a controller may join (every view, a strip at the top: nobody stops
+/// playing for it), this player leaving, P1's controller going (the view dimmed beneath).
+#[derive(Clone, Copy, PartialEq)]
+enum Ask {
+    Join,
+    Leave,
+    Controller,
 }
 
 /// Where a player plays.
@@ -483,10 +513,10 @@ impl<'a> Split<'a> {
         }
         let now = Some(Instant::now());
         match i {
-            0 => self.host.split_focus = now,
+            0 => self.host.split_hud.framed = now,
             _ => {
                 if let Some(g) = self.guests.get_mut(i - 1) {
-                    g.game.split_focus = now;
+                    g.game.split_hud.framed = now;
                 }
             }
         }
@@ -514,9 +544,9 @@ impl<'a> Split<'a> {
             title.set_play_on(&label);
         }
         let shown = self.label(self.screen(i));
-        self.guests[i - 1].game.split_tag = Some(horizon_client::toasts::SystemToast::new(
-            "Where to play".to_owned(),
-            Some(format!("LB < {shown} > RB")),
+        self.guests[i - 1].game.split_hud.place = Some((
+            format!("LB < {shown} > RB"),
+            Instant::now() + Duration::from_secs(3),
         ));
     }
 
@@ -535,14 +565,20 @@ impl<'a> Split<'a> {
         let last = std::mem::replace(&mut g.last_pad, pad);
         let pressed = |b: Button| pad.held(b) && !last.held(b);
         let ask = || {
-            Some(horizon_client::toasts::SystemToast::new(
-                "Leave splitscreen?".to_owned(),
-                Some("A: leave   X: switch profile   B: stay".to_owned()),
-            ))
+            Some(Prompt {
+                ask: Ask::Leave,
+                title: "Leave splitscreen?".to_owned(),
+                choices: vec![
+                    (Button::South, "Leave"),
+                    (Button::West, "Switch profile"),
+                    (Button::East, "Stay"),
+                ],
+            })
         };
         if g.leaving {
             if pressed(Button::South) || pressed(Button::West) {
                 g.leaving = false;
+                g.game.split_hud.prompt = None;
                 if pressed(Button::West) {
                     self.rejoin.push((g.pad, g.screen.clone()));
                 }
@@ -551,9 +587,7 @@ impl<'a> Split<'a> {
                 }
             } else if pressed(Button::East) {
                 g.leaving = false;
-                g.game.split_tag = None;
-            } else if g.game.split_tag.is_none() {
-                g.game.split_tag = ask();
+                g.game.split_hud.prompt = None;
             }
             return;
         }
@@ -562,7 +596,7 @@ impl<'a> Split<'a> {
         } else if g.select_since.get_or_insert_with(Instant::now).elapsed() >= HOLD {
             g.select_since = None;
             g.leaving = true;
-            g.game.split_tag = ask();
+            g.game.split_hud.prompt = ask();
         }
     }
 
@@ -577,11 +611,15 @@ impl<'a> Split<'a> {
         }
         let last = std::mem::replace(&mut self.p1_last, pad);
         let pressed = |b: Button| pad.held(b) && !last.held(b);
-        let toast = |title: &str, message: &str| {
-            Some(horizon_client::toasts::SystemToast::new(
-                title.to_owned(),
-                Some(message.to_owned()),
-            ))
+        let ask = || {
+            Some(Prompt {
+                ask: Ask::Controller,
+                title: "P1's controller".to_owned(),
+                choices: vec![
+                    (Button::South, "Remove it from P1"),
+                    (Button::East, "Keep it"),
+                ],
+            })
         };
         if self.p1_asking {
             if pressed(Button::South) {
@@ -589,15 +627,14 @@ impl<'a> Split<'a> {
                 if let Some(id) = self.p1_pad.take() {
                     self.fresh.retain(|&p| p != id);
                 }
-                self.host.split_tag = toast(
-                    "Controller removed",
-                    "Press a button on it to join as a new player",
-                );
+                self.host.split_hud.prompt = None;
+                self.host.split_hud.notice = Some(horizon_client::toasts::SystemToast::new(
+                    "Controller removed".to_owned(),
+                    Some("Press a button on it to join as a new player".to_owned()),
+                ));
             } else if pressed(Button::East) {
                 self.p1_asking = false;
-                self.host.split_tag = None;
-            } else if self.host.split_tag.is_none() {
-                self.host.split_tag = toast("P1's controller", "A: remove it from P1   B: keep it");
+                self.host.split_hud.prompt = None;
             }
             return;
         }
@@ -608,37 +645,44 @@ impl<'a> Split<'a> {
         {
             self.p1_select = None;
             self.p1_asking = true;
-            self.host.split_tag = toast("P1's controller", "A: remove it from P1   B: keep it");
+            self.host.split_hud.prompt = ask();
         }
     }
 
-    /// The same toast for every player in the world.
-    fn toast_all(&mut self, title: &str, message: &str) {
-        let toast =
-            || horizon_client::toasts::SystemToast::new(title.to_owned(), Some(message.to_owned()));
-        self.host.split_tag = Some(toast());
-        for g in &mut self.guests {
-            if g.name.is_some() {
-                g.game.split_tag = Some(toast());
+    /// The join question on every player's view in the world (a strip at the top), or gone.
+    fn prompt_join(&mut self, prompt: Option<Prompt>) {
+        let views = std::iter::once(&mut self.host.split_hud).chain(
+            self.guests
+                .iter_mut()
+                .filter(|g| g.name.is_some())
+                .map(|g| &mut g.game.split_hud),
+        );
+        for hud in views {
+            match &prompt {
+                Some(p) => {
+                    if hud.prompt.as_ref().is_none_or(|q| q.ask == Ask::Join) {
+                        hud.prompt = Some(p.clone());
+                    }
+                }
+                None if hud.prompt.as_ref().is_some_and(|q| q.ask == Ask::Join) => {
+                    hud.prompt = None
+                }
+                None => {}
             }
         }
     }
 
-    /// Player `i`'s name tag: "P2 · Alex" and where it plays (or `note`).
+    /// Player `i`'s badge says where it plays (or `note`) for a few seconds.
     fn tag(&mut self, i: usize, note: Option<&str>) {
-        let who = match i {
-            0 => self.host.options.player_name(),
-            _ => match &self.guests[i - 1].name {
-                Some(name) => name.clone(),
-                None => return,
-            },
-        };
+        // A player still choosing its profile has nowhere to tell yet.
+        if i > 0 && self.guests[i - 1].name.is_none() {
+            return;
+        }
         let note = note.map_or_else(|| self.label(self.screen(i)), str::to_owned);
-        let toast =
-            horizon_client::toasts::SystemToast::new(format!("P{} · {who}", i + 1), Some(note));
+        let place = Some((note, Instant::now() + Duration::from_secs(3)));
         match i {
-            0 => self.host.split_tag = Some(toast),
-            _ => self.guests[i - 1].game.split_tag = Some(toast),
+            0 => self.host.split_hud.place = place,
+            _ => self.guests[i - 1].game.split_hud.place = place,
         }
     }
 
@@ -978,8 +1022,14 @@ impl<'a> Split<'a> {
             }
         }
         let in_world = self.in_world();
+        let before = self.offers.len();
         self.offers
             .retain(|(_, since)| now - *since <= OFFER && in_world);
+        if self.offers.is_empty() {
+            self.prompt_join(None);
+        } else if self.offers.len() != before || !joins.is_empty() {
+            self.ask_to_join();
+        }
         let p1 = self.pad_state(self.p1_pad);
         // Asked about its controller, P1's buttons answer that, not the game.
         self.host.pad.feed = Some(if self.p1_asking {
@@ -1002,22 +1052,20 @@ impl<'a> Split<'a> {
 
     /// Every player sees the controllers waiting to join, whatever it is doing.
     fn ask_to_join(&mut self) {
-        let ask = if self.p1_pad.is_none() {
-            "A to join, Y to play as P1, B no"
-        } else {
-            "A to join, B no"
+        let title = match self.offers.as_slice() {
+            [(id, _)] => format!("{} wants to join", self.pads.name(*id)),
+            offers => format!("{} controllers want to join", offers.len()),
         };
-        let (title, message) = match self.offers.as_slice() {
-            [(id, _)] => (
-                "Controller found".to_owned(),
-                format!("{}: {ask}", self.pads.name(*id)),
-            ),
-            offers => (
-                format!("{} controllers found", offers.len()),
-                format!("Each: {ask}"),
-            ),
-        };
-        self.toast_all(&title, &message);
+        let mut choices = vec![(Button::South, "Join")];
+        if self.p1_pad.is_none() {
+            choices.push((Button::North, "Play as P1"));
+        }
+        choices.push((Button::East, "No"));
+        self.prompt_join(Some(Prompt {
+            ask: Ask::Join,
+            title,
+            choices,
+        }));
     }
 
     /// Add a player driven by `pad`: it picks a profile and where to play in its view first,
@@ -1480,11 +1528,16 @@ impl ApplicationHandler for Split<'_> {
         if changed || self.views() != self.applied {
             self.relayout(event_loop);
         }
-        // A player choosing where to play stays framed: its view is the one moving.
+        // Badges while others play too; a player choosing where to play stays framed.
         let now = Instant::now();
-        for g in &mut self.guests {
+        let together = self.players() > 1;
+        self.host.split_hud.badge =
+            together.then(|| format!("P1 · {}", self.host.options.player_name()));
+        for (k, g) in self.guests.iter_mut().enumerate() {
+            let who = g.name.as_deref().unwrap_or("choosing");
+            g.game.split_hud.badge = Some(format!("P{} · {who}", k + 2));
             if g.name.is_none() {
-                g.game.split_focus = Some(now);
+                g.game.split_hud.framed = Some(now);
             }
         }
         let master = self.host.audio.master;
@@ -1563,37 +1616,106 @@ impl ApplicationHandler for Split<'_> {
 
 impl Game<'_> {
     /// The splitscreen name tag, in the toast slot after the others (`ToastManager`).
-    pub(super) fn draw_split_tag(
-        &mut self,
-        batch: &mut horizon_client::hud::HudBatch,
-        slot: usize,
-    ) {
-        // A one-pixel white frame round the view keyboard and mouse came to: 1.5 s, then it fades
-        // over half a second.
-        let shown = self.split_focus.map(|t| t.elapsed().as_secs_f32());
-        if let Some(t) = shown.filter(|&t| t < 2.0) {
-            let (w, h) = (batch.width, batch.height);
-            let alpha = (255.0 * ((2.0 - t) / 0.5).min(1.0)) as u8;
-            let white = horizon_client::hud::rgba(255, 255, 255, alpha);
+    /// Splitscreen over this player's view, above the other toasts (`ToastManager`'s slots).
+    pub(super) fn draw_split_hud(&mut self, batch: &mut HudBatch, slot: usize) {
+        let atlas = &self.gui.atlas;
+        let (w, h) = (batch.width, batch.height);
+        let width = |text: &str| HudBatch::text_width(atlas, text).ceil();
+        // The frame round the view keyboard and mouse came to: 1.5 s, then it fades over 0.5 s.
+        let framed = self.split_hud.framed.map(|t| t.elapsed().as_secs_f32());
+        if let Some(t) = framed.filter(|&t| t < 2.0) {
+            let white = rgba(255, 255, 255, (255.0 * ((2.0 - t) / 0.5).min(1.0)) as u8);
             for [x, y, fw, fh] in [
                 [0.0, 0.0, w, 1.0],
                 [0.0, h - 1.0, w, 1.0],
                 [0.0, 0.0, 1.0, h],
                 [w - 1.0, 0.0, 1.0, h],
             ] {
-                batch.fill(&self.gui.atlas, x, y, fw, fh, white);
+                batch.fill(atlas, x, y, fw, fh, white);
             }
         }
+        // The badge, top left: who, and a moment where.
+        if let Some(badge) = &self.split_hud.badge {
+            let place = self.split_hud.place.as_ref();
+            let text = match place.filter(|(_, until)| Instant::now() < *until) {
+                Some((place, _)) => format!("{badge} · {place}"),
+                None => badge.clone(),
+            };
+            batch.fill(
+                atlas,
+                2.0,
+                2.0,
+                width(&text) + 6.0,
+                12.0,
+                rgba(0, 0, 0, 140),
+            );
+            batch.text(atlas, &text, 5.0, 4.0, rgba(255, 255, 255, 230), false);
+        }
+        // A question: centred over the view dimmed, or a strip at the top (a controller joining).
+        if let Some(prompt) = &self.split_hud.prompt {
+            let style = self.ui.options.pad_style;
+            let dim = prompt.ask != Ask::Join;
+            if dim {
+                batch.fill(atlas, 0.0, 0.0, w, h, rgba(0, 0, 0, 120));
+            }
+            let glyphs: Vec<_> = prompt
+                .choices
+                .iter()
+                .map(|&(b, what)| (b.label(style), b.color(style), what))
+                .collect();
+            let line: f32 = glyphs
+                .iter()
+                .map(|(g, _, what)| width(g) + 8.0 + width(what) + 12.0)
+                .sum::<f32>()
+                - 12.0;
+            let pw = width(&prompt.title).max(line) + 16.0;
+            let ph = 34.0;
+            let (px, py) = (
+                ((w - pw) / 2.0).floor(),
+                if dim { ((h - ph) / 2.0).floor() } else { 18.0 },
+            );
+            batch.fill(atlas, px, py, pw, ph, rgba(0, 0, 0, 210));
+            let edge = rgba(255, 255, 255, 90);
+            for [x, y, fw, fh] in [
+                [px, py, pw, 1.0],
+                [px, py + ph - 1.0, pw, 1.0],
+                [px, py, 1.0, ph],
+                [px + pw - 1.0, py, 1.0, ph],
+            ] {
+                batch.fill(atlas, x, y, fw, fh, edge);
+            }
+            let tx = (px + (pw - width(&prompt.title)) / 2.0).floor();
+            batch.text(
+                atlas,
+                &prompt.title,
+                tx,
+                py + 6.0,
+                rgba(255, 255, 255, 255),
+                true,
+            );
+            let mut x = (px + (pw - line) / 2.0).floor();
+            let y = py + 20.0;
+            for (glyph, [r, g, b], what) in glyphs {
+                // The button as printed on the pad, in its colour, on a dark key.
+                let gw = width(glyph) + 4.0;
+                batch.fill(atlas, x - 1.0, y - 2.0, gw, 11.0, rgba(40, 40, 40, 255));
+                batch.text(atlas, glyph, x + 1.0, y, rgba(r, g, b, 255), false);
+                x += gw + 4.0;
+                batch.text(atlas, what, x, y, rgba(220, 220, 220, 255), false);
+                x += width(what) + 12.0;
+            }
+        }
+        // Notices nobody answers: a toast.
         let multiplier = f64::from(self.settings.notification_display_time);
-        let Some(tag) = &mut self.split_tag else {
+        let Some(notice) = &mut self.split_hud.notice else {
             return;
         };
-        let (_, finished) = tag.update(multiplier);
+        let (_, finished) = notice.update(multiplier);
         if finished {
-            self.split_tag = None;
+            self.split_hud.notice = None;
             return;
         }
-        tag.draw(&self.gui.atlas, batch, 32.0 * slot as f32);
+        notice.draw(&self.gui.atlas, batch, 32.0 * slot as f32);
     }
 }
 
