@@ -135,6 +135,8 @@ pub(super) struct Split<'a> {
     /// outside `about_to_wait`), summed since the last print, and when this frame started.
     spent: [Duration; 5],
     spent_frames: u32,
+    /// `HORIZON_SPLIT_NO_PRESENT=1` (measuring): the players render, the windows show nothing.
+    no_present: bool,
     frame_started: Option<Instant>,
     /// `HORIZON_SPLIT_THREADS=1`: the players' renders on threads, one each (measured slower on
     /// a Ryzen 7 3700X: the renders hold each other up inside wgpu); else one after another.
@@ -218,6 +220,7 @@ impl<'a> Split<'a> {
             stats: std::env::var_os("HORIZON_SPLIT_STATS").map(|_| Instant::now()),
             spent: Default::default(),
             spent_frames: 0,
+            no_present: std::env::var_os("HORIZON_SPLIT_NO_PRESENT").is_some(),
             frame_started: None,
             threads: std::env::var("HORIZON_SPLIT_THREADS").is_ok_and(|v| v == "1"),
             workers: Vec::new(),
@@ -729,7 +732,13 @@ impl ApplicationHandler for Split<'_> {
             .chain(self.guests.iter().map(|g| &g.game.renderer))
             .collect();
         let vsync = self.host.settings.vsync;
-        for (k, surface) in self.surfaces.iter_mut().enumerate() {
+        // Measuring without the window system's pace (macOS takes ~150 frames a second at most).
+        let surfaces = if self.no_present {
+            &mut self.surfaces[..0]
+        } else {
+            &mut self.surfaces[..]
+        };
+        for (k, surface) in surfaces.iter_mut().enumerate() {
             let frames: Vec<_> = renderers
                 .iter()
                 .zip(&views)
