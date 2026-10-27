@@ -274,9 +274,15 @@ impl Draft {
             .map(|w| match &w.placement {
                 Placement::Free(Some(rect)) => Some(*rect),
                 Placement::Free(None) => {
-                    let (at, scale) = home.map_or(([0.0; 4], 1.0), |m| (m.desktop(), m.scale));
+                    // Centred on Window 1's monitor, as the game opens it.
+                    let (at, scale, k) = home.map_or(([0.0; 4], 1.0, 1.0), |m| {
+                        let at = m.desktop();
+                        (at, m.scale, at[2] / f64::from(m.size[0].max(1)))
+                    });
                     let size = NEW_WINDOW.map(|v| (v * scale).round() as u32);
-                    Some(([at[0] as i32, at[1] as i32], size))
+                    let x = at[0] + (at[2] - f64::from(size[0]) * k) / 2.0;
+                    let y = at[1] + (at[3] - f64::from(size[1]) * k) / 2.0;
+                    Some(([x as i32, y as i32], size))
                 }
                 Placement::Fill(name) if w.number != 1 && name == main => None,
                 Placement::Fill(name) => monitors.iter().find(|m| &m.name == name).map(|m| {
@@ -447,11 +453,11 @@ mod tests {
         assert_eq!(views[1], (1, [0, 0], size(3840, 1080)));
         // No other monitor: no Desk + TV.
         assert_eq!(here(2).desk_and_tv(&m[..1], "Built-in"), None);
-        // Everyone separate: the TV first, then free windows at the main monitor's scale.
+        // Everyone separate: the TV first, then free windows centred on the main monitor, at its scale.
         let apart = here(3).everyone_separate(&m, "Built-in");
         assert_eq!(apart.players, [1, 2, 3]);
         assert_eq!(apart.windows[2].placement, Placement::Free(None));
-        assert_eq!(apart.rects(&m, "Built-in")[2], Some(([0, 0], [1708, 960])));
+        assert_eq!(apart.rects(&m, "Built-in")[2], Some(([329, 251], [1708, 960])));
         assert!(apart.warnings(&m, "Built-in").is_empty());
     }
 

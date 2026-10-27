@@ -149,7 +149,7 @@ impl SplitUi {
         let monitors = desk.iter().copied().map(to_map).collect();
         // A window's size on the desktop: its pixels at the scale of the monitor it is on.
         let rects = draft.rects(&self.monitors, &self.main);
-        let windows: Vec<(u8, [f32; 4])> = draft
+        let mut windows: Vec<(u8, [f32; 4])> = draft
             .windows
             .iter()
             .zip(&rects)
@@ -169,6 +169,8 @@ impl SplitUi {
                 Some((win.number, to_map([x, y, size[0], size[1]])))
             })
             .collect();
+        // Windows nobody plays in (they won't open) under the others.
+        windows.sort_by_key(|(n, _)| draft.players.contains(n));
         let tiles = draft
             .preview(&self.monitors, &self.main)
             .iter()

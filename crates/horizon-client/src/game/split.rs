@@ -156,6 +156,25 @@ fn cover(m: &MonitorHandle) -> (winit::dpi::Position, winit::dpi::Size) {
     }
 }
 
+/// Where a new 854 x 480 window sits centred on monitor `m`, in `cover`'s units.
+fn centred(m: &MonitorHandle) -> winit::dpi::Position {
+    let (at, size) = cover(m);
+    // The numbers as they are, logical or physical.
+    let (at, size) = (at.to_physical::<f64>(1.0), size.to_physical::<f64>(1.0));
+    let u = if cfg!(target_os = "macos") {
+        1.0
+    } else {
+        m.scale_factor()
+    };
+    let x = at.x + (size.width - 854.0 * u) / 2.0;
+    let y = at.y + (size.height - 480.0 * u) / 2.0;
+    if cfg!(target_os = "macos") {
+        winit::dpi::LogicalPosition::new(x, y).into()
+    } else {
+        winit::dpi::PhysicalPosition::new(x, y).into()
+    }
+}
+
 /// Player `game` into `window`; when it `moved` from another, the mouse it held there goes free
 /// (a click takes it in the new one).
 fn into_window(game: &mut Game<'_>, window: Arc<Window>, moved: bool) {
@@ -856,7 +875,16 @@ impl<'a> Split<'a> {
                     let last = self.window_rects.get(key).copied();
                     match last {
                         Some((at, size)) => attributes.with_position(at).with_inner_size(size),
-                        None => attributes.with_inner_size(LogicalSize::new(854.0, 480.0)),
+                        None => {
+                            let main = self.main_monitor();
+                            let home = monitors.iter().find(|(n, _)| Some(n) == main);
+                            let attributes =
+                                attributes.with_inner_size(LogicalSize::new(854.0, 480.0));
+                            match home {
+                                Some((_, m)) => attributes.with_position(centred(m)),
+                                None => attributes,
+                            }
+                        }
                     }
                     .with_title("Horizon")
                 }
