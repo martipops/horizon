@@ -12,6 +12,7 @@ Scenarios:
   three    three in a window: one wide on top, one tall on the left, side by side
   live     splitscreen off and on again from the Splitscreen page, in a world
   picker   a joining player opens a new window (RB), makes a profile, and joins in it
+  monitor  a player fills another monitor and another joins it (skipped with one monitor)
   signedin P1 signed into an account: another player still joins, under its own profile
   leave    a player holds Select, then A leaves, or X switches profile in the same place
   bumpers  a joining player moves its view with LB and RB before picking its profile
@@ -381,6 +382,40 @@ def scenario_signedin():
         g.quit()
 
 
+def scenario_monitor():
+    print('monitor: a player fills another monitor, another joins it (skipped with one monitor)')
+    g = Game(2)
+    try:
+        g.page(1)
+        for _ in range(8):
+            if 'Monitor' in g.screens(1)[1]:
+                break
+            row = [w for w in g.ctl(1, 'ui')['widgets'] if w.get('label', '').startswith('Play on:')]
+            g.ctl(1, 'click', row[1]['id'])
+            time.sleep(0.6)
+        where = g.screens(1)[1]
+        if 'Monitor' not in where:
+            print('  skip one monitor only')
+            return
+        size = tuple(int(v) for v in where.split('(')[1].rstrip(')').split('x'))
+        g.close_page(1)
+        g.wait(lambda: g.size(2) == size, "P2's window to fill the monitor", seconds=15)
+        check('P2 fills the monitor', g.size(2), size)
+        g.page(1)
+        for _ in range(8):
+            if g.screens(1)[0] == where:
+                break
+            row = [w for w in g.ctl(1, 'ui')['widgets'] if w.get('label', '').startswith('Play on:')]
+            g.ctl(1, 'click', row[0]['id'])
+            time.sleep(0.6)
+        g.close_page(1)
+        half = (size[0] // 2, size[1])
+        g.wait(lambda: g.size(1) == half, 'P1 beside P2 on the monitor', seconds=15)
+        check('P1 joins it: halves of the monitor', (g.size(1), g.size(2)), (half, half))
+    finally:
+        g.quit()
+
+
 def scenario_eight():
     print('eight: eight players in one window')
     g = Game(8)
@@ -413,6 +448,7 @@ SCENARIOS = {
     'bumpers': scenario_bumpers,
     'leave': scenario_leave,
     'signedin': scenario_signedin,
+    'monitor': scenario_monitor,
 }
 
 

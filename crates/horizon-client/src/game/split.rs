@@ -146,6 +146,24 @@ enum Choice {
     New,
     Fill(String),
 }
+/// Where a monitor is and its size, as windows are placed: macOS places them in points, each
+/// monitor at its own scale (pixels would be read at the window's scale: a window for a 1x TV
+/// beside a 2x screen would open on the screen, half size); Windows and X11 in desktop pixels.
+fn cover(m: &MonitorHandle) -> (winit::dpi::Position, winit::dpi::Size) {
+    #[cfg(target_os = "macos")]
+    {
+        let scale = m.scale_factor();
+        (
+            m.position().to_logical::<f64>(scale).into(),
+            m.size().to_logical::<f64>(scale).into(),
+        )
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        (m.position().into(), m.size().into())
+    }
+}
+
 /// Player `game` into `window`; when it `moved` from another, the mouse it held there goes free
 /// (a click takes it in the new one).
 fn into_window(game: &mut Game<'_>, window: Arc<Window>, moved: bool) {
@@ -157,8 +175,10 @@ fn into_window(game: &mut Game<'_>, window: Arc<Window>, moved: bool) {
 
 /// A window showing players' views, and the compositor that copies their frames into it.
 struct Surface {
-    /// Which window this is, by number (1: the game's).
+    /// Which window this is, by number (1: the game's), and where it was opened: a number
+    /// given again to a window placed elsewhere opens again there.
     key: u8,
+    placement: Placement,
     window: Arc<Window>,
     compositor: Compositor,
     size: PhysicalSize<u32>,
@@ -246,6 +266,7 @@ impl<'a> Split<'a> {
         let surfaces = match (compositor, &host.window) {
             (Some(compositor), Some(window)) => vec![Surface {
                 key: 1,
+                placement: Placement::Free(None),
                 window: window.clone(),
                 compositor,
                 size: window.inner_size(),
@@ -374,18 +395,19 @@ impl<'a> Split<'a> {
     }
 
     /// Where player `i` can play, as the screens say it: Window 1 (the game's), the other windows
-    /// open, a new window (unless it is alone in a free one), and each monitor no window fills
-    /// but Window 1's. The page's button steps forward through them (buttons take the left
-    /// click only), a joining player's bumpers both ways.
+    /// open, a new window, and each monitor no window fills but Window 1's. The page's button
+    /// steps forward through them (buttons take the left click only), a joining player's bumpers
+    /// both ways. A player alone in its window is at "New window" or its monitor's choice (its
+    /// window is that), so the list stays the same as it steps.
     fn choices(&self, i: usize) -> Vec<(String, Choice)> {
-        let mut open: Vec<u8> = (0..self.players()).map(|j| self.window_of(j)).collect();
+        let alone = self.alone(i);
+        let mine = self.window_of(i);
+        let mut open: Vec<u8> = (0..self.players())
+            .map(|j| self.window_of(j))
+            .filter(|&n| !(alone && n == mine))
+            .collect();
         open.sort_unstable();
         open.dedup();
-        let mine = self.window_of(i);
-        // Alone in a free window, a new one would only renumber it.
-        let alone = mine != 1
-            && matches!(self.placement(mine), Some(Placement::Free(_)))
-            && (0..self.players()).all(|j| j == i || self.window_of(j) != mine);
         let filled: Vec<&String> = open
             .iter()
             .filter_map(|&n| match self.placement(n) {
@@ -408,9 +430,25 @@ impl<'a> Split<'a> {
                     .filter(|&n| n != 1)
                     .map(|n| (self.window_label(n), Choice::Window(n))),
             )
-            .chain((!alone).then(|| (NEW_WINDOW.to_owned(), Choice::New)))
+            .chain(std::iter::once((NEW_WINDOW.to_owned(), Choice::New)))
             .chain(monitors)
             .collect()
+    }
+
+    /// Player `i` plays alone in a window of its own (not Window 1).
+    fn alone(&self, i: usize) -> bool {
+        let mine = self.window_of(i);
+        mine != 1 && (0..self.players()).all(|j| j == i || self.window_of(j) != mine)
+    }
+
+    /// Player `i`'s place among its choices: its window, or alone, what its window is.
+    fn current(&self, i: usize) -> Choice {
+        let mine = self.window_of(i);
+        match self.placement(mine) {
+            Some(Placement::Free(_)) if self.alone(i) => Choice::New,
+            Some(Placement::Fill(name)) if self.alone(i) => Choice::Fill(name.clone()),
+            _ => Choice::Window(mine),
+        }
     }
 
     /// How window `number` is shown: "Window 2", and the monitor it fills.
@@ -581,7 +619,7 @@ impl<'a> Split<'a> {
         if n == 0 {
             return;
         }
-        let mine = Choice::Window(self.window_of(i));
+        let mine = self.current(i);
         let at = choices.iter().position(|(_, c)| *c == mine).unwrap_or(0);
         let next = choices[if back { (at + n - 1) % n } else { (at + 1) % n }]
             .1
@@ -749,6 +787,11 @@ impl<'a> Split<'a> {
         self.forget_empty_windows();
         let monitors = self.monitors();
         let wanted: Vec<u8> = (0..self.players()).map(|i| self.window_of(i)).collect();
+        let placements: std::collections::HashMap<u8, Placement> = self
+            .windows
+            .iter()
+            .map(|w| (w.number, w.placement.clone()))
+            .collect();
         let before = self.surfaces.len();
         for s in &self.surfaces {
             if s.key != 1
@@ -758,8 +801,9 @@ impl<'a> Split<'a> {
                 self.window_rects.insert(s.key, (at, s.window.inner_size()));
             }
         }
-        self.surfaces
-            .retain(|s| s.key == 1 || wanted.contains(&s.key));
+        self.surfaces.retain(|s| {
+            s.key == 1 || (wanted.contains(&s.key) && placements.get(&s.key) == Some(&s.placement))
+        });
         let mut changed = self.surfaces.len() != before;
         // macOS would join new windows to the game's as tabs (when the system prefers tabs).
         #[cfg(target_os = "macos")]
@@ -782,7 +826,7 @@ impl<'a> Split<'a> {
                 Some(Placement::Fill(name)) => monitors
                     .iter()
                     .find(|m| m.name().as_ref() == Some(name))
-                    .map(|m| (m.position(), m.size())),
+                    .map(cover),
                 _ => None,
             };
             let attributes = match cover {
@@ -824,6 +868,7 @@ impl<'a> Split<'a> {
             match made {
                 Ok((window, compositor)) => self.surfaces.push(Surface {
                     key: *key,
+                    placement: placement.clone().unwrap_or(Placement::Free(None)),
                     size: window.inner_size(),
                     window,
                     compositor,
@@ -916,6 +961,7 @@ impl<'a> Split<'a> {
         self.host.all_sections_changed();
         self.surfaces = vec![Surface {
             key: 1,
+            placement: Placement::Free(None),
             size: window.inner_size(),
             window,
             compositor,
@@ -1353,6 +1399,7 @@ impl ApplicationHandler for Split<'_> {
             match renderer.compositor(window.clone()) {
                 Ok(compositor) => self.surfaces.push(Surface {
                     key: 1,
+                    placement: Placement::Free(None),
                     window: window.clone(),
                     compositor,
                     size: window.inner_size(),
