@@ -230,7 +230,8 @@ impl Draft {
         number
     }
 
-    /// Player `i` to `spot`: a new window opens for it (a window it leaves stays, empty).
+    /// Player `i` to `spot`: a new window opens for it; a window it leaves empty closes (not
+    /// Window 1, the game's).
     pub fn place_player(&mut self, i: usize, spot: Spot) {
         if i >= self.players.len() {
             return;
@@ -241,6 +242,9 @@ impl Draft {
             Spot::Fill(name) => self.open(Placement::Fill(name)),
         };
         self.players[i] = number;
+        let players = &self.players;
+        self.windows
+            .retain(|w| w.number == 1 || players.contains(&w.number));
     }
 
     /// What to tell before Apply, in window order.
@@ -457,7 +461,10 @@ mod tests {
         let apart = here(3).everyone_separate(&m, "Built-in");
         assert_eq!(apart.players, [1, 2, 3]);
         assert_eq!(apart.windows[2].placement, Placement::Free(None));
-        assert_eq!(apart.rects(&m, "Built-in")[2], Some(([329, 251], [1708, 960])));
+        assert_eq!(
+            apart.rects(&m, "Built-in")[2],
+            Some(([329, 251], [1708, 960]))
+        );
         assert!(apart.warnings(&m, "Built-in").is_empty());
     }
 
@@ -471,9 +478,16 @@ mod tests {
         d.place_player(2, Spot::New);
         assert_eq!(d.players, [1, 2, 3]);
         assert!(d.warnings(&m, "Built-in").is_empty());
-        // The window left behind stays, empty, with a warning.
+        // The window left behind closes, Window 1 never.
         d.place_player(1, Spot::Window(1));
-        assert_eq!(d.warnings(&m, "Built-in"), [Warning::Empty(2)]);
+        assert_eq!(
+            d.windows.iter().map(|w| w.number).collect::<Vec<_>>(),
+            [1, 3]
+        );
+        assert!(d.warnings(&m, "Built-in").is_empty());
+        d.place_player(0, Spot::Window(3));
+        d.place_player(1, Spot::Window(3));
+        assert_eq!(d.warnings(&m, "Built-in"), [Warning::Empty(1)]);
     }
 
     #[test]
