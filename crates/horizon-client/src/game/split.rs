@@ -146,6 +146,11 @@ struct Guest {
     widgets: widgets::Saved,
     /// The bumpers it held at the last frame (LB, RB), while it chooses where to play.
     bumpers: [bool; 2],
+    /// Leaving from the controller: since when Select is held, the pad as last read, and
+    /// whether "Leave splitscreen?" is asked (its buttons answer, not the game).
+    select_since: Option<Instant>,
+    last_pad: PadState,
+    leaving: bool,
 }
 
 pub(super) struct Split<'a> {
@@ -161,6 +166,11 @@ pub(super) struct Split<'a> {
     p1_screen: Screen,
     /// Controllers offered to join, each since when: several may join at once.
     offers: Vec<(PadId, Instant)>,
+    /// Players switching profile from the controller: its pad and where it played, to choose
+    /// again there once it has left.
+    rejoin: Vec<(Option<PadId>, Screen)>,
+    /// Since when P1 holds Select (P1 hosts: it leaves from the pause menu).
+    p1_select: Option<Instant>,
     /// Pads whose buttons still count as the press that joined them: released first.
     fresh: Vec<PadId>,
     /// The game's window and its compositor first, then monitors' and players' own.
@@ -217,6 +227,8 @@ impl<'a> Split<'a> {
             p1_pad: None,
             p1_screen,
             offers: Vec::new(),
+            rejoin: Vec::new(),
+            p1_select: None,
             fresh: Vec::new(),
             surfaces,
             applied: Vec::new(),
@@ -451,6 +463,28 @@ impl<'a> Split<'a> {
             }
         }
         self.turn(0);
+        // Where everyone just moved, show again whose view keyboard and mouse drive.
+        self.flash(self.focus);
+    }
+
+    /// Frame player `i`'s view a moment, where its window has others too (alone, it needs none).
+    fn flash(&mut self, i: usize) {
+        let views = &self.applied;
+        let shared = views
+            .get(i)
+            .is_some_and(|v| views.iter().filter(|o| o.0 == v.0).count() > 1);
+        if !shared {
+            return;
+        }
+        let now = Some(Instant::now());
+        match i {
+            0 => self.host.split_focus = now,
+            _ => {
+                if let Some(g) = self.guests.get_mut(i - 1) {
+                    g.game.split_focus = now;
+                }
+            }
+        }
     }
 
     /// A joining player's bumper: its view moves to the next place it could play (`back`: the
@@ -479,6 +513,68 @@ impl<'a> Split<'a> {
             "Where to play".to_owned(),
             Some(format!("LB < {shown} > RB")),
         ));
+    }
+
+    /// Player `i` (not P1) holding Select 2 s is asked "Leave splitscreen?": A leaves, X
+    /// switches profile (leaves, then chooses again where it was), B stays.
+    fn leave_by_controller(&mut self, i: usize) {
+        const HOLD: Duration = Duration::from_secs(2);
+        // Its game's pad (the controller or `horizon-ctl pad`), and the controller itself while
+        // its buttons are kept from the game.
+        let raw = self.guests[i - 1].pad.map(|p| self.pads.state(p));
+        let g = &mut self.guests[i - 1];
+        let mut pad = g.game.pad.state;
+        if let Some(raw) = raw {
+            pad = pad.merge(&raw);
+        }
+        let last = std::mem::replace(&mut g.last_pad, pad);
+        let pressed = |b: Button| pad.held(b) && !last.held(b);
+        let ask = || {
+            Some(horizon_client::toasts::SystemToast::new(
+                "Leave splitscreen?".to_owned(),
+                Some("A: leave   X: switch profile   B: stay".to_owned()),
+            ))
+        };
+        if g.leaving {
+            if pressed(Button::South) || pressed(Button::West) {
+                g.leaving = false;
+                if pressed(Button::West) {
+                    self.rejoin.push((g.pad, g.screen.clone()));
+                }
+                if let Err(e) = g.game.leave_server(None) {
+                    log::warn!("Horizon: splitscreen: {e}");
+                }
+            } else if pressed(Button::East) {
+                g.leaving = false;
+                g.game.split_tag = None;
+            } else if g.game.split_tag.is_none() {
+                g.game.split_tag = ask();
+            }
+            return;
+        }
+        if !pad.held(Button::Select) {
+            g.select_since = None;
+        } else if g.select_since.get_or_insert_with(Instant::now).elapsed() >= HOLD {
+            g.select_since = None;
+            g.leaving = true;
+            g.game.split_tag = ask();
+        }
+    }
+
+    /// P1 holding Select 2 s, as the others do to leave: P1 hosts the world, so it is told how.
+    fn p1_holds_select(&mut self) {
+        if self.players() < 2 || !self.host.pad.state.held(Button::Select) {
+            self.p1_select = None;
+            return;
+        }
+        let since = *self.p1_select.get_or_insert_with(Instant::now);
+        if since.elapsed() >= Duration::from_secs(2) {
+            self.p1_select = Some(Instant::now() + Duration::from_secs(60));
+            self.host.split_tag = Some(horizon_client::toasts::SystemToast::new(
+                "P1 hosts this world".to_owned(),
+                Some("Save and Quit (pause menu) ends splitscreen".to_owned()),
+            ));
+        }
     }
 
     /// The same toast for every player in the world.
@@ -853,6 +949,12 @@ impl<'a> Split<'a> {
         self.host.pad.feed = Some(p1);
         for i in 0..self.guests.len() {
             let state = self.pad_state(self.guests[i].pad);
+            // Asked whether to leave, its buttons answer that, not the game.
+            let state = if self.guests[i].leaving {
+                PadState::default()
+            } else {
+                state
+            };
             self.guests[i].game.pad.feed = Some(state);
         }
         joins
@@ -921,6 +1023,9 @@ impl<'a> Split<'a> {
             options,
             widgets: Default::default(),
             bumpers: [false; 2],
+            select_since: None,
+            last_pad: PadState::default(),
+            leaving: false,
         });
         if let Some(name) = name {
             self.enter(self.guests.len() - 1, name, None)?;
@@ -1227,6 +1332,7 @@ impl ApplicationHandler for Split<'_> {
                 {
                     self.focus = clicked;
                     self.tag(clicked, Some("Keyboard and mouse"));
+                    self.flash(clicked);
                     let position = self.cursor_in_focus();
                     if let Some((player, id)) = self.player(clicked) {
                         player.window_event(
@@ -1286,6 +1392,23 @@ impl ApplicationHandler for Split<'_> {
         self.turn(0);
         self.host.about_to_wait(event_loop);
         let mut changed = self.drop_out();
+        // Switching profile: choosing again, where it played.
+        for (pad, screen) in std::mem::take(&mut self.rejoin) {
+            if self.guests.iter().any(|g| g.pad.is_some() && g.pad == pad) {
+                // Not gone yet: next frame.
+                self.rejoin.push((pad, screen));
+                continue;
+            }
+            match self.join(pad, None) {
+                Ok(()) => {
+                    if let Some(g) = self.guests.last_mut() {
+                        g.screen = screen;
+                    }
+                    changed = true;
+                }
+                Err(e) => log::warn!("Horizon: splitscreen: a player could not come back: {e}"),
+            }
+        }
         for pad in pad_joins {
             match self.join(Some(pad), None) {
                 Ok(()) => changed = true,
@@ -1317,18 +1440,11 @@ impl ApplicationHandler for Split<'_> {
         if changed || self.views() != self.applied {
             self.relayout(event_loop);
         }
-        // The frame round the view keyboard and mouse drive, where its window has others too.
-        let views = self.views();
-        for i in 0..self.players() {
-            let shared = views
-                .get(i)
-                .is_some_and(|v| views.iter().filter(|o| o.0 == v.0).count() > 1);
-            // Also a player choosing where to play: this view is the one moving.
-            let choosing = i > 0 && self.guests[i - 1].name.is_none();
-            let framed = (i == self.focus && shared) || choosing;
-            match i {
-                0 => self.host.split_focus = framed,
-                _ => self.guests[i - 1].game.split_focus = framed,
+        // A player choosing where to play stays framed: its view is the one moving.
+        let now = Instant::now();
+        for g in &mut self.guests {
+            if g.name.is_none() {
+                g.game.split_focus = Some(now);
             }
         }
         let master = self.host.audio.master;
@@ -1355,9 +1471,12 @@ impl ApplicationHandler for Split<'_> {
                 } else if held[1] && !before[1] {
                     self.place_joining(i + 1, false);
                 }
+            } else {
+                self.leave_by_controller(i + 1);
             }
         }
         self.turn(0);
+        self.p1_holds_select();
         // Each window shows its players' frames. Only the game's waits for the display (vsync):
         // windows each waiting would divide the rate.
         let views = self.views();
@@ -1409,10 +1528,13 @@ impl Game<'_> {
         batch: &mut horizon_client::hud::HudBatch,
         slot: usize,
     ) {
-        if self.split_focus {
-            // A one-pixel white frame round the view keyboard and mouse drive.
+        // A one-pixel white frame round the view keyboard and mouse came to: 1.5 s, then it fades
+        // over half a second.
+        let shown = self.split_focus.map(|t| t.elapsed().as_secs_f32());
+        if let Some(t) = shown.filter(|&t| t < 2.0) {
             let (w, h) = (batch.width, batch.height);
-            let white = horizon_client::hud::rgba(255, 255, 255, 255);
+            let alpha = (255.0 * ((2.0 - t) / 0.5).min(1.0)) as u8;
+            let white = horizon_client::hud::rgba(255, 255, 255, alpha);
             for [x, y, fw, fh] in [
                 [0.0, 0.0, w, 1.0],
                 [0.0, h - 1.0, w, 1.0],

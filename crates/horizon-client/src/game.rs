@@ -1318,8 +1318,9 @@ struct Game<'a> {
     captured: bool,
     /// Splitscreen: this player's name tag, a toast when it joins, moves or takes the keyboard.
     split_tag: Option<horizon_client::toasts::SystemToast>,
-    /// Splitscreen: keyboard and mouse drive this player, sharing its window: framed.
-    split_focus: bool,
+    /// Splitscreen: when this view was last framed (keyboard and mouse came to it, or it moved):
+    /// the frame shows a moment, then fades.
+    split_focus: Option<std::time::Instant>,
     focused: bool,
     /// The keyboard's modifier state (`KeyEvent.modifiers`).
     modifiers: winit::keyboard::ModifiersState,
@@ -12872,7 +12873,7 @@ impl<'a> Game<'a> {
             cursor_icon: horizon_client::widgets::Cursor::Arrow,
             captured: false,
             split_tag: None,
-            split_focus: false,
+            split_focus: None,
             focused: true,
             modifiers: winit::keyboard::ModifiersState::empty(),
             fullscreen: horizon_client::window::FullscreenState::new(false),

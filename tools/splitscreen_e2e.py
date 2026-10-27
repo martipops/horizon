@@ -12,6 +12,7 @@ Scenarios:
   three    three in a window: one wide on top, one tall on the left, side by side
   live     splitscreen off and on again from the Splitscreen page, in a world
   picker   a joining player makes a profile, picks New window, and joins in it
+  leave    a player holds Select, then A leaves, or X switches profile in the same place
   bumpers  a joining player moves its view with LB and RB before picking its profile
   eight    eight players in one window: rows of three, three and two, every view drawing
   fullscreen  a player whose options say fullscreen joins: the window stays as P1 has it; its F11
@@ -334,6 +335,29 @@ def scenario_bumpers():
         g.quit()
 
 
+def scenario_leave():
+    print('leave: hold Select, then A to leave or X to switch profile')
+    g = Game(3)
+    try:
+        def hold_select(n):
+            g.ctl(n, 'pad', 'select', 'down')
+            time.sleep(2.5)
+            g.ctl(n, 'pad', 'select', 'up')
+            time.sleep(0.3)
+        hold_select(3)
+        g.ctl(3, 'pad', 'south', 'tap')
+        g.wait(lambda: not g.alive(3), 'P3 gone', seconds=10)
+        w, h = g.size(1)
+        check('A: P3 left, P1 and P2 share the window', g.settle([1, 2], [(w, h), (w, h)]), [(w, h), (w, h)])
+        hold_select(2)
+        g.ctl(2, 'pad', 'west', 'tap')
+        g.wait(lambda: g.alive(2) and (g.ctl(2, 'state').get('menu') or {}).get('mode') == 'splitscreen-profiles',
+               'P2 choosing again', seconds=15)
+        check('X: P2 chooses a profile again, in the same window', g.size(2), (w, h))
+    finally:
+        g.quit()
+
+
 def scenario_eight():
     print('eight: eight players in one window')
     g = Game(8)
@@ -364,6 +388,7 @@ SCENARIOS = {
     'fullscreen': scenario_fullscreen,
     'eight': scenario_eight,
     'bumpers': scenario_bumpers,
+    'leave': scenario_leave,
 }
 
 
