@@ -69,13 +69,18 @@ class Game:
             extra['HORIZON_SPLIT_PICK'] = '1'
         self.env = lab.game_env(HORIZON_HOME=self.home, **extra)
         self.players = players
-        self.ctl(1, 'launch', '--wait', '--world', 'Split', '--creative', '--resources', str(RESOURCES),
-                 '--width', str(WIDTH), '--height', str(HEIGHT), '--render-distance', '4',
-                 # Another scenario's windows closing take the focus: no pause on losing it.
-                 '--no-pause', *args)
-        self.wait(lambda: all(self.alive(n) for n in range(1, players + 1)), 'every player in')
-        # The automatic GUI scale keeps menus about 400 x 240: room for every row of the page.
-        self.ctl(1, 'options-set', 'guiScale', '2')
+        try:
+            self.ctl(1, 'launch', '--wait', '--world', 'Split', '--creative', '--resources', str(RESOURCES),
+                     '--width', str(WIDTH), '--height', str(HEIGHT), '--render-distance', '4',
+                     # Another scenario's windows closing take the focus: no pause on losing it.
+                     '--no-pause', *args)
+            self.wait(lambda: all(self.alive(n) for n in range(1, players + 1)), 'every player in')
+            # The automatic GUI scale keeps menus about 400 x 240: room for every row of the page.
+            self.ctl(1, 'options-set', 'guiScale', '2')
+        except BaseException:
+            # A launch that never got ready leaves no game behind.
+            self.quit()
+            raise
 
     def ctl(self, n, *words):
         socket = self.sockets / ('c.sock' if n == 1 else f'c.sock{n}')
@@ -174,7 +179,8 @@ class Game:
             self.ctl(1, 'quit')
             self.wait(lambda: not self.alive(1), 'the game to quit')
         except (RuntimeError, json.JSONDecodeError):
-            pass
+            # Not answering (still starting, or stuck): stop it by its socket (`--control-socket`).
+            subprocess.run(['pkill', '-f', str(self.sockets)], capture_output=True)
         shutil.rmtree(self.sockets, ignore_errors=True)
 
 
@@ -479,6 +485,41 @@ def scenario_setup():
         g.quit()
 
 
+def scenario_server():
+    print('server: P1 on a dedicated server; the others join it, a kicked one drops out, all leave with P1')
+    from test_dedicated_server_parity import Server
+    port = lab.free_port()
+    folder = Path(tempfile.mkdtemp(prefix='hz-split-server-'))
+    directory = folder / 'server'
+    directory.mkdir()
+    properties = {'online-mode': 'false', 'white-list': 'false', 'server-port': str(port), 'level-type': 'minecraft\\:flat',
+                  'generate-structures': 'false', 'view-distance': '3', 'simulation-distance': '3',
+                  'pause-when-empty-seconds': '-1', 'spawn-protection': '0'}
+    (directory / 'server.properties').write_text(''.join(f'{k}={v}\n' for k, v in properties.items()),
+                                                 encoding='iso-8859-1')
+    (directory / 'eula.txt').write_text('eula=true\n')
+    server = Server([lab.cargo_target() / 'fast/horizon-client', '--resources', RESOURCES, '--dedicated',
+                     '--nogui'], directory, 'server')
+    try:
+        server.wait_for(r'Done \(')
+        g = Game(3, args=('--server', f'127.0.0.1:{port}'))
+        try:
+            server.wait_for(r'P2 joined the game', timeout=60)
+            server.wait_for(r'P3 joined the game', timeout=60)
+            check('P2 and P3 join the server P1 is on', True, True)
+            server.console('kick P3 Testing')
+            g.wait(lambda: not g.alive(3), 'P3 gone after its kick', seconds=20)
+            check('kicked: P3 drops out, P1 plays on', g.ctl(1, 'state').get('player') is not None, True)
+            g.ctl(1, 'disconnect')
+            server.wait_for(r'P2 left the game', timeout=30)
+            check('P1 leaves: P2 leaves with it', True, True)
+        finally:
+            g.quit()
+    finally:
+        server.stop()
+        shutil.rmtree(folder, ignore_errors=True)
+
+
 def scenario_eight():
     print('eight: eight players in one window')
     g = Game(8)
@@ -513,6 +554,7 @@ SCENARIOS = {
     'signedin': scenario_signedin,
     'monitor': scenario_monitor,
     'setup': scenario_setup,
+    'server': scenario_server,
 }
 
 

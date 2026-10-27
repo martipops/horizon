@@ -253,6 +253,22 @@ fn above_menu_bar(title: &str) {
     }
 }
 
+/// Why a player's game left its server, when the server said (its Disconnected or error screen).
+fn turned_away(game: &Game<'_>) -> Option<String> {
+    use horizon_client::{multiplayer::Screen, title::Mode};
+    let why = match &game.title.as_ref()?.mode {
+        Mode::Multiplayer(Screen::Disconnected { reason, .. }) => reason.clone(),
+        Mode::Error { message, .. } => message.clone(),
+        _ => return None,
+    };
+    // An online-mode server: the other players have no Minecraft account of their own here.
+    Some(if why.contains("verify username") {
+        "This server needs each player's own Minecraft account".to_owned()
+    } else {
+        why
+    })
+}
+
 /// Player `game` into `window`; when it `moved` from another, the mouse it held there goes free
 /// (a click takes it in the new one).
 fn into_window(game: &mut Game<'_>, window: Arc<Window>, moved: bool) {
@@ -1375,9 +1391,20 @@ impl<'a> Split<'a> {
         Ok(())
     }
 
-    /// P1 is playing in a world others can join.
+    /// P1 is playing in a world others can join: its own (its server thread) or a server's.
     fn in_world(&self) -> bool {
-        self.host.title.is_none() && self.host.integrated.is_some() && self.host.player.is_some()
+        self.host.title.is_none()
+            && self.host.player.is_some()
+            && (self.host.integrated.is_some() || self.p1_server().is_some())
+    }
+
+    /// The server P1 joined over the network (a dedicated server, another computer's LAN
+    /// world, a friend's invite): the others join it too, each as its own profile.
+    fn p1_server(&self) -> Option<String> {
+        if self.host.integrated.is_some() || self.host.remote.is_none() {
+            return None;
+        }
+        self.host.server_address().map(str::to_owned)
     }
 
     /// The pad's state for its player: nothing while the press that joined it is still held.
@@ -1688,12 +1715,13 @@ impl<'a> Split<'a> {
             self.host.settings.save(&options);
             self.host.settings.clone()
         };
-        let pipe = self
-            .host
-            .integrated
-            .as_ref()
-            .and_then(|server| server.join_split(&name))
-            .ok_or("P1's world is not on its server thread")?;
+        // P1's own world through memory (`Ok`), else P1's server over the network (`Err`).
+        let via = match &self.host.integrated {
+            Some(server) => Ok(server
+                .join_split(&name)
+                .ok_or("P1's world does not let players in")?),
+            None => Err(self.p1_server().ok_or("P1 is not in a world")?),
+        };
         self.guests[i].options = options;
         self.turn(i + 1);
         let guest = &mut self.guests[i];
@@ -1701,7 +1729,12 @@ impl<'a> Split<'a> {
         guest.game.settings = settings;
         guest.game.options.player_name = Some(name.clone());
         guest.game.apply_settings();
-        let joined = guest.game.connect_local(pipe, &name);
+        let joined = match via {
+            Ok(pipe) => guest.game.connect_local(pipe, &name),
+            // A server that refuses it (online mode, the name taken) disconnects it: it drops
+            // out and P1 hears why (`drop_out`).
+            Err(address) => guest.game.connect_server(&address, &name),
+        };
         self.turn(0);
         if let Err(e) = joined {
             // Let in for nothing: the world pauses again, the name is free.
@@ -1810,13 +1843,22 @@ impl<'a> Split<'a> {
 
     /// Players who disconnected drop out; all of them once P1 has left the world.
     fn drop_out(&mut self) -> bool {
-        let p1_left = self.host.title.is_some() || self.host.integrated.is_none();
+        // Out of its world: on the title screen, or neither on its server thread nor a server's.
+        let p1_left = self.host.title.is_some()
+            || (self.host.integrated.is_none() && self.host.remote.is_none());
         let before = self.guests.len();
         for k in (0..self.guests.len()).rev() {
             let g = &self.guests[k];
             // A player picking a profile has no connection yet.
             let playing = g.name.is_none() || g.game.remote.is_some();
             if p1_left || !playing || g.game.error.is_some() {
+                // A server that turned it away (online mode, its name taken, full): P1 hears why.
+                if let (false, Some(name), Some(why)) = (p1_left, &g.name, turned_away(&g.game)) {
+                    self.host.split_hud.notice = Some(horizon_client::toasts::SystemToast::new(
+                        format!("{name} could not stay"),
+                        Some(why),
+                    ));
+                }
                 self.remove_guest(k);
             }
         }
