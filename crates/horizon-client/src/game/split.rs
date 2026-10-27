@@ -2003,11 +2003,9 @@ impl ApplicationHandler for Split<'_> {
         }
         // Badges while others play too.
         let together = self.players() > 1;
-        self.host.split_hud.badge =
-            together.then(|| format!("P1 · {}", self.host.options.player_name()));
+        self.host.split_hud.badge = together.then(|| self.host.options.player_name());
         for g in &mut self.guests {
-            let who = g.name.as_deref().unwrap_or("choosing");
-            g.game.split_hud.badge = Some(format!("P{} · {who}", g.seat));
+            g.game.split_hud.badge = Some(g.name.clone().unwrap_or_else(|| "New player".into()));
         }
         let master = self.host.audio.master;
         for i in 0..self.guests.len() {
@@ -2112,15 +2110,7 @@ impl Game<'_> {
                 Some((place, _)) => format!("{badge} · {place}"),
                 None => badge.clone(),
             };
-            batch.fill(
-                atlas,
-                2.0,
-                2.0,
-                width(&text) + 6.0,
-                12.0,
-                rgba(0, 0, 0, 140),
-            );
-            batch.text(atlas, &text, 5.0, 4.0, rgba(255, 255, 255, 230), false);
+            batch.text(atlas, &text, 4.0, 4.0, rgba(255, 255, 255, 230), true);
         }
         // A question: centred over the view dimmed, or a strip at the top (a controller joining).
         if let Some(prompt) = &self.split_hud.prompt {
