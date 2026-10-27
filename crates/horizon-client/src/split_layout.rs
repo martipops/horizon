@@ -94,10 +94,29 @@ pub struct Monitor {
     pub scale: f64,
 }
 
+impl Monitor {
+    /// Where it is on the desktop and its size, as windows are placed: macOS places them in
+    /// points, each monitor at its own scale; Windows and X11 in desktop pixels.
+    pub fn desktop(&self) -> [f64; 4] {
+        let k = if cfg!(target_os = "macos") {
+            self.scale
+        } else {
+            1.0
+        };
+        [
+            f64::from(self.at[0]) / k,
+            f64::from(self.at[1]) / k,
+            f64::from(self.size[0]) / k,
+            f64::from(self.size[1]) / k,
+        ]
+    }
+}
+
 /// Where a window is.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Placement {
-    /// A normal window: where it was last (`None`: where the system opens it, `NEW_WINDOW` big).
+    /// A normal window: its corner on the desktop (`Monitor::desktop`'s units) and its size in
+    /// pixels (`None`: a new one, where the system opens it, `NEW_WINDOW` big).
     Free(Option<([i32; 2], [u32; 2])>),
     /// Borderless over the monitor of this name.
     Fill(String),
@@ -111,6 +130,15 @@ pub const NEW_WINDOW: [f64; 2] = [854.0, 480.0];
 pub struct Window {
     pub number: u8,
     pub placement: Placement,
+}
+
+/// Where a player can go: a window there is (by number), a new free one, or a new one filling a
+/// monitor (by name).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Spot {
+    Window(u8),
+    New,
+    Fill(String),
 }
 
 /// Something to tell before Apply.
@@ -189,14 +217,27 @@ impl Draft {
 
     /// A new free window, numbered with the lowest number free; its number.
     pub fn add_window(&mut self) -> u8 {
+        self.open(Placement::Free(None))
+    }
+
+    fn open(&mut self, placement: Placement) -> u8 {
         let number = (2..=u8::MAX)
             .find(|n| self.windows.iter().all(|w| w.number != *n))
             .unwrap_or(u8::MAX);
-        self.windows.push(Window {
-            number,
-            placement: Placement::Free(None),
-        });
+        self.windows.push(Window { number, placement });
         number
+    }
+
+    /// Player `i` to `spot`: a new window opens for it (a window it leaves stays, empty).
+    pub fn place_player(&mut self, i: usize, spot: Spot) {
+        let number = match spot {
+            Spot::Window(n) => n,
+            Spot::New => self.add_window(),
+            Spot::Fill(name) => self.open(Placement::Fill(name)),
+        };
+        if let Some(p) = self.players.get_mut(i) {
+            *p = number;
+        }
     }
 
     /// Window `number` closes (never Window 1): its players go back to Window 1.
@@ -227,9 +268,9 @@ impl Draft {
         out
     }
 
-    /// Where each window would be on the desktop (its corner and size, physical pixels), in
-    /// `windows` order: free ones where they were (new ones at `main`'s corner), the others over
-    /// their monitor; a window over a missing monitor: `None`.
+    /// Where each window would be: its corner on the desktop (`Monitor::desktop`'s units) and its
+    /// size in pixels, in `windows` order: free ones where they were (new ones at `main`'s
+    /// corner), the others over their monitor; a window over a missing monitor: `None`.
     pub fn rects(&self, monitors: &[Monitor], main: &str) -> Vec<Option<([i32; 2], [u32; 2])>> {
         let home = monitors
             .iter()
@@ -240,14 +281,14 @@ impl Draft {
             .map(|w| match &w.placement {
                 Placement::Free(Some(rect)) => Some(*rect),
                 Placement::Free(None) => {
-                    let (at, scale) = home.map_or(([0, 0], 1.0), |m| (m.at, m.scale));
+                    let (at, scale) = home.map_or(([0.0; 4], 1.0), |m| (m.desktop(), m.scale));
                     let size = NEW_WINDOW.map(|v| (v * scale).round() as u32);
-                    Some((at, size))
+                    Some(([at[0] as i32, at[1] as i32], size))
                 }
-                Placement::Fill(name) => monitors
-                    .iter()
-                    .find(|m| &m.name == name)
-                    .map(|m| (m.at, m.size)),
+                Placement::Fill(name) => monitors.iter().find(|m| &m.name == name).map(|m| {
+                    let at = m.desktop();
+                    ([at[0] as i32, at[1] as i32], m.size)
+                }),
             })
             .collect()
     }
@@ -418,6 +459,21 @@ mod tests {
         assert_eq!(apart.windows[2].placement, Placement::Free(None));
         assert_eq!(apart.rects(&m, "Built-in")[2], Some(([0, 0], [1708, 960])));
         assert!(apart.warnings(&m).is_empty());
+    }
+
+    #[test]
+    fn players_placed() {
+        let m = monitors();
+        let mut d = here(3);
+        d.place_player(1, Spot::Fill("TV".into()));
+        d.place_player(2, Spot::Window(2));
+        assert_eq!(d.players, [1, 2, 2]);
+        d.place_player(2, Spot::New);
+        assert_eq!(d.players, [1, 2, 3]);
+        assert!(d.warnings(&m).is_empty());
+        // The window left behind stays, empty, with a warning.
+        d.place_player(1, Spot::Window(1));
+        assert_eq!(d.warnings(&m), [Warning::Empty(2)]);
     }
 
     #[test]

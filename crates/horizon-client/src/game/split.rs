@@ -28,7 +28,7 @@ use super::{
     pad::{PadId, PadRouter},
     start_game,
 };
-use horizon_client::split_layout::{self as layout, MAX_PLAYERS, Placement, View, place};
+use horizon_client::split_layout::{self as layout, MAX_PLAYERS, Placement, Spot, View, place};
 use horizon_client::{
     Result,
     gamepad::{Button, PadState},
@@ -138,14 +138,6 @@ impl HoldSelect {
     }
 }
 
-/// Where a player can go: a window there is (by number, 1 the game's), a new free one, or a new
-/// one filling a monitor (by name).
-#[derive(Clone, Debug, PartialEq)]
-enum Choice {
-    Window(u8),
-    New,
-    Fill(String),
-}
 /// Where a monitor is and its size, as windows are placed: macOS places them in points, each
 /// monitor at its own scale (pixels would be read at the window's scale: a window for a 1x TV
 /// beside a 2x screen would open on the screen, half size); Windows and X11 in desktop pixels.
@@ -399,7 +391,7 @@ impl<'a> Split<'a> {
     /// steps forward through them (buttons take the left click only), a joining player's bumpers
     /// both ways. A player alone in its window is at "New window" or its monitor's choice (its
     /// window is that), so the list stays the same as it steps.
-    fn choices(&self, i: usize) -> Vec<(String, Choice)> {
+    fn choices(&self, i: usize) -> Vec<(String, Spot)> {
         let alone = self.alone(i);
         let mine = self.window_of(i);
         let mut open: Vec<u8> = (0..self.players())
@@ -422,15 +414,15 @@ impl<'a> Split<'a> {
             let name = m
                 .name()
                 .filter(|n| Some(n) != main.as_ref() && !filled.contains(&n))?;
-            Some((self.monitor_label(&name)?, Choice::Fill(name)))
+            Some((self.monitor_label(&name)?, Spot::Fill(name)))
         });
-        std::iter::once((WINDOW_1.to_owned(), Choice::Window(1)))
+        std::iter::once((WINDOW_1.to_owned(), Spot::Window(1)))
             .chain(
                 open.into_iter()
                     .filter(|&n| n != 1)
-                    .map(|n| (self.window_label(n), Choice::Window(n))),
+                    .map(|n| (self.window_label(n), Spot::Window(n))),
             )
-            .chain(std::iter::once((NEW_WINDOW.to_owned(), Choice::New)))
+            .chain(std::iter::once((NEW_WINDOW.to_owned(), Spot::New)))
             .chain(monitors)
             .collect()
     }
@@ -442,12 +434,12 @@ impl<'a> Split<'a> {
     }
 
     /// Player `i`'s place among its choices: its window, or alone, what its window is.
-    fn current(&self, i: usize) -> Choice {
+    fn current(&self, i: usize) -> Spot {
         let mine = self.window_of(i);
         match self.placement(mine) {
-            Some(Placement::Free(_)) if self.alone(i) => Choice::New,
-            Some(Placement::Fill(name)) if self.alone(i) => Choice::Fill(name.clone()),
-            _ => Choice::Window(mine),
+            Some(Placement::Free(_)) if self.alone(i) => Spot::New,
+            Some(Placement::Fill(name)) if self.alone(i) => Spot::Fill(name.clone()),
+            _ => Spot::Window(mine),
         }
     }
 
@@ -468,11 +460,11 @@ impl<'a> Split<'a> {
     }
 
     /// Player `i` into a window: one there is, or a new one with the first number free.
-    fn choose(&mut self, i: usize, choice: Choice) {
+    fn choose(&mut self, i: usize, choice: Spot) {
         let placement = match choice {
-            Choice::Window(n) => return self.set_window(i, n),
-            Choice::New => Placement::Free(None),
-            Choice::Fill(name) => Placement::Fill(name),
+            Spot::Window(n) => return self.set_window(i, n),
+            Spot::New => Placement::Free(None),
+            Spot::Fill(name) => Placement::Fill(name),
         };
         // Out of its window first: alone there, its number is free again.
         self.set_window(i, 1);
@@ -649,14 +641,13 @@ impl<'a> Split<'a> {
     }
 
     /// Player `i` (not P1) holding Select 2 s is asked "Leave splitscreen?": A leaves, X
-    /// switches profile (leaves, then chooses again where it was), B stays.
+    /// switches profile (leaves, then chooses again where it was), Y opens the Setup screen, B
+    /// stays.
     fn leave_by_controller(&mut self, i: usize) {
         let pad = self.pad_now(i);
         let g = &mut self.guests[i - 1];
-        match g
-            .hold
-            .update(pad, &[Button::South, Button::West, Button::East])
-        {
+        let answers = [Button::South, Button::West, Button::North, Button::East];
+        match g.hold.update(pad, &answers) {
             Hold::Ask => {
                 g.game.split_hud.prompt = Some(Prompt {
                     ask: Ask::Leave,
@@ -664,13 +655,17 @@ impl<'a> Split<'a> {
                     choices: vec![
                         (Button::South, "Leave"),
                         (Button::West, "Switch profile"),
+                        (Button::North, "Setup"),
                         (Button::East, "Stay"),
                     ],
                 });
             }
             Hold::Answer(answer) => {
                 g.game.split_hud.prompt = None;
-                if answer == Button::East {
+                if answer == Button::North {
+                    g.game.open_split_setup();
+                }
+                if matches!(answer, Button::East | Button::North) {
                     return;
                 }
                 if answer == Button::West {
@@ -694,22 +689,30 @@ impl<'a> Split<'a> {
 
     /// P1 holding Select 2 s, as the others do to leave: P1 hosts the world (it ends splitscreen
     /// from the pause menu), but its controller can go: A takes it from P1 (keyboard and mouse
-    /// stay), and in a world a button on it then offers to join as a new player; B keeps it.
+    /// stay), and in a world a button on it then offers to join as a new player; Y opens the
+    /// Setup screen; B keeps it.
     fn p1_holds_select(&mut self) {
         let pad = self.pad_now(0);
-        match self.p1_hold.update(pad, &[Button::South, Button::East]) {
+        match self
+            .p1_hold
+            .update(pad, &[Button::South, Button::North, Button::East])
+        {
             Hold::Ask => {
                 self.host.split_hud.prompt = Some(Prompt {
                     ask: Ask::Controller,
                     title: "P1's controller".to_owned(),
                     choices: vec![
                         (Button::South, "Remove it from P1"),
+                        (Button::North, "Setup"),
                         (Button::East, "Keep it"),
                     ],
                 });
             }
             Hold::Answer(answer) => {
                 self.host.split_hud.prompt = None;
+                if answer == Button::North {
+                    self.host.open_split_setup();
+                }
                 if answer == Button::South
                     && let Some(id) = self.p1_pad.take()
                 {
@@ -916,6 +919,157 @@ impl<'a> Split<'a> {
         for g in &mut self.guests {
             g.game.ui.options.split_players = rows.clone();
         }
+    }
+
+    /// The arrangement now, for the Setup screen: free windows where they are.
+    fn draft(&self) -> layout::Draft {
+        let windows = self
+            .windows
+            .iter()
+            .map(|w| {
+                let here = self.surfaces.iter().find(|s| s.key == w.number);
+                let placement = match (&w.placement, here) {
+                    (Placement::Free(_), Some(s)) => match s.window.outer_position() {
+                        Ok(at) => {
+                            // On the desktop as windows are placed: macOS in points.
+                            let k = if cfg!(target_os = "macos") {
+                                s.window.scale_factor()
+                            } else {
+                                1.0
+                            };
+                            let at = [(f64::from(at.x) / k) as i32, (f64::from(at.y) / k) as i32];
+                            Placement::Free(Some((at, [s.size.width, s.size.height])))
+                        }
+                        Err(_) => w.placement.clone(),
+                    },
+                    (p, _) => p.clone(),
+                };
+                layout::Window {
+                    number: w.number,
+                    placement,
+                }
+            })
+            .collect();
+        let e = &self.host.settings.extras;
+        layout::Draft {
+            windows,
+            players: (0..self.players()).map(|i| self.window_number(i)).collect(),
+            two: e.splitscreen_two,
+            three: e.splitscreen_three,
+        }
+    }
+
+    /// The monitors for the Setup screen, left to right (as `monitor_label` numbers them), and
+    /// the one Window 1 is on.
+    fn setup_monitors(&self) -> (Vec<layout::Monitor>, String) {
+        let mut monitors: Vec<layout::Monitor> = self
+            .monitors()
+            .iter()
+            .filter_map(|m| {
+                Some(layout::Monitor {
+                    name: m.name()?,
+                    at: [m.position().x, m.position().y],
+                    size: [m.size().width, m.size().height],
+                    scale: m.scale_factor(),
+                })
+            })
+            .collect();
+        monitors.sort_by_key(|m| (m.at[0], m.at[1]));
+        (monitors, self.main_monitor().unwrap_or_default())
+    }
+
+    /// The Setup screen applied: its windows, and every player in its window. Windows nobody
+    /// plays in close (`forget_empty_windows`).
+    fn apply(&mut self, draft: layout::Draft) {
+        let mut windows: Vec<layout::Window> = draft
+            .windows
+            .into_iter()
+            .map(|w| {
+                // A free window stays where it is; a new one opens where the system puts it.
+                let placement = match (&w.placement, self.placement(w.number)) {
+                    (Placement::Free(_), Some(Placement::Free(p))) => Placement::Free(*p),
+                    (Placement::Free(_), _) => Placement::Free(None),
+                    (p, _) => p.clone(),
+                };
+                layout::Window {
+                    number: w.number,
+                    placement,
+                }
+            })
+            .collect();
+        if !windows.iter().any(|w| w.number == 1) {
+            windows.insert(
+                0,
+                layout::Window {
+                    number: 1,
+                    placement: Placement::Free(None),
+                },
+            );
+        }
+        self.windows = windows;
+        // Players who joined while it was open stay where they are.
+        for (i, &number) in draft.players.iter().enumerate().take(self.players()) {
+            let number = if self.placement(number).is_some() {
+                number
+            } else {
+                1
+            };
+            self.set_window(i, number);
+        }
+        // P1's options file: its turn.
+        self.turn(0);
+        let e = &mut self.host.settings.extras;
+        if (e.splitscreen_two, e.splitscreen_three) != (draft.two, draft.three) {
+            e.splitscreen_two = draft.two;
+            e.splitscreen_three = draft.three;
+            self.host.settings.save(&Game::options_path());
+        }
+    }
+
+    /// The Setup screen on any player's options: the arrangement now, the monitors and the
+    /// players' names; Apply arranges them. True when it did.
+    fn sync_setup(&mut self) -> bool {
+        use horizon_client::options_ui::Page;
+        let open = |g: &Game<'_>| g.ui.options.page() == Page::SplitSetup;
+        if !(open(&self.host) || self.guests.iter().any(|g| open(&g.game))) {
+            return false;
+        }
+        let live = self.draft();
+        let (monitors, main) = self.setup_monitors();
+        let names: Vec<String> = (0..self.players())
+            .map(|i| {
+                let (seat, who) = self.who(i);
+                format!("P{seat} {who}")
+            })
+            .collect();
+        let (mut applied, mut identify) = (None, false);
+        let games =
+            std::iter::once(&mut self.host).chain(self.guests.iter_mut().map(|g| &mut g.game));
+        for (i, game) in games.enumerate() {
+            let setup = &mut game.ui.options.split_setup;
+            if let Some(draft) = setup.apply.take() {
+                applied = Some(draft);
+            }
+            identify |= std::mem::take(&mut setup.identify);
+            // P1 arranges everyone; the others, themselves.
+            setup.me = i;
+            setup.host = i == 0;
+            setup.live = Some(live.clone());
+            setup.monitors = monitors.clone();
+            setup.main = main.clone();
+            setup.names = names.clone();
+        }
+        let changed = applied.is_some();
+        if let Some(draft) = applied {
+            self.apply(draft);
+        }
+        // Every view says where it is: after a change, or asked.
+        if changed || identify {
+            for i in 0..self.players() {
+                self.tag(i, None);
+            }
+        }
+        changed
     }
 
     /// Splitscreen turned on: P1 renders offscreen on the same device and a compositor presents
@@ -1600,6 +1754,7 @@ impl ApplicationHandler for Split<'_> {
             }
         }
         self.sync_page();
+        changed |= self.sync_setup();
         changed |= self.sync_surfaces(event_loop);
         // Also a new arrangement from the settings (a screen, Two on a screen).
         if changed || self.views() != self.applied {
@@ -1688,6 +1843,14 @@ impl ApplicationHandler for Split<'_> {
 }
 
 impl Game<'_> {
+    /// The Splitscreen Setup screen, from the controller: Done goes back to playing.
+    fn open_split_setup(&mut self) {
+        if self.screen == super::Screen::Playing && self.title.is_none() {
+            self.capture(false);
+        }
+        self.open_options_at(false, horizon_client::options_ui::Page::SplitSetup);
+    }
+
     /// An error stops the event loop, as ever, but not in another splitscreen player's game:
     /// that player drops out (`Split::drop_out`), the others play on.
     pub(super) fn exit_on_error(&self, event_loop: &ActiveEventLoop) {

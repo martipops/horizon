@@ -889,6 +889,8 @@ pub enum Page {
     ShaderPacks,
     /// Horizon's graphics settings (`graphics_ui`).
     Graphics,
+    /// Splitscreen's windows and who plays where (`split_ui`).
+    SplitSetup,
     GraphicsAdvanced,
     /// Horizon's controller settings and button binds.
     Controller,
@@ -1041,6 +1043,7 @@ pub struct OptionsUi {
     /// Scroll the selected language into the middle on the next layout.
     center_language: bool,
     pub graphics: crate::graphics_ui::GraphicsUi,
+    pub split_setup: crate::split_ui::SplitUi,
     /// The AI Agent page's status lines (set by the game while it shows).
     pub agent_status: Vec<String>,
     /// The Splitscreen page's players, "P2 Alex", and where each plays (set by the game).
@@ -1075,6 +1078,7 @@ impl Default for OptionsUi {
             in_world: false,
             center_language: false,
             graphics: Default::default(),
+            split_setup: Default::default(),
             agent_status: Vec::new(),
             split_players: Vec::new(),
             split_requests: Vec::new(),
@@ -1135,6 +1139,7 @@ fn horizon_page_tooltip(page: Page) -> Option<&'static str> {
         }
         Page::Agent => "Let your own AI agent play: horizon-ctl and MCP clients on this computer.",
         Page::Splitscreen => "Friends join with a controller: where each player plays.",
+        Page::SplitSetup => "The windows and monitors, and who plays where.",
         Page::ShaderPacks => {
             "Shader packs from the shaderpacks folder: Horizon's own and those in the shaders/ format. One runs at a time."
         }
@@ -1206,6 +1211,9 @@ impl OptionsUi {
         if matches!(page, Page::Graphics | Page::GraphicsAdvanced) {
             self.graphics.reset();
         }
+        if page == Page::SplitSetup {
+            self.split_setup.reset();
+        }
     }
     /// The graphics screen level of `page`, if it is one.
     fn graphics_level(page: Page) -> Option<crate::graphics_ui::Level> {
@@ -1238,6 +1246,7 @@ impl OptionsUi {
             Page::Horizon => "Horizon Settings",
             Page::Agent => "AI Agent",
             Page::Splitscreen => "Splitscreen",
+            Page::SplitSetup => "Splitscreen Setup",
         }
     }
     fn scrollbar_x(&self, width: f32) -> f32 {
@@ -1382,6 +1391,16 @@ impl OptionsUi {
                 if s.extras.splitscreen {
                     rows.push(Row::Buttons(
                         self.extra_button(s, Item::SplitscreenThree),
+                        None,
+                    ));
+                    rows.push(Row::Buttons(
+                        button(
+                            0.0,
+                            0.0,
+                            150.0,
+                            Text::literal("Setup..."),
+                            Act::Push(Page::SplitSetup),
+                        ),
                         None,
                     ));
                     rows.push(Row::Header("Players"));
@@ -2212,6 +2231,10 @@ impl OptionsUi {
                 .draw(level, s, batch, atlas, cursor, self.in_world);
             return;
         }
+        if self.page() == Page::SplitSetup {
+            self.split_setup.draw(batch, atlas, cursor, self.in_world);
+            return;
+        }
         if self.page() == Page::Packs {
             ui::menu_background(batch, atlas, 0.0, 0.0, w, h, self.in_world);
             let blink = self.pack_focus.elapsed().as_millis() as u64;
@@ -2460,6 +2483,21 @@ impl OptionsUi {
                 return vec![Event::ButtonClick];
             }
             return Vec::new();
+        }
+        if self.page() == Page::SplitSetup {
+            use crate::split_ui::Click;
+            if right {
+                return Vec::new();
+            }
+            return match self.split_setup.click((x, y), size, drag) {
+                Click::Nothing => Vec::new(),
+                Click::Pressed => vec![Event::ButtonClick],
+                Click::Done => {
+                    let mut events = vec![Event::ButtonClick];
+                    events.extend(self.back(s));
+                    events
+                }
+            };
         }
         if let Some(level) = Self::graphics_level(self.page()) {
             use crate::graphics_ui::Action;
@@ -2711,7 +2749,8 @@ impl OptionsUi {
         // release, even if the pointer has left the widget or its value stayed.
         let slider = self.dragging.take().is_some();
         let graphics_slider = self.graphics.release();
-        if slider || graphics_slider {
+        let split_drop = self.split_setup.release();
+        if slider || graphics_slider || split_drop {
             vec![Event::ButtonClick]
         } else {
             Vec::new()

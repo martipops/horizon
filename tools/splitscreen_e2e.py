@@ -12,6 +12,7 @@ Scenarios:
   three    three in a window: one wide on top, one tall on the left, side by side
   live     splitscreen off and on again from the Splitscreen page, in a world
   picker   a joining player opens a new window (RB), makes a profile, and joins in it
+  setup    the Setup screen: a draft moves nobody, Apply moves, Revert undoes, Done closes
   monitor  a player fills another monitor and another joins it (skipped with one monitor)
   signedin P1 signed into an account: another player still joins, under its own profile
   leave    a player holds Select, then A leaves, or X switches profile in the same place
@@ -133,6 +134,20 @@ class Game:
         self.wait(lambda: any(l.startswith('Splitscreen: ') for l in self.labels(n)),
                   'the Splitscreen page', seconds=5)
         return self.ctl(n, 'ui')['widgets']
+
+    def setup(self, n=1):
+        """Open player n's Splitscreen Setup screen."""
+        self.page(n)
+        self.ctl(n, 'click-button', 'Setup...')
+        self.wait(lambda: 'Apply' in self.labels(n), 'the Setup screen', seconds=5)
+
+    def press(self, n, label):
+        """Click player n's button `label` (the first whose label starts with it)."""
+        ids = [w['id'] for w in self.ctl(n, 'ui')['widgets'] if w.get('label', '').startswith(label)]
+        if not ids:
+            raise RuntimeError(f'no {label!r} among {self.labels(n)}')
+        self.ctl(n, 'click', ids[0])
+        time.sleep(0.4)
 
     def screens(self, by=1):
         """Every player's Play on, as player `by`'s page shows them."""
@@ -416,6 +431,59 @@ def scenario_monitor():
         g.quit()
 
 
+def scenario_setup():
+    print('setup: the Setup screen moves a player only on Apply; Revert undoes a draft')
+    g = Game(2)
+    try:
+        w, h = g.size(1)
+        g.setup(1)
+        g.press(1, 'P2')
+        g.press(1, 'New window')
+        time.sleep(1)
+        check('a draft changes nothing yet', (g.size(1), g.size(2)), ((w, h), (w, h)))
+        g.press(1, 'Revert')
+        g.press(1, 'P2')
+        g.press(1, 'New window')
+        g.press(1, 'Apply')
+        g.wait(lambda: g.size(1) == (2 * w, h), 'P1 alone in Window 1 after Apply', seconds=15)
+        check('Apply: P1 has Window 1 to itself', g.size(1), (2 * w, h))
+        check('Apply: P2 in a window of its own', g.size(2) != (w, h), True)
+        # Back beside P1 from the screen: its window closes.
+        g.press(1, 'P2')
+        g.press(1, 'Window 1')
+        g.press(1, 'Apply')
+        g.wait(lambda: g.size(2) == (w, h), 'P2 back beside P1', seconds=15)
+        check('P2 back beside P1', (g.size(1), g.size(2)), ((w, h), (w, h)))
+        g.press(1, 'Done')
+        check('Done closes the screen', 'Apply' in g.labels(1), False)
+        g.close_page(1)
+    finally:
+        g.quit()
+    print('setup: from the controller (hold Select, Y); another player moves only itself')
+    g = Game(3)
+    try:
+        g.ctl(2, 'pad', 'select', 'down')
+        time.sleep(2.5)
+        g.ctl(2, 'pad', 'select', 'up')
+        time.sleep(0.3)
+        g.ctl(2, 'pad', 'north', 'tap')
+        g.wait(lambda: 'Apply' in g.labels(2), "P2's Setup screen", seconds=10)
+        tiles = {w['label']: w for w in g.ctl(2, 'ui')['widgets'] if w.get('label', '').startswith('P')}
+        check("P2's screen: P2 can be moved, P3 and P1 not",
+              [tiles[k].get('enabled', True) for k in sorted(tiles)], [False, True, False])
+        check('no presets for P2', 'Everyone here' in g.labels(2), False)
+        g.press(2, 'P2')
+        g.press(2, 'New window')
+        g.press(2, 'Apply')
+        g.wait(lambda: g.size(2) == (1708, 960), 'P2 in a new window', seconds=15)
+        check('P2 moved itself to a window of its own', g.size(2), (1708, 960))
+        check('P1 and P3 share Window 1', g.size(1) == g.size(3), True)
+        g.press(2, 'Done')
+        check('Done: P2 plays again', 'Apply' in g.labels(2), False)
+    finally:
+        g.quit()
+
+
 def scenario_eight():
     print('eight: eight players in one window')
     g = Game(8)
@@ -449,6 +517,7 @@ SCENARIOS = {
     'leave': scenario_leave,
     'signedin': scenario_signedin,
     'monitor': scenario_monitor,
+    'setup': scenario_setup,
 }
 
 

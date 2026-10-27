@@ -391,6 +391,11 @@ impl Cps {
     }
 }
 
+/// Two players sharing a window (`splitscreen_two`): halves this way.
+pub const SPLIT_TWO: [&str; 3] = ["Auto", "Side by side", "Top and bottom"];
+/// Three players sharing a window (`splitscreen_three`).
+pub const SPLIT_THREE: [&str; 3] = ["One wide on top", "One tall on the left", "Side by side"];
+
 /// The settings the Extras page shows, one per row.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Item {
@@ -532,12 +537,8 @@ impl Item {
     pub fn value(self, e: &Extras) -> String {
         match self {
             Item::SortKey => crate::keybinds::display_name(&e.sort_key).plain(),
-            Item::SplitscreenTwo => ["Auto", "Side by side", "Top and bottom"]
-                [usize::from(e.splitscreen_two.min(2))]
-            .into(),
-            Item::SplitscreenThree => ["One wide on top", "One tall on the left", "Side by side"]
-                [usize::from(e.splitscreen_three.min(2))]
-            .into(),
+            Item::SplitscreenTwo => SPLIT_TWO[usize::from(e.splitscreen_two.min(2))].into(),
+            Item::SplitscreenThree => SPLIT_THREE[usize::from(e.splitscreen_three.min(2))].into(),
             other => match other.switch(e) {
                 Some(true) => "On".into(),
                 _ => "Off".into(),
