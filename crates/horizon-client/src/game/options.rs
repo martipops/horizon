@@ -74,6 +74,9 @@ impl Game<'_> {
         }
     }
     pub(super) fn options_path() -> std::path::PathBuf {
+        if let Some(path) = super::split::options_path() {
+            return path;
+        }
         std::env::current_dir()
             .unwrap_or_default()
             .join("options.txt")

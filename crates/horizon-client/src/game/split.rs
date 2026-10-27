@@ -5,9 +5,10 @@
 //! of its buttons is pressed. Keyboard and mouse drive the player whose view was clicked last
 //! (Esc frees the mouse, then click another view). Player N also takes `horizon-ctl` on P1's
 //! socket path + "N". The window paces every player's frames once, at the fastest any wants.
+//! Player N keeps its own options in `splitscreen/PN/options.txt` (first a copy of P1's).
 use super::{Game, UiResources, build_renderer, pad::PadRouter, start_game};
 use horizon_client::{Result, gfx::compositor::Compositor};
-use std::sync::Arc;
+use std::{cell::Cell, path::PathBuf, sync::Arc};
 use winit::{
     application::ApplicationHandler,
     dpi::{PhysicalPosition, PhysicalSize},
@@ -15,6 +16,23 @@ use winit::{
     event_loop::ActiveEventLoop,
     window::WindowId,
 };
+
+thread_local! {
+    /// Whose turn it is on this thread (0 = P1): every player runs here, one after another.
+    static TURN: Cell<usize> = const { Cell::new(0) };
+}
+
+/// The `options.txt` of the player whose turn it is; `None` for P1, whose is the game's own.
+pub(super) fn options_path() -> Option<PathBuf> {
+    match TURN.get() {
+        0 => None,
+        i => Some(
+            std::env::current_dir()
+                .unwrap_or_default()
+                .join(format!("splitscreen/P{}/options.txt", i + 1)),
+        ),
+    }
+}
 
 pub(super) struct Split<'a> {
     pub(super) host: Game<'a>,
@@ -73,6 +91,7 @@ impl<'a> Split<'a> {
 
     /// Player `i`'s game (0 = P1).
     fn player(&mut self, i: usize) -> Option<&mut dyn ApplicationHandler> {
+        TURN.set(i);
         match i {
             0 => Some(&mut self.host),
             _ => self.guests.get_mut(i - 1).map(|g| g as _),
@@ -93,11 +112,10 @@ impl<'a> Split<'a> {
     }
 
     fn resize_views(&mut self, event_loop: &ActiveEventLoop, id: WindowId) {
-        let views = self.views();
-        self.host
-            .window_event(event_loop, id, WindowEvent::Resized(views[0].1));
-        for (guest, view) in self.guests.iter_mut().zip(&views[1..]) {
-            guest.window_event(event_loop, id, WindowEvent::Resized(view.1));
+        for (i, view) in self.views().into_iter().enumerate() {
+            if let Some(player) = self.player(i) {
+                player.window_event(event_loop, id, WindowEvent::Resized(view.1));
+            }
         }
     }
 
@@ -123,6 +141,15 @@ impl<'a> Split<'a> {
         let res: &'static Arc<_> = Box::leak(Box::new(host.res.clone()));
         let audio = horizon_client::audio::Audio::silent(&options.resources);
         let window = host.window.clone().ok_or("no window")?;
+        TURN.set(n - 1);
+        let path = options_path().ok_or("no options for this player")?;
+        let settings = if path.exists() {
+            horizon_client::settings::Settings::load(&path)
+        } else {
+            std::fs::create_dir_all(path.parent().ok_or("bad options path")?)?;
+            host.settings.save(&path);
+            host.settings.clone()
+        };
         let mut guest = start_game(
             res,
             host.pack.clone(),
@@ -133,7 +160,7 @@ impl<'a> Split<'a> {
             host.options.resources.clone(),
             std::time::Instant::now(),
             None,
-            Some(host.settings.clone()),
+            Some(settings),
             None,
         )?
         .ok_or("a player did not start")?;
@@ -187,10 +214,11 @@ impl ApplicationHandler for Split<'_> {
             // The views draw themselves offscreen; the compositor presents in about_to_wait.
             WindowEvent::RedrawRequested => {}
             WindowEvent::Focused(_) | WindowEvent::CloseRequested => {
-                for guest in &mut self.guests {
-                    guest.window_event(event_loop, id, event.clone());
+                for i in 0..=self.guests.len() {
+                    if let Some(player) = self.player(i) {
+                        player.window_event(event_loop, id, event.clone());
+                    }
                 }
-                self.host.window_event(event_loop, id, event);
             }
             WindowEvent::CursorMoved {
                 device_id,
@@ -267,6 +295,7 @@ impl ApplicationHandler for Split<'_> {
             guest.pad.feed = Some(pad);
         }
         let mut turns = vec![std::time::Instant::now()];
+        TURN.set(0);
         self.host.about_to_wait(event_loop);
         turns.push(std::time::Instant::now());
         // One player joins per frame once P1 is playing in its world.
@@ -289,12 +318,14 @@ impl ApplicationHandler for Split<'_> {
                 }
             }
         }
-        for guest in &mut self.guests {
+        for (i, guest) in self.guests.iter_mut().enumerate() {
+            TURN.set(i + 1);
             let at = std::time::Instant::now();
             guest.about_to_wait(event_loop);
             turns.push(at);
             turns.push(std::time::Instant::now());
         }
+        TURN.set(0);
         let views = self.views();
         let frames: Vec<_> = std::iter::once(&self.host.renderer)
             .chain(self.guests.iter().map(|g| &g.renderer))
@@ -353,9 +384,10 @@ impl ApplicationHandler for Split<'_> {
     }
 
     fn exiting(&mut self, event_loop: &ActiveEventLoop) {
-        for guest in &mut self.guests {
-            guest.exiting(event_loop);
+        for i in (0..=self.guests.len()).rev() {
+            if let Some(player) = self.player(i) {
+                player.exiting(event_loop);
+            }
         }
-        self.host.exiting(event_loop);
     }
 }
