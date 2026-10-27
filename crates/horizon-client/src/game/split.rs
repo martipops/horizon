@@ -231,6 +231,28 @@ fn centred(m: &MonitorHandle) -> winit::dpi::Position {
     }
 }
 
+/// The monitor's window titled `title` over that monitor's menu bar, all of it: one level above
+/// the menu bar, at the screen's whole frame. Hiding the menu bar (the presentation options) works
+/// only for the window with the keyboard, and a monitor's window opens without it. AppKit's own
+/// list of the app's windows, by title: winit's handle to it would need `unsafe`.
+#[cfg(target_os = "macos")]
+fn above_menu_bar(title: &str) {
+    let Some(main_thread) = objc2::MainThreadMarker::new() else {
+        return;
+    };
+    let app = objc2_app_kit::NSApplication::sharedApplication(main_thread);
+    for window in app.windows() {
+        if window.title().to_string() != title {
+            continue;
+        }
+        // NSMainMenuWindowLevel (24) + 1.
+        window.setLevel(25);
+        if let Some(screen) = window.screen() {
+            window.setFrame_display(screen.frame(), true);
+        }
+    }
+}
+
 /// Player `game` into `window`; when it `moved` from another, the mouse it held there goes free
 /// (a click takes it in the new one).
 fn into_window(game: &mut Game<'_>, window: Arc<Window>, moved: bool) {
@@ -955,8 +977,9 @@ impl<'a> Split<'a> {
                 _ => None,
             };
             let attributes = match cover {
+                // Its own title for a moment: `above_menu_bar` finds it by it.
                 Some((at, size)) => attributes
-                    .with_title("Horizon")
+                    .with_title(format!("Horizon {key}"))
                     .with_decorations(false)
                     .with_position(at)
                     .with_inner_size(size),
@@ -992,6 +1015,8 @@ impl<'a> Split<'a> {
                 // keeps a window's bottom-left corner when it resizes).
                 let _ = window.request_inner_size(size);
                 window.set_outer_position(at);
+                #[cfg(target_os = "macos")]
+                above_menu_bar(&format!("Horizon {key}"));
             }
             match made {
                 Ok((window, compositor)) => self.surfaces.push(Surface {
