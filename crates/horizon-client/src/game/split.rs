@@ -1,6 +1,6 @@
 //! Splitscreen spike (`HORIZON_SPLIT=N`, 2 to 4 players in one window). P1 is the game as
-//! launched; once its world is open it goes to LAN and the others, more `Game`s in this process,
-//! join it. Every player renders offscreen on one device and the compositor tiles their frames:
+//! launched; once its world is open the others, more `Game`s in this process, join its server
+//! thread through memory as P1 does. Every player renders offscreen on one device and the compositor tiles their frames:
 //! halves for two, quadrants for three or four. Each controller joins as the next player when one
 //! of its buttons is pressed. Keyboard and mouse drive the player whose view was clicked last
 //! (Esc frees the mouse, then click another view). Player N also takes `horizon-ctl` on P1's
@@ -15,8 +15,6 @@ use winit::{
     event_loop::ActiveEventLoop,
     window::WindowId,
 };
-
-const LAN_PORT: &str = "25579";
 
 pub(super) struct Split<'a> {
     pub(super) host: Game<'a>,
@@ -103,16 +101,19 @@ impl<'a> Split<'a> {
         }
     }
 
-    /// Player `n` (from 2) joins P1's world, opened to LAN for the first.
+    /// Player `n` (from 2) joins P1's world through memory, as P1 itself does.
     fn start_guest(&mut self, n: usize) -> Result<Game<'static>> {
         let host = &mut self.host;
-        if n == 2 {
-            host.lan_control(&["lan", "open", LAN_PORT])?;
-        }
+        let name = format!("P{n}");
+        let pipe = host
+            .integrated
+            .as_ref()
+            .and_then(|server| server.join_split(&name))
+            .ok_or("splitscreen needs P1's world on its server thread")?;
         let mut options = host.options.clone();
         options.world = None;
-        options.server = Some(format!("127.0.0.1:{LAN_PORT}"));
-        options.player_name = Some(format!("P{n}"));
+        options.server = None;
+        options.player_name = Some(name.clone());
         options.control = options.control.map(|p| {
             let mut p = p.into_os_string();
             p.push(n.to_string());
@@ -148,6 +149,7 @@ impl<'a> Split<'a> {
         guest.window = Some(window);
         guest.world_renderer_ready = true;
         guest.apply_settings();
+        guest.connect_local(pipe, &name)?;
         Ok(guest)
     }
 }
