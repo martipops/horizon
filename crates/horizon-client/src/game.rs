@@ -1309,6 +1309,8 @@ struct Game<'a> {
     /// The cursor icon the window shows (`widgets::take_cursor` each frame).
     cursor_icon: horizon_client::widgets::Cursor,
     captured: bool,
+    /// Splitscreen: this player's name tag, a toast when it joins, moves or takes the keyboard.
+    split_tag: Option<horizon_client::toasts::SystemToast>,
     focused: bool,
     /// The keyboard's modifier state (`KeyEvent.modifiers`).
     modifiers: winit::keyboard::ModifiersState,
@@ -12674,6 +12676,7 @@ impl<'a> Game<'a> {
             cursor: (0.0, 0.0),
             cursor_icon: horizon_client::widgets::Cursor::Arrow,
             captured: false,
+            split_tag: None,
             focused: true,
             modifiers: winit::keyboard::ModifiersState::empty(),
             fullscreen: horizon_client::window::FullscreenState::new(false),

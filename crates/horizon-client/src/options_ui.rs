@@ -1358,6 +1358,10 @@ impl OptionsUi {
                     Some(self.extra_button(s, Item::SplitscreenTwo)),
                 )];
                 if s.extras.splitscreen {
+                    rows.push(Row::Buttons(
+                        self.extra_button(s, Item::SplitscreenThree),
+                        None,
+                    ));
                     rows.push(Row::Header("Players"));
                     for (n, (who, screen)) in self.split_players.iter().enumerate() {
                         let mut name = button(0.0, 0.0, 150.0, Text::literal(who), Act::None);

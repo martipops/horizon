@@ -118,6 +118,9 @@ pub struct Extras {
     /// Two players in one window: 0 auto (side by side when wider than tall), 1 side by side,
     /// 2 top and bottom (`splitscreenTwo`).
     pub splitscreen_two: u8,
+    /// Three players on a screen: 0 one wide on top, 1 one tall on the left, 2 side by side
+    /// (`splitscreenThree`).
+    pub splitscreen_three: u8,
 }
 impl Default for Extras {
     fn default() -> Self {
@@ -152,6 +155,7 @@ impl Default for Extras {
             discord_presence: true,
             splitscreen: false,
             splitscreen_two: 0,
+            splitscreen_three: 0,
         }
     }
 }
@@ -228,6 +232,7 @@ impl Extras {
                 "discordPresence" => e.discord_presence = flag(e.discord_presence),
                 "splitscreen" => e.splitscreen = flag(e.splitscreen),
                 "splitscreenTwo" => e.splitscreen_two = value.parse().unwrap_or(0).min(2),
+                "splitscreenThree" => e.splitscreen_three = value.parse().unwrap_or(0).min(2),
                 _ => {}
             }
         }
@@ -235,7 +240,7 @@ impl Extras {
     }
     pub fn serialize(&self) -> String {
         format!(
-            "fullbright:{}\ndynamicLights:{}\nzoom:{}\nzoomKey:{}\nzoomLevel:{}\nzoomSmooth:{}\nzoomSensitivity:{}\nfps:{}\nfpsCorner:{}\nfpsLows:{}\nkeystrokes:{}\nkeystrokesCorner:{}\nkeystrokesCps:{}\nmovedToMods:{}\nminimap:{}\nminimapCorner:{}\nminimapSize:{}\nminimapShape:{}\nminimapZoom:{}\nminimapRotate:{}\nautoReconnect:{}\nmouseTweaks:{}\nmouseTweaksWheel:{}\nsort:{}\nsortKey:{}\n{}:{}\nagentControl:{}\ndiscordPresence:{}\nsplitscreen:{}\nsplitscreenTwo:{}\n",
+            "fullbright:{}\ndynamicLights:{}\nzoom:{}\nzoomKey:{}\nzoomLevel:{}\nzoomSmooth:{}\nzoomSensitivity:{}\nfps:{}\nfpsCorner:{}\nfpsLows:{}\nkeystrokes:{}\nkeystrokesCorner:{}\nkeystrokesCps:{}\nmovedToMods:{}\nminimap:{}\nminimapCorner:{}\nminimapSize:{}\nminimapShape:{}\nminimapZoom:{}\nminimapRotate:{}\nautoReconnect:{}\nmouseTweaks:{}\nmouseTweaksWheel:{}\nsort:{}\nsortKey:{}\n{}:{}\nagentControl:{}\ndiscordPresence:{}\nsplitscreen:{}\nsplitscreenTwo:{}\nsplitscreenThree:{}\n",
             bool_text(self.fullbright),
             bool_text(self.dynamic_lights),
             bool_text(self.zoom),
@@ -271,6 +276,7 @@ impl Extras {
             bool_text(self.discord_presence),
             bool_text(self.splitscreen),
             self.splitscreen_two,
+            self.splitscreen_three,
         )
     }
     /// Binds the extra key `name` (`SORT_KEY`); false for
@@ -403,6 +409,7 @@ pub enum Item {
     /// On the Splitscreen page, with each player's screen.
     Splitscreen,
     SplitscreenTwo,
+    SplitscreenThree,
 }
 /// The Extras page: headers and items.
 pub fn rows() -> Vec<Result<Item, &'static str>> {
@@ -435,6 +442,7 @@ impl Item {
             Item::DiscordPresence => "Discord Rich Presence",
             Item::Splitscreen => "Splitscreen",
             Item::SplitscreenTwo => "Two on a screen",
+            Item::SplitscreenThree => "Three on a screen",
         }
     }
     /// The switch this setting belongs to: it does nothing while that is off.
@@ -443,7 +451,7 @@ impl Item {
         Some(match self {
             MouseTweaksWheel => MouseTweaks,
             SortKey => Sort,
-            SplitscreenTwo => Splitscreen,
+            SplitscreenTwo | SplitscreenThree => Splitscreen,
             Fullbright | DynamicLights | MouseTweaks | Sort | AutoReconnect | NoAi
             | AgentControl | DiscordPresence | Splitscreen => {
                 return None;
@@ -477,6 +485,9 @@ impl Item {
             }
             Item::DiscordPresence => {
                 "Shows Playing Horizon on your Discord profile while Discord runs: menus, single player or multiplayer, the dimension and the time played. Never a world's name or a server's address."
+            }
+            Item::SplitscreenThree => {
+                "How three players share a screen: the first one wide on top, tall on the left, or all three side by side."
             }
             Item::SplitscreenTwo => {
                 "How two players share a screen: side by side, top and bottom, or Auto (side by side when it is wider than tall)."
@@ -524,6 +535,9 @@ impl Item {
             Item::SplitscreenTwo => ["Auto", "Side by side", "Top and bottom"]
                 [usize::from(e.splitscreen_two.min(2))]
             .into(),
+            Item::SplitscreenThree => ["One wide on top", "One tall on the left", "Side by side"]
+                [usize::from(e.splitscreen_three.min(2))]
+            .into(),
             other => match other.switch(e) {
                 Some(true) => "On".into(),
                 _ => "Off".into(),
@@ -547,6 +561,7 @@ impl Item {
             Item::DiscordPresence => e.discord_presence = !e.discord_presence,
             Item::Splitscreen => e.splitscreen = !e.splitscreen,
             Item::SplitscreenTwo => e.splitscreen_two = step(e.splitscreen_two, back),
+            Item::SplitscreenThree => e.splitscreen_three = step(e.splitscreen_three, back),
             Item::SortKey => {}
         }
     }
