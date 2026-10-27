@@ -165,6 +165,7 @@ mod sign_edit;
 mod sniffers;
 mod spawner;
 mod spill;
+mod split;
 mod startup_menu;
 mod station_control;
 mod stations;
@@ -13842,7 +13843,13 @@ fn write_report(game: &Game<'_>) -> Result<()> {
 }
 
 fn run_event_loop(mut game: Game<'_>) -> Result<()> {
-    EventLoop::new()?.run_app(&mut game)?;
+    if std::env::var_os("HORIZON_SPLIT").is_some() {
+        let mut split = split::Split::new(game);
+        EventLoop::new()?.run_app(&mut split)?;
+        game = split.host;
+    } else {
+        EventLoop::new()?.run_app(&mut game)?;
+    }
     horizon_client::discord_presence::stop();
     write_report(&game)?;
     if let Some(e) = game.error.take() {
