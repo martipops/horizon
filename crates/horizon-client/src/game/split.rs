@@ -1,7 +1,7 @@
 //! Splitscreen (Horizon's Splitscreen page, off by default): players drop in and out of P1's world
 //! on this computer, as on a console. P1 is the game as launched, with the keyboard, the mouse and
 //! the first controller used in a menu. In a world, another controller pressing a button is
-//! offered to join; pressing A adds a player, another `Game` in this process that joins P1's
+//! offered to join (several at once: each its own offer); pressing A adds a player, another `Game` in this process that joins P1's
 //! server thread through memory, after it picks a profile and where to play in its view
 //! (`title/profiles.rs`). A player who disconnects (pause menu) drops out; when P1 leaves the
 //! world, all do.
@@ -144,6 +144,8 @@ struct Guest {
     options: PathBuf,
     /// Its buttons and focus targets while another player's game runs.
     widgets: widgets::Saved,
+    /// The bumpers it held at the last frame (LB, RB), while it chooses where to play.
+    bumpers: [bool; 2],
 }
 
 pub(super) struct Split<'a> {
@@ -157,8 +159,8 @@ pub(super) struct Split<'a> {
     pads: PadRouter,
     p1_pad: Option<PadId>,
     p1_screen: Screen,
-    /// A controller offered to join, and since when.
-    offer: Option<(PadId, Instant)>,
+    /// Controllers offered to join, each since when: several may join at once.
+    offers: Vec<(PadId, Instant)>,
     /// Pads whose buttons still count as the press that joined them: released first.
     fresh: Vec<PadId>,
     /// The game's window and its compositor first, then monitors' and players' own.
@@ -214,7 +216,7 @@ impl<'a> Split<'a> {
             pads: PadRouter::default(),
             p1_pad: None,
             p1_screen,
-            offer: None,
+            offers: Vec::new(),
             fresh: Vec::new(),
             surfaces,
             applied: Vec::new(),
@@ -449,6 +451,34 @@ impl<'a> Split<'a> {
             }
         }
         self.turn(0);
+    }
+
+    /// A joining player's bumper: its view moves to the next place it could play (`back`: the
+    /// one before), at once, so it sees where it will be; choosing its profile keeps it there.
+    fn place_joining(&mut self, i: usize, back: bool) {
+        let choices = self.choices(i);
+        let n = choices.len();
+        if n == 0 {
+            return;
+        }
+        let at = choices
+            .iter()
+            .position(|(_, s)| s == self.screen(i))
+            .unwrap_or(0);
+        let (label, mut next) = choices[if back { (at + n - 1) % n } else { (at + 1) % n }].clone();
+        if next == Screen::Window(0) {
+            next = Screen::Window(self.free_window());
+        }
+        let guest = &mut self.guests[i - 1];
+        guest.screen = next;
+        if let Some(title) = guest.game.title.as_mut() {
+            title.set_play_on(&label);
+        }
+        let shown = self.label(self.screen(i));
+        self.guests[i - 1].game.split_tag = Some(horizon_client::toasts::SystemToast::new(
+            "Where to play".to_owned(),
+            Some(format!("LB < {shown} > RB")),
+        ));
     }
 
     /// The same toast for every player in the world.
@@ -777,9 +807,9 @@ impl<'a> Split<'a> {
 
     /// Controllers: P1's is the first used in a menu; in a world another one is offered to join
     /// (A), or to drive P1 (Y) while P1 has none. The pad whose player should join now.
-    fn route_pads(&mut self) -> Option<PadId> {
+    fn route_pads(&mut self) -> Vec<PadId> {
         let now = Instant::now();
-        let mut join = None;
+        let mut joins = Vec::new();
         for (id, button) in self.pads.presses() {
             if Some(id) == self.p1_pad || self.guests.iter().any(|g| g.pad == Some(id)) {
                 continue;
@@ -791,46 +821,61 @@ impl<'a> Split<'a> {
                 }
                 continue;
             }
-            match self.offer {
-                Some((offered, _)) if offered == id => match button {
+            match self.offers.iter().position(|(o, _)| *o == id) {
+                Some(k) => match button {
+                    // Two pressing A together both join, in the order they pressed.
                     Button::South => {
-                        self.offer = None;
-                        join = Some(id);
+                        self.offers.remove(k);
+                        joins.push(id);
                     }
                     Button::North if self.p1_pad.is_none() => {
-                        self.offer = None;
+                        self.offers.remove(k);
                         self.p1_pad = Some(id);
                         self.fresh.push(id);
                     }
-                    Button::East => self.offer = None,
+                    Button::East => {
+                        self.offers.remove(k);
+                    }
                     _ => {}
                 },
-                _ if self.players() < MAX_PLAYERS => {
-                    self.offer = Some((id, now));
-                    // Every player sees it, whatever it is doing (not only P1's action bar).
-                    let ask = if self.p1_pad.is_none() {
-                        "A to join, Y to play as P1, B no"
-                    } else {
-                        "A to join, B no"
-                    };
-                    let message = format!("{}: {ask}", self.pads.name(id));
-                    self.toast_all("Controller found", &message);
+                // An offer for each controller while seats are left.
+                None if self.players() + joins.len() + self.offers.len() < MAX_PLAYERS => {
+                    self.offers.push((id, now));
+                    self.ask_to_join();
                 }
-                _ => {}
+                None => {}
             }
         }
-        if let Some((_, since)) = self.offer
-            && (now - since > OFFER || !self.in_world())
-        {
-            self.offer = None;
-        }
+        let in_world = self.in_world();
+        self.offers
+            .retain(|(_, since)| now - *since <= OFFER && in_world);
         let p1 = self.pad_state(self.p1_pad);
         self.host.pad.feed = Some(p1);
         for i in 0..self.guests.len() {
             let state = self.pad_state(self.guests[i].pad);
             self.guests[i].game.pad.feed = Some(state);
         }
-        join
+        joins
+    }
+
+    /// Every player sees the controllers waiting to join, whatever it is doing.
+    fn ask_to_join(&mut self) {
+        let ask = if self.p1_pad.is_none() {
+            "A to join, Y to play as P1, B no"
+        } else {
+            "A to join, B no"
+        };
+        let (title, message) = match self.offers.as_slice() {
+            [(id, _)] => (
+                "Controller found".to_owned(),
+                format!("{}: {ask}", self.pads.name(*id)),
+            ),
+            offers => (
+                format!("{} controllers found", offers.len()),
+                format!("Each: {ask}"),
+            ),
+        };
+        self.toast_all(&title, &message);
     }
 
     /// Add a player driven by `pad`: it picks a profile and where to play in its view first,
@@ -875,6 +920,7 @@ impl<'a> Split<'a> {
             pad,
             options,
             widgets: Default::default(),
+            bumpers: [false; 2],
         });
         if let Some(name) = name {
             self.enter(self.guests.len() - 1, name, None)?;
@@ -917,10 +963,11 @@ impl<'a> Split<'a> {
             }
             None => Screen::load(&profile.join("screen.txt")),
         };
-        // "A window": a new one, numbered now.
-        let screen = match screen {
-            Screen::Window(0) => Screen::Window(self.free_window()),
-            other => other,
+        // "A window": a new one, numbered now; the one the bumpers already opened for it, if so.
+        let screen = match (screen, &self.guests[i].screen) {
+            (Screen::Window(0), Screen::Window(n)) if *n > 0 => Screen::Window(*n),
+            (Screen::Window(0), _) => Screen::Window(self.free_window()),
+            (other, _) => other,
         };
         let pipe = self
             .host
@@ -1239,7 +1286,7 @@ impl ApplicationHandler for Split<'_> {
         self.turn(0);
         self.host.about_to_wait(event_loop);
         let mut changed = self.drop_out();
-        if let Some(pad) = pad_joins {
+        for pad in pad_joins {
             match self.join(Some(pad), None) {
                 Ok(()) => changed = true,
                 Err(e) => log::warn!("Horizon: splitscreen: a player could not join: {e}"),
@@ -1276,7 +1323,9 @@ impl ApplicationHandler for Split<'_> {
             let shared = views
                 .get(i)
                 .is_some_and(|v| views.iter().filter(|o| o.0 == v.0).count() > 1);
-            let framed = i == self.focus && shared;
+            // Also a player choosing where to play: this view is the one moving.
+            let choosing = i > 0 && self.guests[i - 1].name.is_none();
+            let framed = (i == self.focus && shared) || choosing;
             match i {
                 0 => self.host.split_focus = framed,
                 _ => self.guests[i - 1].game.split_focus = framed,
@@ -1291,6 +1340,21 @@ impl ApplicationHandler for Split<'_> {
             // A player's game stops the event loop on an error, as P1's does: say why.
             if let Some(e) = &self.guests[i].game.error {
                 log::error!("Horizon: splitscreen: seat {}: {e}", self.guests[i].seat);
+            }
+            // Choosing its profile, the bumpers move its view (its pad as its game read it: the
+            // controller, or `horizon-ctl pad`).
+            if self.guests[i].name.is_none() {
+                let state = self.guests[i].game.pad.state;
+                let held = [
+                    state.held(Button::LeftBumper),
+                    state.held(Button::RightBumper),
+                ];
+                let before = std::mem::replace(&mut self.guests[i].bumpers, held);
+                if held[0] && !before[0] {
+                    self.place_joining(i + 1, true);
+                } else if held[1] && !before[1] {
+                    self.place_joining(i + 1, false);
+                }
             }
         }
         self.turn(0);

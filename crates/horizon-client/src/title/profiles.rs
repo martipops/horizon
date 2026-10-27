@@ -42,6 +42,13 @@ impl Title {
         Some(choice.map(|name| (name, screen)))
     }
 
+    /// Where the player chose to play some other way (the controller's bumpers): the Play on
+    /// button shows it, and choosing a profile keeps it.
+    pub fn set_play_on(&mut self, label: &str) {
+        let (screens, picked) = &mut self.play_on;
+        *picked = screens.iter().position(|s| s == label);
+    }
+
     /// The Play on button: "As last time" until the player picks.
     fn play_on_label(&self) -> String {
         let (screens, picked) = &self.play_on;
@@ -110,7 +117,13 @@ impl Title {
         let (w, h) = (batch.width.ceil(), batch.height.ceil());
         crate::ui::menu_background(batch, atlas, 0.0, 0.0, w, h, false);
         match &self.mode {
-            Mode::Profiles { .. } => centered(atlas, batch, "Who's playing?", 20.0, u32::MAX),
+            Mode::Profiles { .. } => {
+                centered(atlas, batch, "Who's playing?", 20.0, u32::MAX);
+                if !self.play_on.0.is_empty() {
+                    let hint = "LB / RB on your controller: where you play";
+                    centered(atlas, batch, hint, 32.0, rgba(160, 160, 160, 255));
+                }
+            }
             Mode::NewProfile { name, focused, .. } => {
                 centered(atlas, batch, "New Profile", 20.0, u32::MAX);
                 let top = edit_top(h);

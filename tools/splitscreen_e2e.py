@@ -12,6 +12,7 @@ Scenarios:
   three    three in a window: one wide on top, one tall on the left, side by side
   live     splitscreen off and on again from the Splitscreen page, in a world
   picker   a joining player makes a profile, picks New window, and joins in it
+  bumpers  a joining player moves its view with LB and RB before picking its profile
   eight    eight players in one window: rows of three, three and two, every view drawing
   fullscreen  a player whose options say fullscreen joins: the window stays as P1 has it; its F11
               in a window of its own toggles that window only
@@ -306,6 +307,33 @@ def scenario_fullscreen():
         g.quit()
 
 
+def scenario_bumpers():
+    print('bumpers: a joining player moves its view with LB and RB, then picks a profile')
+    g = Game(2, pick=True)
+    try:
+        g.wait(lambda: (g.ctl(2, 'state').get('menu') or {}).get('mode') == 'splitscreen-profiles',
+               'the picker')
+        half = g.size(1)
+        whole = (2 * half[0], half[1])
+        g.ctl(2, 'pad', 'rb', 'tap')
+        check('RB: P2 opens Window 2, P1 has Window 1 to itself', g.settle([1], [whole]), [whole])
+        own = g.size(2)
+        check("P2's picker shows it", 'Play on: New window' in g.labels(2), True)
+        g.ctl(2, 'pad', 'lb', 'tap')
+        check('LB: back beside P1 in Window 1', g.settle([1, 2], [half, half]), [half, half])
+        g.ctl(2, 'pad', 'rb', 'tap')
+        g.settle([2], [own])
+        g.ctl(2, 'click-button', 'New Profile...')
+        g.ctl(2, 'type', 'Ann')
+        g.ctl(2, 'click-button', 'Create')
+        g.wait(lambda: g.ctl(2, 'state').get('player') is not None, 'Ann in the world')
+        check('Ann joins where the bumpers put her', g.settle([1, 2], [whole, own]), [whole, own])
+        saved = (g.home / 'splitscreen/profiles/Ann/screen.txt').read_text().strip()
+        check('her profile remembers a window', saved, 'window')
+    finally:
+        g.quit()
+
+
 def scenario_eight():
     print('eight: eight players in one window')
     g = Game(8)
@@ -335,6 +363,7 @@ SCENARIOS = {
     'picker': scenario_picker,
     'fullscreen': scenario_fullscreen,
     'eight': scenario_eight,
+    'bumpers': scenario_bumpers,
 }
 
 
