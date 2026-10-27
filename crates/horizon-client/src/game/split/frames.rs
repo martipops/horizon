@@ -1,11 +1,14 @@
-//! Every player's frame rendered at once, one thread each, and the frame-time readout.
+//! Every player's frame rendered after the turns (one after another, or on threads with
+//! `HORIZON_SPLIT_THREADS=1`), and the frame-time readout.
 use super::*;
 
 impl<'a> Split<'a> {
-    /// Every player's frame, built in its turn (`Game::render` keeps it in splitscreen), renders
-    /// at once: one thread each, the last on this one. Then each game gets its storage back.
-    // ponytail: a thread spawned per player per frame (tens of microseconds); a pool if it shows.
+    /// Every player's frame, built in its turn (`Game::render` keeps it in splitscreen), renders:
+    /// one after another, or at once on threads (`threads`: one each, the last on this one).
+    /// Then each game gets its storage back.
+    // ponytail: threads spawned per frame; measured slower anyway (renders contend in wgpu).
     pub(super) fn render_all(&mut self) {
+        let threads = self.threads;
         let mut games: Vec<&mut Game<'a>> = std::iter::once(&mut self.host)
             .chain(self.guests.iter_mut().map(|g| &mut g.game))
             .collect();
@@ -22,6 +25,12 @@ impl<'a> Split<'a> {
                 let result = renderer.render(&frame).map_err(|e| e.to_string());
                 (frame, result)
             };
+            if !threads {
+                return jobs
+                    .into_iter()
+                    .map(|(k, renderer, frame)| (k, render(renderer, frame)))
+                    .collect();
+            }
             let here = jobs.pop();
             let threads: Vec<_> = jobs
                 .into_iter()
@@ -59,12 +68,24 @@ impl<'a> Split<'a> {
         self.stats = Some(Instant::now());
         let games =
             std::iter::once(&mut self.host).chain(self.guests.iter_mut().map(|g| &mut g.game));
-        let mut line = String::new();
+        let frames = self.spent_frames.max(1);
+        let [turns, renders, presents, wait, outside] =
+            std::mem::take(&mut self.spent).map(|d| d.as_secs_f64() * 1000.0 / f64::from(frames));
+        self.spent_frames = 0;
+        let mut line = format!(
+            " a frame {:.2} ms: turns {turns:.2}, renders {renders:.2} ({}), presents {presents:.2}, gpu wait {wait:.2}, outside {outside:.2}.",
+            turns + renders + presents + wait + outside,
+            if self.threads {
+                "threads"
+            } else {
+                "one after another"
+            },
+        );
         for (i, game) in games.enumerate() {
             let s = game.frame_stats.summary();
             let ms = |k: &str| s[k]["avg_ms"].as_f64().unwrap_or(0.0);
             line += &format!(
-                "  P{}: {:.0} fps, cpu {:.2} ms (render {:.2} ms, on its own thread), gpu {:.2} ms",
+                "  P{}: {:.0} fps, cpu {:.2} ms (render {:.2} ms), gpu {:.2} ms",
                 i + 1,
                 s["avg_fps"].as_f64().unwrap_or(0.0),
                 ms("cpu"),
