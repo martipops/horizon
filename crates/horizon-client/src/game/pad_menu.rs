@@ -363,11 +363,16 @@ impl Game<'_> {
             }
             return self.handle_option_events(vec![Event::Changed]);
         }
-        // Splitscreen Setup: A picks up the focused player's tile, then the D-pad moves it, A
-        // drops it, B puts it back (`split_ui`).
+        // Splitscreen Setup: A picks up the focused player's tile, then left/right (or LB/RB)
+        // cycle where it goes, A drops it, B puts it back (`split_ui`).
         if self.screen == Screen::Options && self.ui.options.page() == Page::SplitSetup {
             let setup = &mut self.ui.options.split_setup;
             if setup.pad_button(button) {
+                // Dropped or put back: the focus follows the player to its tile.
+                if let Some(rect) = setup.take_refocus() {
+                    let kind = Kind::Button;
+                    self.pad_focus_on(event_loop, Target { rect, kind });
+                }
                 return Ok(());
             }
             if button == Button::South

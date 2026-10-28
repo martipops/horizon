@@ -42,6 +42,8 @@ pub struct SplitUi {
     drag: Option<(usize, Option<(f32, f32)>)>,
     /// A player picked up with the controller (A), moved with the bumpers.
     held: Option<Held>,
+    /// Dropped or put back: the player whose tile the controller's focus goes to.
+    refocus: Option<usize>,
     /// The screen's size: at the last draw (the options screen sets it) or press.
     pub(crate) size: (f32, f32),
 }
@@ -212,20 +214,24 @@ impl SplitUi {
         true
     }
 
-    /// The controller while a player is held: the bumpers pick where it goes, as when joining
-    /// (the map shows it there), A drops it there (into the draft), B puts it back. True when
-    /// the button was taken; the D-pad still moves the menu's focus.
+    /// The controller while a player is held: the bumpers or left and right cycle where it goes,
+    /// as when joining (the map shows it there), A drops it there (into the draft), B puts it
+    /// back. True when the button was taken: every button, while one is held.
     pub fn pad_button(&mut self, button: PadButton) -> bool {
         let Some(held) = &self.held else {
             return false;
         };
+        let player = held.player;
         match button {
-            PadButton::LeftBumper | PadButton::RightBumper => {
+            PadButton::LeftBumper
+            | PadButton::RightBumper
+            | PadButton::DPadLeft
+            | PadButton::DPadRight => {
                 let n = held.spots.len();
                 if n == 0 {
                     return true;
                 }
-                let back = button == PadButton::LeftBumper;
+                let back = matches!(button, PadButton::LeftBumper | PadButton::DPadLeft);
                 let next = match held.at {
                     None if back => n - 1,
                     None => 0,
@@ -251,6 +257,8 @@ impl SplitUi {
             }
             PadButton::South => {
                 let held = self.held.take().expect("held");
+                // One highlight after: the focus on the player where it landed, not selected too.
+                (self.selected, self.refocus) = (None, Some(held.player));
                 match held.at.map(|k| held.spots[k].1.clone()) {
                     Some(Drop::At(spot)) => self.place(held.player, spot),
                     Some(Drop::Swap(j)) => self.swap(held.player, j),
@@ -258,14 +266,24 @@ impl SplitUi {
                     None => {}
                 }
             }
-            PadButton::East => self.held = None,
-            PadButton::DPadLeft
-            | PadButton::DPadUp
-            | PadButton::DPadRight
-            | PadButton::DPadDown => return false,
+            PadButton::East => {
+                (self.selected, self.refocus) = (None, Some(player));
+                self.held = None;
+            }
+            // While one is held, the focus stays put: A drops, it presses nothing else.
             _ => {}
         }
         true
+    }
+
+    /// The tile of the player just dropped or put back, for the controller's focus. Taken once.
+    pub fn take_refocus(&mut self) -> Option<[f32; 4]> {
+        let i = self.refocus.take()?;
+        let (w, h) = self.size;
+        self.buttons(w, h)
+            .into_iter()
+            .find(|b| b.2 == Target::Player(i))
+            .map(|b| b.0)
     }
 
     /// Where another player's screen can put it, as its bumpers step: each place in each window
@@ -680,7 +698,9 @@ impl SplitUi {
         ([x, y, bw, bh], label, target, active): &Button,
     ) {
         let (mut x, mut y, mut bw, mut bh) = (*x, *y, *bw, *bh);
-        let hover = *active && ui::hovered(cursor, x, y, bw, bh);
+        // While a player is held, only its tile is lit: the controller's pointer stays where
+        // the pick-up was, over whichever tile is there now.
+        let hover = *active && self.held.is_none() && ui::hovered(cursor, x, y, bw, bh);
         let selected = matches!(target, Target::Player(i) if Some(*i) == self.selected);
         if matches!(target, Target::Player(_)) {
             // A tile: inset so neighbours stay apart.
@@ -744,7 +764,9 @@ impl SplitUi {
                     "{who} to {}: A drops it here, B puts it back.",
                     h.spots[k].0
                 ),
-                None => format!("{who} picked up: LB/RB picks where, A drops, B puts it back."),
+                None => {
+                    format!("{who} picked up: left/right picks where, A drops, B puts it back.")
+                }
             }
         });
         // The pointer's button; disabled ones too, to say why. Not the selected player's tile:
@@ -1145,14 +1167,36 @@ mod tests {
                 "Fill Monitor 2"
             ]
         );
-        // The D-pad is the menu's: not taken.
-        assert!(!ui.pad_button(PadButton::DPadRight));
+        // Left and right cycle, as the bumpers do; up and down are taken (the focus stays).
+        assert!(ui.pad_button(PadButton::DPadDown));
+        assert!(ui.pad_button(PadButton::DPadRight));
+        assert!(ui.pad_button(PadButton::DPadLeft));
         // RB to the first place: before P1, shown on the map, dropped with A.
         assert!(ui.pad_button(PadButton::RightBumper));
         assert_eq!(ui.draft().unwrap().order[..2], [1, 0]);
         assert!(ui.pad_button(PadButton::South));
         press(&mut ui, "Apply");
         assert_eq!(ui.apply_move, Some((Spot::Window(1), Some(0))));
+    }
+
+    #[test]
+    fn dropped_or_put_back_one_highlight_and_the_focus_follows() {
+        let mut ui = screen(2);
+        ui.size = SIZE;
+        assert!(ui.pad_pick_up(centre(&ui, "P2")));
+        assert!(ui.pad_button(PadButton::RightBumper)); // to a new window
+        assert!(ui.pad_button(PadButton::South));
+        // Not selected (the focus is its highlight), and the focus goes to its new tile.
+        assert_eq!(ui.selected, None);
+        assert_eq!(ui.take_refocus(), Some(rect(&ui, "P2")));
+        assert_eq!(ui.take_refocus(), None);
+        // Put back: the same.
+        assert!(ui.pad_pick_up(centre(&ui, "P2")));
+        assert!(ui.pad_button(PadButton::East));
+        assert_eq!(
+            (ui.selected, ui.take_refocus()),
+            (None, Some(rect(&ui, "P2")))
+        );
     }
 
     #[test]
