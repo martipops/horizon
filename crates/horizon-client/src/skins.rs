@@ -24,6 +24,46 @@ pub struct Textures {
     pub signed: bool,
 }
 
+/// An offline name's own skin (the launcher's `HORIZON_OFFLINE_SKIN`, or a splitscreen
+/// player's): no Minecraft services behind it, so no URL. Decoded as a downloaded skin is, under
+/// `location` in the skin slots.
+pub struct LocalLook {
+    pub location: String,
+    pub rgba: Vec<u8>,
+    pub slim: bool,
+}
+
+/// The offline looks of this process, by the name's offline UUID: every game in it sees them,
+/// so splitscreen players see each other's.
+static LOCAL_LOOKS: std::sync::Mutex<std::collections::BTreeMap<u128, std::sync::Arc<LocalLook>>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+/// `name` (whose offline UUID is `uuid`) plays with the skin in `png` (64×64, or the older
+/// 64×32), its arms slim or not.
+pub fn set_local_look(uuid: u128, name: &str, png: &[u8], slim: bool) -> Result<(), String> {
+    let (w, h, rgba) = crate::hud::decode_bytes(png).map_err(|e| e.to_string())?;
+    let rgba = process_legacy_skin(w, h, &rgba).ok_or("not a 64×64 or 64×32 skin")?;
+    let location = format!("skins/local-{}", name.to_ascii_lowercase());
+    let look = std::sync::Arc::new(LocalLook {
+        location,
+        rgba,
+        slim,
+    });
+    LOCAL_LOOKS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(uuid, look);
+    Ok(())
+}
+
+/// The offline looks of this process, by offline UUID.
+pub fn local_looks() -> Vec<(u128, std::sync::Arc<LocalLook>)> {
+    let looks = LOCAL_LOOKS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    looks.iter().map(|(u, l)| (*u, l.clone())).collect()
+}
+
 /// The `getTexture` endpoint's valid URIs from Minecraft services discovery.
 pub const TEXTURE_URIS: [&str; 2] = [
     "https://textures.minecraft.net/texture/{textureId}",
@@ -710,6 +750,13 @@ impl Downloader {
         self.queued.insert(location.clone());
         self.ready.push((location, rgba));
     }
+    /// A local look's image (`LocalLook`), queued for the atlas unless it already is: then
+    /// `again` finds it, as it does a download's.
+    pub fn offer(&mut self, location: &str, rgba: &[u8]) {
+        if !self.images.contains_key(location) && !self.queued.contains(location) {
+            self.queue(location.to_owned(), rgba.to_vec());
+        }
+    }
     /// A ready skin whose atlas slot was evicted (`show_skin` answered no):
     /// its image for upload again, from memory or the disk cache.
     pub fn again(&mut self, location: &str) -> bool {
@@ -818,6 +865,28 @@ pub fn sha1(data: &[u8]) -> [u8; 20] {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_offline_skin_is_every_game_s_by_its_uuid() {
+        // An old 64×32 skin: widened to 64×64 like a downloaded one.
+        let mut png = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut png, 64, 32);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            let mut writer = encoder.write_header().unwrap();
+            writer.write_image_data(&[200; 64 * 32 * 4]).unwrap();
+        }
+        super::set_local_look(7, "Bea", &png, true).unwrap();
+        let looks = super::local_looks();
+        let (_, look) = looks.iter().find(|(u, _)| *u == 7).unwrap();
+        assert_eq!(
+            (look.location.as_str(), look.slim, look.rgba.len()),
+            ("skins/local-bea", true, 64 * 64 * 4)
+        );
+        // Not a skin: refused.
+        assert!(super::set_local_look(8, "Cal", b"not a png", false).is_err());
+    }
+
     /// `MinecraftProfileTexture.getMetadata("model")`: `slim` marks a slim
     /// skin; no metadata is the wide (classic) model.
     #[test]

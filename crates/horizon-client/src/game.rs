@@ -507,6 +507,21 @@ impl Options {
                 Err(e) => eprintln!("Horizon: not signed in: {e}"),
             }
         }
+        // The launcher's offline name: its own skin (`HORIZON_OFFLINE_SKIN`, its model in
+        // `HORIZON_OFFLINE_SKIN_MODEL`). A signed-in account's skin comes from its profile.
+        if horizon_client::auth::current().is_none()
+            && let Some(path) = std::env::var_os("HORIZON_OFFLINE_SKIN")
+        {
+            let name = o.player_name();
+            let slim = std::env::var("HORIZON_OFFLINE_SKIN_MODEL").is_ok_and(|m| m == "slim");
+            let uuid = horizon_protocol::crypto::offline_uuid(&name);
+            let set = std::fs::read(&path)
+                .map_err(|e| e.to_string())
+                .and_then(|png| horizon_client::skins::set_local_look(uuid, &name, &png, slim));
+            if let Err(e) = set {
+                eprintln!("Horizon: offline skin {}: {e}", path.to_string_lossy());
+            }
+        }
         Ok(Some(o))
     }
 }

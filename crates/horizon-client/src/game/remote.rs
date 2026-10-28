@@ -3142,6 +3142,20 @@ impl Game<'_> {
                 resolved.push((uuid, skin));
             }
         }
+        // Offline looks (a launcher's offline name, the splitscreen players'): for players the
+        // services give no skin.
+        for (uuid, look) in horizon_client::skins::local_looks() {
+            if resolved.iter().any(|(u, _)| *u == uuid) {
+                continue;
+            }
+            self.skin_downloads
+                .borrow_mut()
+                .offer(&look.location, &look.rgba);
+            if look.slim {
+                slim.insert(uuid);
+            }
+            resolved.push((uuid, look.location.clone()));
+        }
         resolved.retain(|(_, skin)| !skin.starts_with("skins/") || self.again_skin(skin));
         // PlayerInfo.getSkin: the downloaded skin and its model, else the
         // profile's default skin (DefaultPlayerSkin.get), slim or wide.
