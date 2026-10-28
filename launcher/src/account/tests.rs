@@ -751,3 +751,23 @@ fn every_account_in_one_keychain_item() {
         .unwrap();
     assert_eq!(again.get("def").unwrap().as_deref(), Some("two"));
 }
+
+#[test]
+fn refresh_renews_whatever_is_left() {
+    let (_, ep) = mock(|_| {});
+    let store = MemoryStore::default();
+    signed_in(&store, &secrets("mc-token", true));
+    renew(&ep, Some("test-client"), &store, UUID).unwrap();
+    assert_eq!(kept(&store).refresh_token, "ms-refresh-2");
+    // A refused refresh token: kept as needing a new sign-in.
+    let mut revoked = kept(&store);
+    revoked.refresh_token = "revoked".into();
+    store
+        .set(UUID, &serde_json::to_string(&revoked).unwrap())
+        .unwrap();
+    assert_eq!(
+        renew(&ep, Some("test-client"), &store, UUID),
+        Err(SIGN_IN_AGAIN.to_string())
+    );
+    assert!(needs_sign_in(&store, UUID));
+}

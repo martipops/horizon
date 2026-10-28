@@ -157,6 +157,16 @@ Forget one of your offline names; its skin and cape go with it.
 
 MCP: `account_forget_offline`.
 
+## `horizon-launcher account refresh`
+
+Renew an account's sign-in now, whatever is left on its token.
+
+    horizon-launcher account refresh <WHO>
+
+- `WHO`: Its name or UUID
+
+MCP: `account_refresh`.
+
 ## `horizon-launcher account add-offline`
 
 Keep an offline name without playing as it (a splitscreen player's).

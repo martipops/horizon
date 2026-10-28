@@ -900,6 +900,40 @@ const OFFLINE_NEEDS_OWNER: &str =
     "Offline names need a Microsoft account that owns Minecraft: Java Edition in the launcher.";
 
 /// The secrets an account keeps in `store`, if it still has them there.
+/// Renews an account's sign-in now, whatever is left on its token (Prism Launcher's Refresh): a
+/// new Microsoft and Minecraft token, kept. A refused refresh token marks it "sign in again".
+pub fn renew(
+    ep: &Endpoints,
+    client_id: Option<&str>,
+    store: &dyn SecretStore,
+    uuid: &str,
+) -> Result<(), String> {
+    let mut secrets = secrets_in(store, uuid).ok_or("That account isn't signed in.")?;
+    let renewed = client_id
+        .ok_or_else(|| NOT_CONFIGURED.to_string())
+        .and_then(|id| refresh_ms(ep, id, &secrets.refresh_token))
+        .and_then(|ms| Ok((minecraft_login(ep, &ms.access)?, ms.refresh)));
+    let result = match renewed {
+        Ok((mc, refresh)) => {
+            secrets = Secrets {
+                owns: secrets.owns,
+                ..Secrets::new(refresh, mc)
+            };
+            Ok(())
+        }
+        Err(e) if e == SIGN_IN_AGAIN => {
+            secrets.sign_in_again = true;
+            Err(e)
+        }
+        Err(e) => return Err(e),
+    };
+    store.set(
+        uuid,
+        &serde_json::to_string(&secrets).map_err(|e| e.to_string())?,
+    )?;
+    result
+}
+
 /// Whether Microsoft refused to renew this account's sign-in: it needs signing in again.
 pub fn needs_sign_in(store: &dyn SecretStore, uuid: &str) -> bool {
     secrets_in(store, uuid).is_some_and(|s| s.sign_in_again)
