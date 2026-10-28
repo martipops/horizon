@@ -12,6 +12,11 @@ online-mode servers). Its session goes to the game as the launcher hands it over
 session file (--session-file) in the game folder, deleted after. The token comes from the
 system's keychain (macOS asks once: Always Allow) and lasts 24 h: when it has run out, press
 Play once in the real launcher, which renews it.
+
+Splitscreen profiles: "launcher" hands the game the launcher's offline names with their skins,
+and a session for each of its other Microsoft accounts, for joining players, as the launcher
+built from this branch does. A name made on the picker is kept by the launcher only when that
+launcher is built (launcher/target/debug); otherwise it stays in the game's folder.
 """
 
 import curses
@@ -93,7 +98,7 @@ def keychain_item(key):
     return None  # ponytail: Linux's Secret Service needs a D-Bus client; add when someone tests there
 
 
-def session_file(home, name, uuid):
+def session_file(home, name, uuid, file='dev-session.json'):
     """The account's session for the game, in a private file in `home` (as the launcher writes
     it); None and why when it can't."""
     text = secrets(uuid)
@@ -102,7 +107,7 @@ def session_file(home, name, uuid):
     s = json.loads(text)
     if s.get('minecraft_expires_at', 0) <= time.time() + 60:
         return None, 'its Minecraft token has run out: press Play once in the Horizon launcher'
-    path = home / 'sessions' / 'dev-session.json'
+    path = home / 'sessions' / file
     path.parent.mkdir(parents=True, exist_ok=True)
     path.unlink(missing_ok=True)
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -110,6 +115,43 @@ def session_file(home, name, uuid):
         json.dump({'name': name, 'uuid': uuid, 'access_token': s['minecraft_token'],
                    'user_type': 'msa', 'xuid': s.get('xuid')}, f)
     return path, None
+
+
+def profiles_env(home, p1_account):
+    """What the launcher hands the game for its splitscreen players: its offline names with their
+    skins (HORIZON_PROFILES), its other Microsoft accounts' sessions (HORIZON_ACCOUNT_SESSIONS,
+    each a private file in `home`, not P1's account) and, built from this branch, the launcher
+    to keep new names in (HORIZON_LAUNCHER_EXE). Read only: nothing of the launcher's changes
+    here. Returns the variables and the session files, deleted after the game."""
+    try:
+        data = json.loads((LAUNCHER / 'accounts.json').read_text())
+    except (OSError, ValueError):
+        return {}, []
+    env, files = {}, []
+    profiles = []
+    for name in data.get('offline', []):
+        look = data.get('looks', {}).get(name.lower(), {})
+        skin = LAUNCHER / 'skins' / f'{name.lower()}.png'
+        has = look.get('skin') and skin.is_file()
+        profiles.append({'name': name, 'skin': str(skin) if has else None,
+                         'model': look.get('model', 'classic') if has else None, 'cape': None})
+    env['HORIZON_PROFILES'] = json.dumps(profiles)
+    others = []
+    for n, (name, uuid) in enumerate(accounts()):
+        if name == p1_account:
+            continue
+        path, why = session_file(home, name, uuid, f'dev-account-{n}.json')
+        if path is None:
+            print(f'{name} stays out of splitscreen: {why}')
+            continue
+        files.append(path)
+        others.append({'name': name, 'uuid': uuid, 'file': str(path)})
+    if others:
+        env['HORIZON_ACCOUNT_SESSIONS'] = json.dumps(others)
+    built = ROOT / 'launcher/target/debug' / ('horizon-launcher.exe' if os.name == 'nt' else 'horizon-launcher')
+    if built.exists():
+        env['HORIZON_LAUNCHER_EXE'] = str(built)
+    return env, files
 
 
 SIZES = ['1280x720', '1600x900', '1920x1080', '2560x1440']
@@ -127,10 +169,13 @@ ROWS = [
     ('framerate', 'Frame rate', ['as set in game', 'uncapped']),
     # The launcher's accounts (filled in by `load`), or offline.
     ('account', 'Account (P1)', [OFFLINE]),
+    # The launcher's offline names and other accounts as the splitscreen profiles, or only the
+    # game's own profile folders.
+    ('profiles', 'Splitscreen profiles', ['launcher', 'game folders']),
 ]
 DEFAULTS = {'world': 'Splitscreen', 'mode': 'creative', 'splitscreen': 'on', 'test_players': '0',
             'size': '1600x900', 'audio': 'on', 'home': 'dev/home', 'build': 'on',
-            'stats': 'off', 'framerate': 'as set in game', 'account': OFFLINE}
+            'stats': 'off', 'framerate': 'as set in game', 'account': OFFLINE, 'profiles': 'launcher'}
 # Windows curses sends the keypad's Enter as PADENTER.
 ENTER = (10, 13, curses.KEY_ENTER, getattr(curses, 'PADENTER', curses.KEY_ENTER))
 
@@ -139,7 +184,8 @@ def load():
     # The account row: the launcher's accounts, the one it plays with first (the default), then
     # offline. Several accounts: switch here per launch.
     names = [name for name, _ in accounts()]
-    ROWS[-1] = ('account', 'Account (P1)', names + [OFFLINE])
+    i = next(k for k, row in enumerate(ROWS) if row[0] == 'account')
+    ROWS[i] = ('account', 'Account (P1)', names + [OFFLINE])
     DEFAULTS['account'] = names[0] if names else OFFLINE
     try:
         c = {**DEFAULTS, **json.loads(SAVED.read_text())}
@@ -208,11 +254,18 @@ def launch(c):
                 return
         else:
             args += ['--session-file', str(session)]
+    extra = []
+    for key in ('HORIZON_PROFILES', 'HORIZON_ACCOUNT_SESSIONS', 'HORIZON_LAUNCHER_EXE'):
+        env.pop(key, None)
+    if c['profiles'] == 'launcher':
+        profiles, extra = profiles_env(home, c['account'])
+        env.update(profiles)
     print(f'Playing from {home}\n$ {" ".join(args)}\n', flush=True)
     # The game keeps options.txt and saves in its working folder.
     code = subprocess.run(args, cwd=home, env=env).returncode
-    if session:
-        session.unlink(missing_ok=True)
+    for leftover in [session, *extra]:
+        if leftover:
+            leftover.unlink(missing_ok=True)
     if fresh:
         shutil.rmtree(home, ignore_errors=True)
     if code != 0:
