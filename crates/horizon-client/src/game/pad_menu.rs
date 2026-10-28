@@ -482,6 +482,14 @@ impl Game<'_> {
             keyboard.step(button);
             return;
         }
+        // Splitscreen Setup with a player held: the stick cycles it as the D-pad does.
+        if self.screen == Screen::Options
+            && self.ui.options.page() == Page::SplitSetup
+            && self.ui.options.split_setup.holding()
+        {
+            self.ui.options.split_setup.pad_button(button);
+            return;
+        }
         if self.pad_focus_mode() {
             let targets = self.pad_targets();
             if !targets.is_empty() {

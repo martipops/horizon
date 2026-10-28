@@ -276,6 +276,11 @@ impl SplitUi {
         true
     }
 
+    /// Whether a player is held (the controller's left and right cycle it).
+    pub fn holding(&self) -> bool {
+        self.held.is_some()
+    }
+
     /// The tile of the player just dropped or put back, for the controller's focus. Taken once.
     pub fn take_refocus(&mut self) -> Option<[f32; 4]> {
         let i = self.refocus.take()?;
@@ -722,6 +727,16 @@ impl SplitUi {
             *active,
             hover || selected,
         );
+        // The held player: "< Name >", the arrows lit, for left and right.
+        if matches!(target, Target::Player(i) if self.held.as_ref().is_some_and(|h| h.player == *i))
+        {
+            let (half, cx) = (HudBatch::text_width(atlas, label) / 2.0, x + bw / 2.0);
+            let ty = (y + (bh - 8.0) / 2.0).floor();
+            let lit = rgba(255, 255, 85, 255);
+            let lw = HudBatch::text_width(atlas, "<");
+            batch.text(atlas, "<", (cx - half - 4.0 - lw).floor(), ty, lit, true);
+            batch.text(atlas, ">", (cx + half + 4.0).ceil(), ty, lit, true);
+        }
         // A layout's square: its panes, in a 14 x 10 window; Auto a letter. Its name for the
         // control socket, which lists widgets by what they say.
         if glyph.is_some() {

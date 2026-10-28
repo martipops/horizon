@@ -539,7 +539,7 @@ def scenario_setup():
         check('Done: P2 plays again', 'Apply' in g.labels(2), False)
     finally:
         g.quit()
-    print('setup: with the controller, A picks a player up, right moves it, A drops it')
+    print('setup: with the controller, A picks a player up, the stick moves it, A drops it')
     g = Game(2)
     try:
         w, h = g.size(1)
@@ -556,7 +556,11 @@ def scenario_setup():
         tap('right')  # the focus starts on P1's tile
         tap('right')  # P2's
         tap('south')  # picked up
-        tap('right')  # shown in a new window (left/right or LB/RB cycle)
+        # The stick to the right: shown in a new window (the D-pad and LB/RB cycle the same way).
+        g.ctl(1, 'pad', 'stick', 'left', '1', '0')
+        time.sleep(0.15)
+        g.ctl(1, 'pad', 'stick', 'left', '0', '0')
+        time.sleep(0.35)
         check('held: nothing in the draft yet', apply_on(), [False])
         tap('south')  # dropped there
         check('dropped: in the draft', apply_on(), [True])
