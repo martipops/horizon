@@ -153,8 +153,8 @@ Settings → Splitscreen... opens the Setup screen, which holds the switch.
   themselves, through the same places as their bumpers (dropped on another
   player's tile, they take that place).
 - **Leaving:** a player's pause menu (Leave). Holding Select 2 s opens the
-  splitscreen menu: X switch profile, Y Setup, LB/RB move, B close; P1's
-  can give its controller away. A controller that disconnects leaves its player waiting:
+  splitscreen menu: A or B close, X switch profile, Y Setup, LB/RB move;
+  P1's X gives its controller away. A controller that disconnects leaves its player waiting:
   the same controller back takes it again, A on another takes over, B on
   another lets it leave.
 - **Servers:** the others join wherever P1 plays: its own world (through

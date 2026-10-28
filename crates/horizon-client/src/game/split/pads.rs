@@ -103,12 +103,12 @@ impl<'a> Split<'a> {
         pad.map_or(state, |p| state.merge(&self.pads.state(p)))
     }
 
-    /// Player `i` (not P1) holding Select 2 s opens its splitscreen menu: X switches profile
-    /// (leaves, then chooses again where it was), Y opens the Setup screen, B closes it; the
+    /// Player `i` (not P1) holding Select 2 s opens its splitscreen menu: A or B close it, X
+    /// switches profile (leaves, then chooses again where it was), Y opens the Setup screen; the
     /// bumpers move its view meanwhile, as when it joined. Leaving is the pause menu's.
     pub(super) fn leave_by_controller(&mut self, i: usize) {
         let pad = self.pad_now(i);
-        let answers = [Button::West, Button::North, Button::East];
+        let answers = [Button::South, Button::East, Button::West, Button::North];
         let hold = self.guests[i - 1].hold.update(pad, &answers);
         if let Hold::Move(back) = hold {
             return self.move_with_bumpers(i, back);
@@ -120,12 +120,14 @@ impl<'a> Split<'a> {
                     ask: Ask::Leave,
                     title: "Splitscreen menu".to_owned(),
                     choices: vec![
+                        // "A B Close": either closes it.
+                        (Button::South, ""),
+                        (Button::East, "Close"),
                         (Button::West, "Switch profile"),
                         (Button::North, "Setup"),
                         // LB and RB both move (back and forth): "LB RB Move".
                         (Button::LeftBumper, ""),
                         (Button::RightBumper, "Move"),
-                        (Button::East, "Close"),
                     ],
                 });
             }
@@ -134,7 +136,7 @@ impl<'a> Split<'a> {
                 if answer == Button::North {
                     g.game.open_split_setup();
                 }
-                if matches!(answer, Button::East | Button::North) {
+                if answer != Button::West {
                     return;
                 }
                 if answer == Button::West {
@@ -156,28 +158,26 @@ impl<'a> Split<'a> {
         }
     }
 
-    /// P1 holding Select 2 s, as the others do to leave: P1 hosts the world (it ends splitscreen
-    /// from the pause menu), but its controller can go: A takes it from P1 (keyboard and mouse
-    /// stay), and in a world a button on it then offers to join as a new player; Y opens the
-    /// Setup screen; B keeps it; the bumpers move P1's view meanwhile.
+    /// P1 holding Select 2 s opens its splitscreen menu, as the others' do: A or B close it, X
+    /// takes its controller from P1 (keyboard and mouse stay; in a world a button on it then
+    /// offers to join as a new player), Y opens the Setup screen; the bumpers move P1's view
+    /// meanwhile. P1 hosts the world: it ends splitscreen from the pause menu.
     pub(super) fn p1_holds_select(&mut self) {
         let pad = self.pad_now(0);
-        match self
-            .p1_hold
-            .update(pad, &[Button::South, Button::North, Button::East])
-        {
+        let answers = [Button::South, Button::East, Button::West, Button::North];
+        match self.p1_hold.update(pad, &answers) {
             Hold::Move(back) => self.move_with_bumpers(0, back),
             Hold::Ask => {
                 self.host.split_hud.prompt = Some(Prompt {
                     ask: Ask::Controller,
                     title: "Splitscreen menu".to_owned(),
                     choices: vec![
-                        (Button::South, "Hand it to a new player"),
+                        (Button::South, ""),
+                        (Button::East, "Close"),
+                        (Button::West, "Hand it to a new player"),
                         (Button::North, "Setup"),
-                        // LB and RB both move (back and forth): "LB RB Move".
                         (Button::LeftBumper, ""),
                         (Button::RightBumper, "Move"),
-                        (Button::East, "Close"),
                     ],
                 });
             }
@@ -186,7 +186,7 @@ impl<'a> Split<'a> {
                 if answer == Button::North {
                     self.host.open_split_setup();
                 }
-                if answer == Button::South
+                if answer == Button::West
                     && let Some(id) = self.p1_pad.take()
                 {
                     self.fresh.retain(|&p| p != id);

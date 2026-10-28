@@ -418,12 +418,11 @@ def scenario_leave():
             time.sleep(2.5)
             g.ctl(n, 'pad', 'select', 'up')
             time.sleep(0.3)
-        # Its splitscreen menu doesn't leave (A does nothing); its pause menu does.
+        # Its splitscreen menu doesn't leave (A closes it); its pause menu does.
         hold_select(3)
         g.ctl(3, 'pad', 'south', 'tap')
         time.sleep(1)
         check('A in the splitscreen menu: P3 still plays', g.alive(3), True)
-        g.ctl(3, 'pad', 'east', 'tap')
         g.ctl(3, 'key', 'esc', 'tap')
         time.sleep(0.6)
         g.press(3, 'Leave')
