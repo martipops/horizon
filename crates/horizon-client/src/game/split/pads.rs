@@ -103,12 +103,12 @@ impl<'a> Split<'a> {
         pad.map_or(state, |p| state.merge(&self.pads.state(p)))
     }
 
-    /// Player `i` (not P1) holding Select 2 s is asked "Leave splitscreen?": A leaves, X
-    /// switches profile (leaves, then chooses again where it was), Y opens the Setup screen, B
-    /// stays; the bumpers move its view meanwhile, as when it joined.
+    /// Player `i` (not P1) holding Select 2 s opens its splitscreen menu: X switches profile
+    /// (leaves, then chooses again where it was), Y opens the Setup screen, B closes it; the
+    /// bumpers move its view meanwhile, as when it joined. Leaving is the pause menu's.
     pub(super) fn leave_by_controller(&mut self, i: usize) {
         let pad = self.pad_now(i);
-        let answers = [Button::South, Button::West, Button::North, Button::East];
+        let answers = [Button::West, Button::North, Button::East];
         let hold = self.guests[i - 1].hold.update(pad, &answers);
         if let Hold::Move(back) = hold {
             return self.move_with_bumpers(i, back);
@@ -118,15 +118,14 @@ impl<'a> Split<'a> {
             Hold::Ask => {
                 g.game.split_hud.prompt = Some(Prompt {
                     ask: Ask::Leave,
-                    title: "Leave splitscreen?".to_owned(),
+                    title: "Splitscreen menu".to_owned(),
                     choices: vec![
-                        (Button::South, "Leave"),
                         (Button::West, "Switch profile"),
                         (Button::North, "Setup"),
                         // LB and RB both move (back and forth): "LB RB Move".
                         (Button::LeftBumper, ""),
                         (Button::RightBumper, "Move"),
-                        (Button::East, "Stay"),
+                        (Button::East, "Close"),
                     ],
                 });
             }
@@ -171,14 +170,14 @@ impl<'a> Split<'a> {
             Hold::Ask => {
                 self.host.split_hud.prompt = Some(Prompt {
                     ask: Ask::Controller,
-                    title: "Your controller".to_owned(),
+                    title: "Splitscreen menu".to_owned(),
                     choices: vec![
                         (Button::South, "Hand it to a new player"),
                         (Button::North, "Setup"),
                         // LB and RB both move (back and forth): "LB RB Move".
                         (Button::LeftBumper, ""),
                         (Button::RightBumper, "Move"),
-                        (Button::East, "Keep it"),
+                        (Button::East, "Close"),
                     ],
                 });
             }
