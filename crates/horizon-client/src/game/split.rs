@@ -33,7 +33,7 @@ use super::{
     pad::{PadEvent, PadId, PadRouter},
     start_game,
 };
-use horizon_client::split_layout::{self as layout, MAX_PLAYERS, Placement, Spot, View, place};
+use horizon_client::split_layout::{self as layout, MAX_PLAYERS, Placement, Spot, View};
 use horizon_client::{
     Result,
     gamepad::{Button, PadState},
@@ -155,6 +155,9 @@ pub(super) struct Split<'a> {
     /// The seats the Setup screens last showed: a draft is by place in this list, so a change
     /// drops every draft.
     setup_seats: Vec<usize>,
+    /// Who comes first in a window players share, by seat (1 = P1): set by the Setup screen and
+    /// by where a joining player put itself with the bumpers. Seats it doesn't name come last.
+    order: Vec<usize>,
     /// The player keyboard and mouse drive (0 = P1), and the pointer in the window it moved in.
     focus: usize,
     cursor: PhysicalPosition<f64>,
@@ -225,6 +228,7 @@ impl<'a> Split<'a> {
             screens: Vec::new(),
             main_screen: None,
             setup_seats: Vec::new(),
+            order: Vec::new(),
             focus: 0,
             cursor: PhysicalPosition::new(0.0, 0.0),
             limiter: horizon_client::window::FramerateLimiter::new(0),

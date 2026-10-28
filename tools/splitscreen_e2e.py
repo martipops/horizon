@@ -358,6 +358,27 @@ def scenario_bumpers():
         check('Ann joins where the bumpers put her', g.settle([1, 2], [whole, own]), [whole, own])
     finally:
         g.quit()
+    print('bumpers: LB puts a joining player before P1 in Window 1, and it stays there')
+    g = Game(2, pick=True)
+    try:
+        g.wait(lambda: (g.ctl(2, 'state').get('menu') or {}).get('mode') == 'splitscreen-profiles',
+               'the picker')
+        half = g.size(1)
+        g.ctl(2, 'pad', 'lb', 'tap')  # from "Window 1 (2 of 2)" to "(1 of 2)"
+        time.sleep(0.5)
+        g.ctl(2, 'click-button', 'New Profile...')
+        g.ctl(2, 'type', 'Bea')
+        g.ctl(2, 'click-button', 'Create')
+        g.wait(lambda: g.ctl(2, 'state').get('player') is not None, 'Bea in the world')
+        check('still halves of Window 1', g.settle([1, 2], [half, half]), [half, half])
+        # Who is first shows on the Setup screen's map.
+        g.setup(1)
+        tiles = {w['label'].split()[0]: w['bounds'] for w in g.ctl(1, 'ui')['widgets']
+                 if w.get('label', '').startswith('P')}
+        check('Bea (P2) before P1: left of it', tiles['P2'][0] < tiles['P1'][0], True)
+        g.press(1, 'Done')
+    finally:
+        g.quit()
 
 
 def scenario_leave():
@@ -502,6 +523,8 @@ def scenario_setup():
 
         def apply_on():
             return [x.get('enabled') for x in g.ctl(1, 'ui')['widgets'] if x.get('label') == 'Apply']
+        # The map's tiles come with the game's first sync of the screen.
+        g.wait(lambda: any(l.startswith('P2 ') for l in g.labels(1)), "P2's tile", seconds=5)
         tap('right')  # the focus starts on P1's tile
         tap('right')  # P2's
         tap('south')  # picked up

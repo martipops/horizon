@@ -13,8 +13,40 @@ pub type View = (usize, [u32; 2], PhysicalSize<u32>);
 /// view stays near a screen's shape, where a full grid would leave a long thin one.
 const ROWS: [&[u32]; 4] = [&[3, 2], &[3, 3], &[3, 2, 2], &[3, 3, 2]];
 
+/// `order` made a whole order of `n` players: those it names (once, if there are), then the
+/// others, P1 first.
+pub fn ordered(order: &[usize], n: usize) -> Vec<usize> {
+    let mut out: Vec<usize> = Vec::with_capacity(n);
+    for &i in order {
+        if i < n && !out.contains(&i) {
+            out.push(i);
+        }
+    }
+    out.extend((0..n).filter(|i| !order.contains(i)));
+    out
+}
+
+/// `place` with the players sharing a window in `order` (`ordered`): the first left or on top.
+/// The views are still by player.
+pub fn place_ordered(
+    windows: &[usize],
+    order: &[usize],
+    sizes: &[PhysicalSize<u32>],
+    two: u8,
+    three: u8,
+) -> Vec<View> {
+    let order = ordered(order, windows.len());
+    let in_order: Vec<usize> = order.iter().map(|&i| windows[i]).collect();
+    let placed = place(&in_order, sizes, two, three);
+    let mut views = placed.clone();
+    for (k, &i) in order.iter().enumerate() {
+        views[i] = placed[k];
+    }
+    views
+}
+
 /// Each player's view, given the window each is in and the windows' sizes. Players in one window
-/// share it in the order they joined: two take halves (`two`: 0 side by side when wider than
+/// share it in the order they come: two take halves (`two`: 0 side by side when wider than
 /// tall, 1 side by side, 2 top and bottom); three (`three`: 0 the first wide on top and two below,
 /// 1 the first tall on the left and two on the right, 2 three columns); four its quarters; five
 /// to eight rows of three and two (`ROWS`).
@@ -160,6 +192,9 @@ pub struct Draft {
     pub players: Vec<u8>,
     pub two: u8,
     pub three: u8,
+    /// The players (indices) in the order their views fill a window shared with others: first
+    /// left or on top. Empty, or missing some: P1, P2... (`ordered`).
+    pub order: Vec<usize>,
 }
 
 impl Draft {
@@ -173,6 +208,7 @@ impl Draft {
             players: vec![1; players],
             two,
             three,
+            order: Vec::new(),
         }
     }
 
@@ -214,7 +250,26 @@ impl Draft {
             players: vec![1; self.players.len()],
             two: self.two,
             three: self.three,
+            order: self.order.clone(),
         }
+    }
+
+    /// Players `i` and `j` trade places: their windows and their places in them.
+    pub fn swap(&mut self, i: usize, j: usize) {
+        let n = self.players.len();
+        if i >= n || j >= n || i == j {
+            return;
+        }
+        self.players.swap(i, j);
+        let mut order = ordered(&self.order, n);
+        let (a, b) = (
+            order.iter().position(|&p| p == i),
+            order.iter().position(|&p| p == j),
+        );
+        if let (Some(a), Some(b)) = (a, b) {
+            order.swap(a, b);
+        }
+        self.order = order;
     }
 
     /// A new free window, numbered with the lowest number free; its number.
@@ -317,7 +372,7 @@ impl Draft {
                 })
             })
             .collect();
-        place(&windows, &sizes, self.two, self.three)
+        place_ordered(&windows, &self.order, &sizes, self.two, self.three)
     }
 }
 
@@ -466,6 +521,42 @@ mod tests {
             Some(([329, 251], [1708, 960]))
         );
         assert!(apart.warnings(&m, "Built-in").is_empty());
+    }
+
+    #[test]
+    fn an_order_names_each_player_once_and_the_others_come_last() {
+        assert_eq!(ordered(&[], 3), [0, 1, 2]);
+        assert_eq!(ordered(&[2, 0], 3), [2, 0, 1]);
+        // Gone players and repeats are dropped.
+        assert_eq!(ordered(&[5, 1, 1], 3), [1, 0, 2]);
+    }
+
+    #[test]
+    fn players_sharing_a_window_fill_it_in_their_order() {
+        let wide = [size(2000, 1000)];
+        // P2 first: P2 on the left, P1 on the right.
+        let views = place_ordered(&[0, 0], &[1, 0], &wide, 0, 0);
+        assert_eq!(views[1].1, [0, 0]);
+        assert_eq!(views[0].1, [1000, 0]);
+        // P3 first of three: the wide view on top is P3's.
+        let views = place_ordered(&[0, 0, 0], &[2], &wide, 0, 0);
+        assert_eq!(views[2].2, size(2000, 500));
+    }
+
+    #[test]
+    fn two_players_swap_in_a_window_and_between_windows() {
+        let m = monitors();
+        // In one window: P1 and P2 trade sides.
+        let mut d = here(2);
+        d.swap(0, 1);
+        assert_eq!(d.order, [1, 0]);
+        let views = d.preview(&m, "Built-in");
+        assert!(views[1].1[0] < views[0].1[0], "P2 left of P1");
+        // Between windows: P2 on the TV, P3 in Window 1; they trade windows.
+        let mut d = here(3);
+        d.place_player(1, Spot::Fill("TV".into()));
+        d.swap(1, 2);
+        assert_eq!(d.players, [1, 1, 2]);
     }
 
     #[test]

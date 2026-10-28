@@ -270,7 +270,28 @@ impl<'a> Split<'a> {
             .collect();
         let sizes: Vec<_> = self.surfaces.iter().map(|s| s.size).collect();
         let e = &self.host.settings.extras;
-        place(&windows, &sizes, e.splitscreen_two, e.splitscreen_three)
+        let order = self.player_order();
+        layout::place_ordered(
+            &windows,
+            &order,
+            &sizes,
+            e.splitscreen_two,
+            e.splitscreen_three,
+        )
+    }
+
+    /// The players (indices) in the order they fill a window they share (`order`, by seat;
+    /// players it doesn't name last).
+    pub(super) fn player_order(&self) -> Vec<usize> {
+        let seats: Vec<usize> = std::iter::once(1)
+            .chain(self.guests.iter().map(|g| g.seat))
+            .collect();
+        let named: Vec<usize> = self
+            .order
+            .iter()
+            .filter_map(|seat| seats.iter().position(|s| s == seat))
+            .collect();
+        layout::ordered(&named, seats.len())
     }
 
     /// Every player into its view: its window, then its size. Keyboard and mouse follow their
@@ -299,31 +320,96 @@ impl<'a> Split<'a> {
         self.turn(0);
     }
 
-    /// Player `i` to the next place it could play (`back`: the one before); a new window is
-    /// numbered now.
-    pub(super) fn step_screen(&mut self, i: usize, back: bool) {
-        let choices = self.choices(i);
-        let n = choices.len();
-        if n == 0 {
-            return;
+    /// The places a joining player steps through with its bumpers: each window it could play in,
+    /// at each place among the players there ("Window 1 (1 of 2)": first is left or on top),
+    /// then a new window and each monitor (`choices`).
+    pub(super) fn joining_stops(&self, i: usize) -> Vec<(String, Spot, usize)> {
+        let mut stops = Vec::new();
+        for (label, spot) in self.choices(i) {
+            let others = match spot {
+                Spot::Window(n) => self.sharing(i, n).len(),
+                _ => 0,
+            };
+            if others == 0 {
+                stops.push((label, spot, 0));
+                continue;
+            }
+            for k in 0..=others {
+                let label = format!("{label} ({} of {})", k + 1, others + 1);
+                stops.push((label, spot.clone(), k));
+            }
         }
-        let mine = self.current(i);
-        let at = choices.iter().position(|(_, c)| *c == mine).unwrap_or(0);
-        let next = choices[if back { (at + n - 1) % n } else { (at + 1) % n }]
-            .1
-            .clone();
-        self.choose(i, next);
+        stops
+    }
+
+    /// The players but `i` in window `number`, in their order.
+    fn sharing(&self, i: usize, number: u8) -> Vec<usize> {
+        self.player_order()
+            .into_iter()
+            .filter(|&j| j != i && self.window_of(j) == number)
+            .collect()
+    }
+
+    fn seat_of(&self, i: usize) -> usize {
+        if i == 0 { 1 } else { self.guests[i - 1].seat }
+    }
+
+    /// Player `i` to place `k` among the others in its window (0: before them all).
+    pub(super) fn put_at(&mut self, i: usize, k: usize) {
+        let others: Vec<usize> = self
+            .sharing(i, self.window_of(i))
+            .into_iter()
+            .map(|j| self.seat_of(j))
+            .collect();
+        let me = self.seat_of(i);
+        let mut order: Vec<usize> = self
+            .player_order()
+            .into_iter()
+            .map(|j| self.seat_of(j))
+            .filter(|&s| s != me)
+            .collect();
+        let at = match others.get(k) {
+            Some(seat) => order.iter().position(|s| s == seat).unwrap_or(order.len()),
+            // After the last of them.
+            None => others
+                .last()
+                .and_then(|seat| order.iter().position(|s| s == seat))
+                .map_or(order.len(), |p| p + 1),
+        };
+        order.insert(at, me);
+        self.order = order;
     }
 
     /// A joining player's bumper: its view moves to the next place it could play (`back`: the
     /// one before), at once, so it sees where it will be; choosing its profile keeps it there.
     pub(super) fn place_joining(&mut self, i: usize, back: bool) {
-        self.step_screen(i, back);
-        let shown = self.label(i);
+        let stops = self.joining_stops(i);
+        let n = stops.len();
+        if n == 0 {
+            return;
+        }
+        let (spot, before) = (self.current(i), self.sharing_before(i));
+        let at = stops
+            .iter()
+            .position(|(_, s, k)| *s == spot && *k == before)
+            .unwrap_or(0);
+        let (shown, next, k) = stops[if back { (at + n - 1) % n } else { (at + 1) % n }].clone();
+        self.choose(i, next);
+        self.put_at(i, k);
         self.guests[i - 1].game.split_hud.place = Some((
             format!("LB < {shown} > RB"),
             Instant::now() + Duration::from_secs(3),
         ));
+    }
+
+    /// How many players come before `i` in its window.
+    fn sharing_before(&self, i: usize) -> usize {
+        let mine = self.window_of(i);
+        self.player_order()
+            .into_iter()
+            .take_while(|&j| j != i)
+            .filter(|&j| self.window_of(j) == mine)
+            .count()
     }
 
     /// What a window's title says: its name and who plays in it.

@@ -50,9 +50,16 @@ pub struct SplitUi {
 /// draft with it there (the map shows it).
 struct Held {
     player: usize,
-    spots: Vec<(String, Spot)>,
+    spots: Vec<(String, Drop)>,
     at: Option<usize>,
     preview: Option<Draft>,
+}
+
+/// Where a held player can go: a place (`Spot`), or another player's (they swap).
+#[derive(Clone, Debug, PartialEq)]
+enum Drop {
+    At(Spot),
+    Swap(usize),
 }
 
 /// What a press lands on.
@@ -150,7 +157,23 @@ impl SplitUi {
             return false;
         };
         self.selected = Some(i);
-        let spots = self.spots();
+        let mut spots: Vec<(String, Drop)> = self
+            .spots()
+            .into_iter()
+            .map(|(label, spot)| (label, Drop::At(spot)))
+            .collect();
+        // P1 also swaps it with another player (a swap moves that one too).
+        if self.host {
+            let players = self.draft().map_or(0, |d| d.players.len());
+            for j in (0..players).filter(|&j| j != i) {
+                let name = self
+                    .names
+                    .get(j)
+                    .cloned()
+                    .unwrap_or_else(|| format!("P{}", j + 1));
+                spots.push((format!("Swap with {name}"), Drop::Swap(j)));
+            }
+        }
         self.held = Some(Held {
             player: i,
             spots,
@@ -183,9 +206,12 @@ impl SplitUi {
                     Some(k) if back => (k + n - 1) % n,
                     Some(k) => (k + 1) % n,
                 };
-                let (player, spot) = (held.player, held.spots[next].1.clone());
+                let (player, drop) = (held.player, held.spots[next].1.clone());
                 let preview = self.edit.clone().or(self.live.clone()).map(|mut draft| {
-                    draft.place_player(player, spot);
+                    match drop {
+                        Drop::At(spot) => draft.place_player(player, spot),
+                        Drop::Swap(j) => draft.swap(player, j),
+                    }
                     draft
                 });
                 if let Some(held) = &mut self.held {
@@ -195,8 +221,10 @@ impl SplitUi {
             }
             PadButton::South => {
                 let held = self.held.take().expect("held");
-                if let Some(k) = held.at {
-                    self.place(held.player, held.spots[k].1.clone());
+                match held.at.map(|k| held.spots[k].1.clone()) {
+                    Some(Drop::At(spot)) => self.place(held.player, spot),
+                    Some(Drop::Swap(j)) => self.swap(held.player, j),
+                    None => {}
                 }
             }
             PadButton::East => self.held = None,
@@ -720,6 +748,19 @@ impl SplitUi {
         if !self.may_move(i) {
             return false;
         }
+        // On another player's tile: they swap (P1's screen).
+        let on = self
+            .buttons(w, h)
+            .into_iter()
+            .rev()
+            .find(|([x, y, bw, bh], _, _, _)| ui::hovered(at, *x, *y, *bw, *bh));
+        if let Some((_, _, Target::Player(j), _)) = on
+            && j != i
+            && self.host
+        {
+            self.swap(i, j);
+            return true;
+        }
         let Some(spot) = self.drop_spot(at, w, h) else {
             return false;
         };
@@ -742,6 +783,16 @@ impl SplitUi {
         }
         if let Some(draft) = self.editing() {
             draft.place_player(i, spot);
+        }
+    }
+
+    /// Players `i` and `j` trade places in the draft (P1's screen: it moves another player).
+    fn swap(&mut self, i: usize, j: usize) {
+        if !self.host {
+            return;
+        }
+        if let Some(draft) = self.editing() {
+            draft.swap(i, j);
         }
     }
 }
@@ -899,6 +950,31 @@ mod tests {
     }
 
     #[test]
+    fn a_controller_swaps_two_players() {
+        let mut ui = screen(2);
+        ui.size = SIZE;
+        assert!(ui.pad_pick_up(centre(&ui, "P2")));
+        // Step to "Swap with P1" (after the windows and monitors).
+        while !ui
+            .held
+            .as_ref()
+            .and_then(|h| h.at.map(|k| h.spots[k].0.clone()))
+            .is_some_and(|label| label == "Swap with P1")
+        {
+            assert!(ui.pad_button(PadButton::DPadRight));
+        }
+        assert!(ui.pad_button(PadButton::South));
+        assert_eq!(ui.edit.as_ref().unwrap().order, [1, 0]);
+        // Another player's screen offers no swap: it would move someone else.
+        let mut other = screen(2);
+        other.size = SIZE;
+        (other.host, other.me) = (false, 1);
+        assert!(other.pad_pick_up(centre(&other, "P2")));
+        let held = other.held.as_ref().unwrap();
+        assert!(!held.spots.iter().any(|(l, _)| l.starts_with("Swap")));
+    }
+
+    #[test]
     fn b_puts_a_held_player_back() {
         let mut ui = screen(2);
         ui.size = SIZE;
@@ -948,12 +1024,12 @@ mod tests {
         ui.click((tv[0] + 5.0, tv[1] + 5.0), SIZE, true);
         assert!(ui.release());
         assert_eq!(ui.edit.as_ref().unwrap().players, [1, 1, 2]);
-        // P2 dropped on that window joins it.
+        // P2 dropped on P3 (its tile fills that window): they swap.
         let p2 = rect(&ui, "P2");
         ui.click((p2[0] + 2.0, p2[1] + 2.0), SIZE, false);
         ui.click((tv[0] + 5.0, tv[1] + 5.0), SIZE, true);
         assert!(ui.release());
-        assert_eq!(ui.edit.as_ref().unwrap().players, [1, 2, 2]);
+        assert_eq!(ui.edit.as_ref().unwrap().players, [1, 2, 1]);
         // A click without moving only selects.
         let p1 = rect(&ui, "P1");
         ui.click((p1[0] + 2.0, p1[1] + 2.0), SIZE, false);

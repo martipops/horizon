@@ -37,6 +37,7 @@ impl<'a> Split<'a> {
             players: (0..self.players()).map(|i| self.window_number(i)).collect(),
             two: e.splitscreen_two,
             three: e.splitscreen_three,
+            order: self.player_order(),
         }
     }
 
@@ -94,6 +95,12 @@ impl<'a> Split<'a> {
             };
             self.set_window(i, number);
         }
+        // Who is first in a shared window, by seat (players are by index in the draft).
+        let n = self.players();
+        self.order = layout::ordered(&draft.order, n)
+            .into_iter()
+            .map(|i| self.who(i).0)
+            .collect();
         // P1's options file: its turn.
         self.turn(0);
         let e = &mut self.host.settings.extras;
