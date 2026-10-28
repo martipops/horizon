@@ -8,7 +8,7 @@ use crate::{
     gamepad::Button as PadButton,
     graphics_style::STYLE,
     hud::{HudAtlas, HudBatch, rgba},
-    split_layout::{Draft, Monitor, Placement, Spot, Warning},
+    split_layout::{Draft, Monitor, Placement, Spot, Warning, ordered},
     text::Text,
     ui,
 };
@@ -239,6 +239,7 @@ impl SplitUi {
                     Some(k) => (k + 1) % n,
                 };
                 let (player, drop) = (held.player, held.spots[next].1.clone());
+                let open = self.open_now();
                 let preview = self.edit.clone().or(self.live.clone()).map(|mut draft| {
                     match drop {
                         Drop::At(spot) => draft.place_player(player, spot),
@@ -248,6 +249,7 @@ impl SplitUi {
                             draft.put_at(player, k);
                         }
                     }
+                    draft.drop_empty(&open);
                     draft
                 });
                 if let Some(held) = &mut self.held {
@@ -569,7 +571,7 @@ impl SplitUi {
             }
         }
         // Narrow enough for two squares in the narrowest view (320 GUI pixels).
-        let editing = self.edit.is_some();
+        let editing = self.changed();
         footer.extend([
             (64.0, "Identify".into(), Target::Identify, true),
             (64.0, "Revert".into(), Target::Revert, editing),
@@ -672,6 +674,10 @@ impl SplitUi {
                 false => rgba(255, 255, 85, 200),
             };
             batch.fill(atlas, x, y, ww, wh, edge);
+            if emptied(number) {
+                let label = Text::literal(format!("Window {number}: empty"));
+                batch.text_styled(atlas, &label, x + 3.0, y - 10.0, grey, true);
+            }
             batch.fill(
                 atlas,
                 x + 1.0,
@@ -688,11 +694,8 @@ impl SplitUi {
             }
         }
         // The windows' names over everything, so another window's tiles never hide them.
-        for (number, [x, y, _, _]) in windows {
-            let (label, color) = match emptied(number) {
-                true => (format!("Window {number}: empty"), grey),
-                false => (format!("Window {number}"), yellow),
-            };
+        for (number, [x, y, _, _]) in windows.into_iter().filter(|w| !emptied(w.0)) {
+            let (label, color) = (format!("Window {number}"), yellow);
             batch.text_styled(atlas, &Text::literal(label), x + 3.0, y - 10.0, color, true);
         }
         for b in buttons.iter().filter(|b| !matches!(b.2, Target::Player(_))) {
@@ -894,7 +897,7 @@ impl SplitUi {
             Target::Apply => {
                 // Windows emptied in the draft close now, not as players moved.
                 let draft = self.edit.take().map(|mut d| {
-                    d.drop_empty();
+                    d.drop_empty(&[]);
                     d
                 });
                 match self.host {
@@ -923,14 +926,15 @@ impl SplitUi {
         if !self.may_move(i) {
             return false;
         }
-        // On another player's tile: they swap (P1's screen), or this player takes that place and
-        // the others move along (another's).
+        // On another player's tile: they swap (P1's screen), or this player goes before that one
+        // (its first half: left or top) or after it (the other half), the others moving along
+        // (another's): every place can be reached, so a move can always be dragged back.
         let on = self
             .buttons(w, h)
             .into_iter()
             .rev()
             .find(|([x, y, bw, bh], _, _, _)| ui::hovered(at, *x, *y, *bw, *bh));
-        if let Some((_, _, Target::Player(j), _)) = on
+        if let Some(([tx, ty, tw, th], _, Target::Player(j), _)) = on
             && j != i
         {
             if self.host {
@@ -942,7 +946,9 @@ impl SplitUi {
                     .iter()
                     .position(|&p| p == j)
                     .unwrap_or(0);
-                self.place_at(i, n, k);
+                // Past the tile's centre, along its diagonal: after it.
+                let after = (at.0 - tx - tw / 2.0) / tw + (at.1 - ty - th / 2.0) / th > 0.0;
+                self.place_at(i, n, k + usize::from(after));
             }
             return true;
         }
@@ -961,27 +967,50 @@ impl SplitUi {
         true
     }
 
-    /// Player `i` to `spot` in the draft. A new window reuses one this draft added and emptied
-    /// again, so adding, moving back and adding keeps Window 2 rather than making Window 3.
-    fn place(&mut self, i: usize, mut spot: Spot) {
-        if spot == Spot::New
-            && let Some(n) = self.draft().and_then(|d| {
-                let live = self.live.as_ref();
-                d.windows.iter().map(|w| w.number).find(|&n| {
-                    d.empty(n)
-                        && n != 1
-                        && !live.is_some_and(|l| l.windows.iter().any(|w| w.number == n))
-                })
-            })
-        {
-            spot = Spot::Window(n);
+    /// Whether the draft differs from what plays now (back where it started, nothing to apply).
+    fn changed(&self) -> bool {
+        // A free window's spot moves under the draft as it's dragged around: not a change.
+        let windows = |d: &Draft| -> Vec<(u8, Option<String>)> {
+            let fill = |p: &Placement| match p {
+                Placement::Fill(name) => Some(name.clone()),
+                Placement::Free(_) => None,
+            };
+            d.windows
+                .iter()
+                .map(|w| (w.number, fill(&w.placement)))
+                .collect()
+        };
+        let same = |a: &Draft, b: &Draft| {
+            let n = a.players.len();
+            windows(a) == windows(b)
+                && a.players == b.players
+                && (a.two, a.three) == (b.two, b.three)
+                && ordered(&a.order, n) == ordered(&b.order, n)
+        };
+        match (&self.edit, &self.live) {
+            (Some(edit), Some(live)) => !same(edit, live),
+            (edit, _) => edit.is_some(),
         }
+    }
+
+    /// Player `i` to `spot` in the draft.
+    fn place(&mut self, i: usize, spot: Spot) {
         if !self.host {
             self.moved = Some((spot.clone(), None));
         }
+        let open = self.open_now();
         if let Some(draft) = self.editing() {
             draft.place_player(i, spot);
+            draft.drop_empty(&open);
         }
+    }
+
+    /// The windows open now: emptied in a draft, they stay until Apply (a window the draft
+    /// added goes as soon as nobody is in it).
+    fn open_now(&self) -> Vec<u8> {
+        self.live
+            .as_ref()
+            .map_or_else(Vec::new, |l| l.windows.iter().map(|w| w.number).collect())
     }
 
     /// Player `i` to place `k` among the players of window `n` in the draft.
@@ -1212,6 +1241,10 @@ mod tests {
     #[test]
     fn windows_hold_still_until_apply() {
         let mut ui = screen(3);
+        // Playing now: P2 in Window 2, P3 in Window 3.
+        let live = ui.live.as_mut().unwrap();
+        live.place_player(1, Spot::New);
+        live.place_player(2, Spot::New);
         let numbers = |ui: &SplitUi| -> Vec<u8> {
             ui.draft()
                 .unwrap()
@@ -1220,37 +1253,61 @@ mod tests {
                 .map(|w| w.number)
                 .collect()
         };
-        // P2 and P3 out to Windows 2 and 3, then P2 back in: Window 2 stays, emptied.
-        press(&mut ui, "P2");
-        press(&mut ui, "New window");
-        press(&mut ui, "P3");
-        press(&mut ui, "New window");
-        press(&mut ui, "P2");
-        press(&mut ui, "Window 3");
-        press(&mut ui, "Window 1");
-        assert_eq!(numbers(&ui), [1, 2, 3]);
-        // The window button cycles a fixed list: from Window 1, on to Window 2 (empty), 3, 1.
         let next = |ui: &SplitUi| {
             labels(ui)
                 .into_iter()
                 .find(|l| l.starts_with("Window "))
                 .unwrap()
         };
-        assert_eq!(next(&ui), "Window 2");
-        // A new window reuses the draft's own emptied one: Window 2 again, not 4.
-        press(&mut ui, "New window");
+        // P2 into Window 1: Window 2 is open now, so it stays (empty) until Apply, and the
+        // window button's list holds still: from Window 1 on to 2, then 3.
+        press(&mut ui, "P2");
+        let to = next(&ui);
+        press(&mut ui, &to);
+        assert_eq!(ui.edit.as_ref().unwrap().players[1], 3);
+        press(&mut ui, "Window 1");
         assert_eq!(
-            (ui.edit.as_ref().unwrap().players[1], numbers(&ui)),
-            (2, vec![1, 2, 3])
+            (numbers(&ui), next(&ui)),
+            (vec![1, 2, 3], "Window 2".to_owned())
         );
-        // Back in and Apply: the empty one closes then.
-        press(&mut ui, "Window 3");
+        // A window the draft adds goes as soon as nobody is in it: never open, nothing to close.
+        press(&mut ui, "New window");
+        assert_eq!(numbers(&ui), [1, 2, 3, 4]);
+        let to = next(&ui); // Window 1
+        press(&mut ui, &to);
+        assert_eq!(numbers(&ui), [1, 2, 3]);
+        // Apply closes the emptied one.
         press(&mut ui, "Apply");
         let applied = ui.apply.as_ref().unwrap();
         assert_eq!(
             applied.windows.iter().map(|w| w.number).collect::<Vec<_>>(),
             [1, 3]
         );
+    }
+
+    #[test]
+    fn another_player_drags_to_any_place_and_back() {
+        let mut ui = screen(3);
+        (ui.host, ui.me) = (false, 2);
+        let order = |ui: &SplitUi| ordered(&ui.draft().unwrap().order, 3);
+        let drag = |ui: &mut SplitUi, onto: &str, after: bool| {
+            let (me, [x, y, w, h]) = (rect(ui, "P3"), rect(ui, onto));
+            ui.click((me[0] + 2.0, me[1] + 2.0), SIZE, false);
+            let at = if after {
+                (x + w - 2.0, y + h - 2.0)
+            } else {
+                (x + 2.0, y + 2.0)
+            };
+            ui.click(at, SIZE, true);
+            assert!(ui.release());
+        };
+        // Before P1, then back after P2: where it started, so nothing to apply.
+        drag(&mut ui, "P1", false);
+        assert_eq!(order(&ui), [2, 0, 1]);
+        assert!(ui.changed());
+        drag(&mut ui, "P2", true);
+        assert_eq!(order(&ui), [0, 1, 2]);
+        assert!(!ui.changed());
     }
 
     #[test]

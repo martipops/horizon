@@ -300,12 +300,13 @@ impl Draft {
         self.players[i] = number;
     }
 
-    /// The windows nobody plays in, gone (Window 1 stays): at Apply. While a draft is edited
-    /// they stay, so its windows and their numbers hold still as players move.
-    pub fn drop_empty(&mut self) {
+    /// The windows nobody plays in, gone, but Window 1 and those in `keep`. At Apply, all of
+    /// them; while a draft is edited, the ones it added (the windows open now stay until Apply,
+    /// so their numbers hold still as players move).
+    pub fn drop_empty(&mut self, keep: &[u8]) {
         let players = &self.players;
         self.windows
-            .retain(|w| w.number == 1 || players.contains(&w.number));
+            .retain(|w| w.number == 1 || players.contains(&w.number) || keep.contains(&w.number));
     }
 
     /// Whether nobody plays in window `number`.
@@ -621,7 +622,7 @@ mod tests {
         let numbers = |d: &Draft| d.windows.iter().map(|w| w.number).collect::<Vec<_>>();
         assert_eq!(numbers(&d), [1, 2, 3]);
         assert!(d.empty(2));
-        d.drop_empty();
+        d.drop_empty(&[]);
         assert_eq!(numbers(&d), [1, 3]);
         assert!(d.warnings(&m, "Built-in").is_empty());
         d.place_player(0, Spot::Window(3));
