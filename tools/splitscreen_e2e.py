@@ -520,7 +520,7 @@ def scenario_setup():
         tiles = {w['label']: w for w in g.ctl(2, 'ui')['widgets'] if w.get('label', '').startswith('P')}
         check("P2's screen: P2 can be moved, P3 and P1 not",
               [tiles[k].get('enabled', True) for k in sorted(tiles)], [False, True, False])
-        check('no presets for P2', 'Everyone here' in g.labels(2), False)
+        check('no switch for P2', 'Splitscreen: On' in g.labels(2), False)
         g.press(2, 'P2')
         g.press(2, 'New window')
         # Meanwhile P1 sends P3 to a window of its own: P2's draft, older, must not undo it.

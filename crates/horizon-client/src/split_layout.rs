@@ -212,48 +212,6 @@ impl Draft {
         }
     }
 
-    /// P1 in Window 1, everyone else in Window 2 filling another monitor than `main` (Window 1's);
-    /// `None` with one monitor.
-    pub fn desk_and_tv(&self, monitors: &[Monitor], main: &str) -> Option<Self> {
-        let tv = monitors.iter().find(|m| m.name != main)?;
-        let mut draft = self.only_window1();
-        draft.windows.push(Window {
-            number: 2,
-            placement: Placement::Fill(tv.name.clone()),
-        });
-        for p in draft.players.iter_mut().skip(1) {
-            *p = 2;
-        }
-        Some(draft)
-    }
-
-    /// A window each: P1 in Window 1, the others filling the monitors Window 1 isn't on, then in
-    /// free windows.
-    pub fn everyone_separate(&self, monitors: &[Monitor], main: &str) -> Self {
-        let mut draft = self.only_window1();
-        let mut spare = monitors.iter().filter(|m| m.name != main);
-        for i in 1..draft.players.len() {
-            let number = i as u8 + 1;
-            let placement = spare
-                .next()
-                .map_or(Placement::Free(None), |m| Placement::Fill(m.name.clone()));
-            draft.windows.push(Window { number, placement });
-            draft.players[i] = number;
-        }
-        draft
-    }
-
-    fn only_window1(&self) -> Self {
-        let window1 = self.windows.iter().find(|w| w.number == 1).cloned();
-        Self {
-            windows: window1.into_iter().collect(),
-            players: vec![1; self.players.len()],
-            two: self.two,
-            three: self.three,
-            order: self.order.clone(),
-        }
-    }
-
     /// Players `i` and `j` trade places: their windows and their places in them.
     pub fn swap(&mut self, i: usize, j: usize) {
         let n = self.players.len();
@@ -488,6 +446,24 @@ mod tests {
         ]
     }
 
+    /// P1 in Window 1, everyone else in Window 2 filling the TV.
+    trait DeskAndTv {
+        fn desk_and_tv(self, monitors: &[Monitor], main: &str) -> Option<Draft>;
+    }
+    impl DeskAndTv for Draft {
+        fn desk_and_tv(mut self, monitors: &[Monitor], main: &str) -> Option<Draft> {
+            let tv = monitors.iter().find(|m| m.name != main)?;
+            self.windows.push(Window {
+                number: 2,
+                placement: Placement::Fill(tv.name.clone()),
+            });
+            for p in self.players.iter_mut().skip(1) {
+                *p = 2;
+            }
+            Some(self)
+        }
+    }
+
     fn here(players: usize) -> Draft {
         Draft::everyone_here(
             players,
@@ -503,24 +479,13 @@ mod tests {
         // Everyone here: four quarters of Window 1.
         let views = here(4).preview(&m, "Built-in");
         assert_eq!(views[3], (0, [1000, 600], size(1000, 600)));
-        // Desk + TV: P1 alone, the others share the TV in rows.
+        // P1 alone, the others share the TV in rows.
         let tv = here(4).desk_and_tv(&m, "Built-in").unwrap();
         assert_eq!(tv.players, [1, 2, 2, 2]);
         assert_eq!(tv.windows[1].placement, Placement::Fill("TV".into()));
         let views = tv.preview(&m, "Built-in");
         assert_eq!(views[0], (0, [0, 0], size(2000, 1200)));
         assert_eq!(views[1], (1, [0, 0], size(3840, 1080)));
-        // No other monitor: no Desk + TV.
-        assert_eq!(here(2).desk_and_tv(&m[..1], "Built-in"), None);
-        // Everyone separate: the TV first, then free windows centred on the main monitor, at its scale.
-        let apart = here(3).everyone_separate(&m, "Built-in");
-        assert_eq!(apart.players, [1, 2, 3]);
-        assert_eq!(apart.windows[2].placement, Placement::Free(None));
-        assert_eq!(
-            apart.rects(&m, "Built-in")[2],
-            Some(([329, 251], [1708, 960]))
-        );
-        assert!(apart.warnings(&m, "Built-in").is_empty());
     }
 
     #[test]

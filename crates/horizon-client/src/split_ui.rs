@@ -67,7 +67,6 @@ enum Drop {
 enum Target {
     Player(usize),
     Move(Spot),
-    Preset(Preset),
     Two,
     Three,
     Identify,
@@ -76,13 +75,6 @@ enum Target {
     Done,
     /// Splitscreen on or off (P1's).
     Switch,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum Preset {
-    Here,
-    DeskTv,
-    Apart,
 }
 
 /// What a press did, for the options screen.
@@ -97,10 +89,42 @@ pub enum Click {
 /// A button: where, what it says, what it does, whether it can be pressed.
 type Button = ([f32; 4], String, Target, bool);
 
-/// The map's area: below the title, above the move row, the notes and three rows of buttons.
+/// The map's area: below the title, above the move row, the notes and the row of buttons.
 const TOP: f32 = 30.0;
-const BOTTOM: f32 = 128.0;
+const BOTTOM: f32 = 80.0;
 const ROW: f32 = 24.0;
+
+/// How a layout's square button is drawn.
+enum Glyph {
+    Auto,
+    /// The panes in a 14 x 10 window, 1 px apart.
+    Panes(&'static [[f32; 4]]),
+}
+
+/// The glyph for a layout button's label ("2 sharing: Side by side"...).
+fn layout_glyph(label: &str) -> Option<Glyph> {
+    let (_, layout) = label.split_once(": ")?;
+    Some(match (label.starts_with('2'), layout) {
+        (true, "Auto") => Glyph::Auto,
+        (true, "Side by side") => Glyph::Panes(&[[0.0, 0.0, 6.5, 10.0], [7.5, 0.0, 6.5, 10.0]]),
+        (true, _) => Glyph::Panes(&[[0.0, 0.0, 14.0, 4.5], [0.0, 5.5, 14.0, 4.5]]),
+        (false, "One wide on top") => Glyph::Panes(&[
+            [0.0, 0.0, 14.0, 4.5],
+            [0.0, 5.5, 6.5, 4.5],
+            [7.5, 5.5, 6.5, 4.5],
+        ]),
+        (false, "One tall on the left") => Glyph::Panes(&[
+            [0.0, 0.0, 6.5, 10.0],
+            [7.5, 0.0, 6.5, 4.5],
+            [7.5, 5.5, 6.5, 4.5],
+        ]),
+        (false, _) => Glyph::Panes(&[
+            [0.0, 0.0, 4.0, 10.0],
+            [5.0, 0.0, 4.0, 10.0],
+            [10.0, 0.0, 4.0, 10.0],
+        ]),
+    })
+}
 
 /// What of `r` no rectangle of `covers` hides, as one rectangle: the largest side left by each
 /// cover in turn (all of it hidden: no size).
@@ -390,8 +414,8 @@ impl SplitUi {
     }
 
     /// Every button: the players' tiles (window by window, as they stack), the move row, the
-    /// presets, layouts and the switch (P1's), and Identify, Revert, Apply and Done. Splitscreen
-    /// off: the switch and Done.
+    /// switch and the layouts (P1's), and Identify, Revert, Apply and Done. Splitscreen off: the
+    /// switch and Done.
     fn buttons(&self, w: f32, h: f32) -> Vec<Button> {
         let row = |out: &mut Vec<Button>, y: f32, items: Vec<(f32, String, Target, bool)>| {
             let total: f32 = items.iter().map(|i| i.0 + 4.0).sum::<f32>() - 4.0;
@@ -401,16 +425,16 @@ impl SplitUi {
                 x += bw + 4.0;
             }
         };
-        let done = (76.0, "Done".into(), Target::Done, true);
+        let done = (64.0, "Done".into(), Target::Done, true);
+        // The switch, top right (P1's).
         let switch = (
-            104.0,
+            [w - 110.0, 6.0, 104.0, 20.0],
             format!("Splitscreen: {}", if self.on { "On" } else { "Off" }),
             Target::Switch,
             true,
         );
         if !self.on {
-            let mut out = Vec::new();
-            row(&mut out, h - 2.0 * ROW - 3.0, vec![switch]);
+            let mut out = vec![switch];
             row(&mut out, h - 27.0, vec![done]);
             return out;
         }
@@ -440,42 +464,36 @@ impl SplitUi {
                 .collect();
             row(&mut out, h - BOTTOM + 4.0, items);
         }
+        // P1's: the switch, and a square for how 2 (or 3) players share a window, while a window
+        // has that many (drawn as the layout; the label is for the control socket and the tests).
+        let mut footer = Vec::new();
         if self.host
             && let Some(draft) = self.draft()
         {
-            let tv = draft.desk_and_tv(&self.monitors, &self.main).is_some();
-            let presets = vec![
-                (
-                    96.0,
-                    "Everyone here".into(),
-                    Target::Preset(Preset::Here),
-                    true,
-                ),
-                (96.0, "Desk + TV".into(), Target::Preset(Preset::DeskTv), tv),
-                (
-                    96.0,
-                    "Everyone apart".into(),
-                    Target::Preset(Preset::Apart),
-                    true,
-                ),
-            ];
-            row(&mut out, h - 3.0 * ROW - 3.0, presets);
-            let two = SPLIT_TWO[usize::from(draft.two.min(2))];
-            let three = SPLIT_THREE[usize::from(draft.three.min(2))];
-            let layouts = vec![
-                (144.0, format!("2 sharing: {two}"), Target::Two, true),
-                (152.0, format!("3 sharing: {three}"), Target::Three, true),
-                switch,
-            ];
-            row(&mut out, h - 2.0 * ROW - 3.0, layouts);
+            out.push(switch);
+            let sharing = |k: usize| {
+                draft
+                    .windows
+                    .iter()
+                    .any(|win| draft.players.iter().filter(|&&n| n == win.number).count() == k)
+            };
+            if sharing(2) {
+                let two = SPLIT_TWO[usize::from(draft.two.min(2))];
+                footer.push((20.0, format!("2 sharing: {two}"), Target::Two, true));
+            }
+            if sharing(3) {
+                let three = SPLIT_THREE[usize::from(draft.three.min(2))];
+                footer.push((20.0, format!("3 sharing: {three}"), Target::Three, true));
+            }
         }
+        // Narrow enough for two squares in the narrowest view (320 GUI pixels).
         let editing = self.edit.is_some();
-        let footer = vec![
-            (76.0, "Identify".into(), Target::Identify, true),
-            (76.0, "Revert".into(), Target::Revert, editing),
-            (76.0, "Apply".into(), Target::Apply, editing),
+        footer.extend([
+            (64.0, "Identify".into(), Target::Identify, true),
+            (64.0, "Revert".into(), Target::Revert, editing),
+            (64.0, "Apply".into(), Target::Apply, editing),
             done,
-        ];
+        ]);
         row(&mut out, h - 27.0, footer);
         out
     }
@@ -488,18 +506,10 @@ impl SplitUi {
             Target::Player(_) if *active => format!("Click or drag {label} to move them."),
             Target::Player(_) => format!("Only {me}'s own place can be changed here."),
             Target::Move(_) => return None,
-            Target::Preset(Preset::Here) => "Everyone shares Window 1.".to_owned(),
-            Target::Preset(Preset::DeskTv) if *active => {
-                "You stay here; everyone else shares a window filling the other monitor.".to_owned()
+            Target::Two if label.ends_with("Auto") => {
+                format!("{label} (side by side when the window is wide). Press to change.")
             }
-            Target::Preset(Preset::DeskTv) => "Desk + TV needs a second monitor.".to_owned(),
-            Target::Preset(Preset::Apart) => {
-                "A window each, filling the other monitors first.".to_owned()
-            }
-            Target::Two => {
-                "How 2 players share a window. Auto: side by side if it's wide.".to_owned()
-            }
-            Target::Three => "How 3 players share a window.".to_owned(),
+            Target::Two | Target::Three => format!("{label}. Press to change."),
             Target::Switch => "Splitscreen for this computer, on or off.".to_owned(),
             Target::Identify => "Each player's view shows which window it is in.".to_owned(),
             Target::Revert if *active => "Undo the changes not applied yet.".to_owned(),
@@ -631,7 +641,11 @@ impl SplitUi {
             // A tile: inset so neighbours stay apart.
             (x, y, bw, bh) = (x + 1.0, y + 1.0, (bw - 2.0).max(4.0), (bh - 2.0).max(4.0));
         }
-        let label = Text::literal(label.as_str());
+        let glyph = match target {
+            Target::Two | Target::Three => layout_glyph(label),
+            _ => None,
+        };
+        let text = Text::literal(if glyph.is_some() { "" } else { label.as_str() });
         ui::button(
             batch,
             atlas,
@@ -639,10 +653,31 @@ impl SplitUi {
             y,
             bw,
             bh,
-            &label,
+            &text,
             *active,
             hover || selected,
         );
+        // A layout's square: its panes, in a 14 x 10 window; Auto a letter. Its name for the
+        // control socket, which lists widgets by what they say.
+        if glyph.is_some() {
+            crate::widgets::record(label, [x, y, bw, bh], *active);
+        }
+        let (gx, gy) = (
+            (x + (bw - 14.0) / 2.0).floor(),
+            (y + (bh - 10.0) / 2.0).floor(),
+        );
+        match glyph {
+            Some(Glyph::Auto) => {
+                let a = Text::literal("A");
+                ui::centered_text(batch, atlas, &a, x, y + 6.0, bw, rgba(255, 255, 255, 255));
+            }
+            Some(Glyph::Panes(panes)) => {
+                for &[px, py, pw, ph] in panes {
+                    batch.fill(atlas, gx + px, gy + py, pw, ph, rgba(230, 230, 230, 255));
+                }
+            }
+            None => {}
+        }
     }
 
     /// What to do next (or what the button under the pointer does), and the warnings.
@@ -728,27 +763,6 @@ impl SplitUi {
             Target::Move(spot) => {
                 if let Some(i) = self.selected.filter(|&i| self.may_move(i)) {
                     self.place(i, spot);
-                }
-            }
-            Target::Preset(preset) => {
-                let monitors = self.monitors.clone();
-                let main = self.main.clone();
-                if let Some(draft) = self.editing() {
-                    let window1 = draft.windows.iter().find(|w| w.number == 1);
-                    let placement = window1.map_or(Placement::Free(None), |w| w.placement.clone());
-                    let made = match preset {
-                        Preset::Here => Some(Draft::everyone_here(
-                            draft.players.len(),
-                            placement,
-                            draft.two,
-                            draft.three,
-                        )),
-                        Preset::DeskTv => draft.desk_and_tv(&monitors, &main),
-                        Preset::Apart => Some(draft.everyone_separate(&monitors, &main)),
-                    };
-                    if let Some(made) = made {
-                        *draft = made;
-                    }
                 }
             }
             Target::Two => {
@@ -1083,29 +1097,32 @@ mod tests {
     }
 
     #[test]
-    fn presets_and_layouts_are_drafts() {
+    fn layout_squares_show_while_a_window_has_that_many() {
+        let labels = |ui: &SplitUi| labels(ui).into_iter().filter(|l| l.contains("sharing"));
+        // Three in Window 1: only the 3's square, drawn as its panes.
         let mut ui = screen(3);
-        press(&mut ui, "Desk + TV");
-        assert_eq!(ui.edit.as_ref().unwrap().players, [1, 2, 2]);
-        press(&mut ui, "2 sharing: Auto");
-        assert_eq!(ui.edit.as_ref().unwrap().two, 1);
-        press(&mut ui, "Everyone here");
-        assert_eq!(ui.edit.as_ref().unwrap().players, [1, 1, 1]);
-        assert_eq!(ui.edit.as_ref().unwrap().two, 1);
-        // One monitor: no Desk + TV.
-        ui.monitors.truncate(1);
-        assert!(
-            !ui.buttons(SIZE.0, SIZE.1)
-                .iter()
-                .any(|b| b.1 == "Desk + TV" && b.3)
-        );
-        // Hovering it says why.
-        let buttons = ui.buttons(SIZE.0, SIZE.1);
-        let tv = buttons.iter().find(|b| b.1 == "Desk + TV").unwrap();
         assert_eq!(
-            ui.help(tv).as_deref(),
-            Some("Desk + TV needs a second monitor.")
+            labels(&ui).collect::<Vec<_>>(),
+            ["3 sharing: One wide on top"]
         );
+        press(&mut ui, "3 sharing: One wide on top");
+        assert_eq!(ui.edit.as_ref().unwrap().three, 1);
+        assert!(matches!(
+            layout_glyph("3 sharing: One tall on the left"),
+            Some(Glyph::Panes(p)) if p.len() == 3
+        ));
+        // Two: only the 2's, Auto a letter, explained under the pointer.
+        let ui = screen(2);
+        assert_eq!(labels(&ui).collect::<Vec<_>>(), ["2 sharing: Auto"]);
+        assert!(matches!(layout_glyph("2 sharing: Auto"), Some(Glyph::Auto)));
+        let buttons = ui.buttons(SIZE.0, SIZE.1);
+        let two = buttons.iter().find(|b| b.2 == Target::Two).unwrap();
+        assert_eq!(
+            ui.help(two).as_deref(),
+            Some("2 sharing: Auto (side by side when the window is wide). Press to change.")
+        );
+        // Alone: neither.
+        assert_eq!(labels(&screen(1)).count(), 0);
     }
 
     #[test]
