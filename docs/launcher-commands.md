@@ -157,6 +157,27 @@ Forget one of your offline names; its skin and cape go with it.
 
 MCP: `account_forget_offline`.
 
+## `horizon-launcher account add-offline`
+
+Keep an offline name without playing as it (a splitscreen player's).
+
+    horizon-launcher account add-offline <NAME>
+
+- `NAME`
+
+MCP: `account_add_offline`.
+
+## `horizon-launcher account rename-offline`
+
+Rename one of your offline names; its skin and cape go with it.
+
+    horizon-launcher account rename-offline <NAME> <TO>
+
+- `NAME`
+- `TO`
+
+MCP: `account_rename_offline`.
+
 ## `horizon-launcher account skin`
 
 Show or set an offline name's skin and cape: a 64x64 (or 64x32) skin PNG, a 64x32 cape PNG, the model. Kept by the launcher and given to the game when that name plays.

@@ -655,3 +655,54 @@ fn offline_names_switch_with_accounts() {
         r#"{"accounts":[],"selected":null}"#
     );
 }
+
+#[test]
+fn a_splitscreen_player_keeps_and_renames_an_offline_name() {
+    let store = MemoryStore::default();
+    store
+        .set("abc", &serde_json::to_string(&secrets("t", true)).unwrap())
+        .unwrap();
+    let mut a = Accounts {
+        accounts: vec![Account {
+            uuid: "abc".into(),
+            name: "Ludo".into(),
+            skin: None,
+            cape: None,
+        }],
+        selected: Some("abc".into()),
+        ..Accounts::default()
+    };
+    // Kept without playing as it: the account still plays.
+    a.keep_offline(&store, "Bea").unwrap();
+    assert_eq!(
+        (a.offline.clone(), a.name_arg()),
+        (vec!["Bea".to_owned()], None)
+    );
+    // Renamed with its look and skin file; not onto another name.
+    let dir = std::env::temp_dir().join(format!("horizon-rename-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(crate::skins::files(&dir, "Bea").0, b"skin").unwrap();
+    a.looks.insert(
+        "bea".into(),
+        crate::skins::Look {
+            skin: true,
+            ..Default::default()
+        },
+    );
+    a.rename_offline("Bea", "Bee", &dir).unwrap();
+    assert_eq!(a.offline, ["Bee"]);
+    assert!(a.looks.contains_key("bee") && !a.looks.contains_key("bea"));
+    assert!(crate::skins::files(&dir, "Bee").0.is_file());
+    a.keep_offline(&store, "Cal").unwrap();
+    assert!(a.rename_offline("Cal", "bee", &dir).is_err());
+    assert!(a.rename_offline("Nobody", "Dan", &dir).is_err());
+    // The game gets every name, with its skin.
+    let env: std::collections::HashMap<_, _> = a.look_env().into_iter().collect();
+    let profiles: serde_json::Value = serde_json::from_str(&env["HORIZON_PROFILES"]).unwrap();
+    assert_eq!(profiles.as_array().unwrap().len(), 2);
+    let _ = std::fs::remove_dir_all(&dir);
+    // No owner: nothing kept.
+    let mut none = Accounts::default();
+    assert!(none.keep_offline(&MemoryStore::default(), "Dan").is_err());
+}

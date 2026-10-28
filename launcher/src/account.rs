@@ -892,6 +892,53 @@ impl Accounts {
         Ok(())
     }
 
+    /// Keeps an offline name without playing as it (a splitscreen player's, made in the game):
+    /// only beside an account that owns the game, as playing as one is.
+    pub fn keep_offline(&mut self, store: &dyn SecretStore, name: &str) -> Result<String, String> {
+        if !self.has_owner(store) {
+            return Err(OFFLINE_NEEDS_OWNER.into());
+        }
+        self.add_offline(name)
+    }
+
+    /// Renames an offline name: its look, its skin and cape files and, if it plays, who plays.
+    pub fn rename_offline(&mut self, name: &str, to: &str, skins_dir: &Path) -> Result<(), String> {
+        let to = to.trim();
+        if !valid_offline_name(to) {
+            return Err(format!(
+                "{to}: an offline name is 3 to 16 letters, digits or _"
+            ));
+        }
+        let Some(i) = self
+            .offline
+            .iter()
+            .position(|n| n.eq_ignore_ascii_case(name))
+        else {
+            return Err(format!("No offline name {name}."));
+        };
+        let before = self.offline[i].clone();
+        if self
+            .offline
+            .iter()
+            .any(|n| n.eq_ignore_ascii_case(to) && !n.eq_ignore_ascii_case(&before))
+        {
+            return Err(format!("{to} is already one of your offline names."));
+        }
+        self.offline[i] = to.to_string();
+        if let Some(look) = self.looks.remove(&before.to_ascii_lowercase()) {
+            self.looks.insert(to.to_ascii_lowercase(), look);
+        }
+        crate::skins::rename(skins_dir, &before, to);
+        if self
+            .offline_selected
+            .as_ref()
+            .is_some_and(|n| n.eq_ignore_ascii_case(&before))
+        {
+            self.offline_selected = Some(to.to_string());
+        }
+        Ok(())
+    }
+
     /// Keeps an offline name (once, in any case); returns it as kept.
     fn add_offline(&mut self, name: &str) -> Result<String, String> {
         let name = name.trim();
@@ -935,12 +982,39 @@ impl Accounts {
             .unwrap_or_default()
     }
 
-    /// The game's variables for the offline name that plays: its skin and cape.
+    /// The game's variables: the playing offline name's skin and cape, and every offline name
+    /// with its look (`HORIZON_PROFILES`, JSON) and this launcher (`HORIZON_LAUNCHER_EXE`), from
+    /// which splitscreen players pick, make, rename and forget theirs.
     pub fn look_env(&self) -> Vec<(&'static str, String)> {
-        match self.name_arg() {
-            Some(name) => crate::skins::env(&crate::skins::dir(), name, &self.look(name)),
+        let dir = crate::skins::dir();
+        let mut out = match self.name_arg() {
+            Some(name) => crate::skins::env(&dir, name, &self.look(name)),
             None => Vec::new(),
+        };
+        let profiles: Vec<_> = self
+            .offline
+            .iter()
+            .map(|name| {
+                let look: std::collections::HashMap<_, _> =
+                    crate::skins::env(&dir, name, &self.look(name))
+                        .into_iter()
+                        .collect();
+                json!({
+                    "name": name,
+                    "skin": look.get(crate::skins::SKIN_ENV),
+                    "model": look.get(crate::skins::MODEL_ENV),
+                    "cape": look.get(crate::skins::CAPE_ENV),
+                })
+            })
+            .collect();
+        out.push((
+            "HORIZON_PROFILES",
+            serde_json::Value::from(profiles).to_string(),
+        ));
+        if let Ok(exe) = std::env::current_exe() {
+            out.push(("HORIZON_LAUNCHER_EXE", exe.to_string_lossy().into_owned()));
         }
+        out
     }
 
     /// The game's `--name` for this run: the offline name, when one plays.
