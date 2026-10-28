@@ -350,7 +350,7 @@ impl<'a> Split<'a> {
             .collect()
     }
 
-    fn seat_of(&self, i: usize) -> usize {
+    pub(super) fn seat_of(&self, i: usize) -> usize {
         if i == 0 { 1 } else { self.guests[i - 1].seat }
     }
 
@@ -572,7 +572,10 @@ impl<'a> Split<'a> {
             }
             let guest = &mut self.guests[i - 1];
             if guest.game.remote.is_some() {
-                guest.game.leave_server(None)?;
+                // One failing to leave doesn't keep the others in.
+                if let Err(e) = guest.game.leave_server(None) {
+                    log::warn!("Horizon: splitscreen: P{} could not leave: {e}", guest.seat);
+                }
             } else if let Some(title) = guest.game.title.as_mut() {
                 // Still picking a profile: as if it pressed Cancel.
                 title.escape();

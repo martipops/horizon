@@ -58,12 +58,17 @@ impl Game<'_> {
     }
 
     /// Splitscreen over this player's view, above the other toasts (`ToastManager`'s slots).
-    pub(in crate::game) fn draw_split_hud(&mut self, batch: &mut HudBatch, slot: usize) {
+    pub(in crate::game) fn draw_split_hud(
+        &mut self,
+        batch: &mut HudBatch,
+        slot: usize,
+        hidden: bool,
+    ) {
         let atlas = &self.gui.atlas;
         let (w, h) = (batch.width, batch.height);
         let width = |text: &str| HudBatch::text_width(atlas, text).ceil();
-        // The badge, top left: who, and a moment where.
-        if let Some(badge) = &self.split_hud.badge {
+        // The badge, top left: who, and a moment where. F1 hides it with the rest of the HUD.
+        if let (false, Some(badge)) = (hidden, &self.split_hud.badge) {
             let place = self.split_hud.place.as_ref();
             let text = match place.filter(|(_, until)| Instant::now() < *until) {
                 Some((place, _)) => format!("{badge} · {place}"),

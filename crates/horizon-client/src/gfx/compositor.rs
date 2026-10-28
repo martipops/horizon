@@ -98,8 +98,9 @@ impl Compositor {
     }
 
     /// Copy each view's frame to its top-left corner on the window and present. Frames that
-    /// don't fit are clipped; uncovered parts of the window keep whatever was there. Nothing when
-    /// the window has no frame to give (occluded, resized, timed out).
+    /// don't fit are clipped; parts of the window no view covers (a view before its first frame,
+    /// one still at its old size after a resize) are black. Nothing when the window has no frame
+    /// to give (occluded, resized, timed out).
     pub fn present(&mut self, views: &[(&wgpu::Texture, [u32; 2])]) {
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(f)
@@ -115,6 +116,20 @@ impl Compositor {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("Splitscreen compositor"),
             });
+        let target = frame.texture.create_view(&Default::default());
+        drop(encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Splitscreen compositor clear"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &target,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            ..Default::default()
+        }));
         for &(texture, [x, y]) in views {
             let width = texture.width().min(self.config.width.saturating_sub(x));
             let height = texture.height().min(self.config.height.saturating_sub(y));

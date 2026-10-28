@@ -244,7 +244,7 @@ fn variantless(key: &str) -> &str {
 impl MixerBackend {
     /// Splitscreen: another player's game started this same sound here just now (both clients
     /// heard it); this copy stays stopped, the first is heard from the nearest camera.
-    fn duplicate(&self, channel: ChannelId, key: &str) -> bool {
+    fn duplicate(&self, channel: ChannelId, (namespace, path): (&str, &str)) -> bool {
         let Ok(mut m) = self.mixer.lock() else {
             return false;
         };
@@ -255,6 +255,8 @@ impl MixerBackend {
         if m.listeners.is_empty() {
             return false;
         }
+        let key = format!("{namespace}:{path}");
+        let key = variantless(&key);
         let at = c.at;
         let twin = m.channels.values().any(|o| {
             o.owner != self.owner
@@ -337,7 +339,7 @@ impl Backend for MixerBackend {
         let (namespace, path) = sound.path();
         let file = self.root.join("assets").join(namespace).join(&path);
         // A looping sound follows its entity in one client's tracking only: each keeps its own.
-        if !looping && self.duplicate(channel, variantless(&format!("{namespace}:{path}"))) {
+        if !looping && self.duplicate(channel, (namespace, &path)) {
             return;
         }
         if sound.stream {
@@ -1263,7 +1265,7 @@ mod tests {
         let started = |b: &mut MixerBackend, at: [f64; 3]| {
             let id = b.create(false).unwrap();
             b.set_position(id, at);
-            !b.duplicate(id, "minecraft:mob/creeper/say1.ogg")
+            !b.duplicate(id, ("minecraft", "mob/creeper/say1.ogg"))
         };
         assert!(started(&mut p1, [5.0, 64.0, 5.0]));
         // P2's client got the same sound at the same place: one copy plays.

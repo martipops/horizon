@@ -83,7 +83,8 @@ impl Integrated {
         let split = !self.flags.split_players.lock().unwrap().is_empty();
         self.flags.paused.store(paused && !split, Ordering::Relaxed);
     }
-    /// Splitscreen: `name` left; the game pauses again once every such player has.
+    /// Splitscreen: `name` left; the game pauses again once every such player has. The owner's
+    /// permissions it was given go with it (a LAN player could otherwise join under that name).
     pub fn leave_split(&self, name: &str) {
         let uuid = horizon_protocol::crypto::offline_uuid(name);
         self.flags
@@ -91,6 +92,11 @@ impl Integrated {
             .lock()
             .unwrap()
             .retain(|&u| u != uuid);
+        self.call(move |g| {
+            if let Some(host) = g.lan.as_mut() {
+                host.hub.ops.remove(&uuid);
+            }
+        });
     }
     /// Splitscreen: a connection through memory for another player on this machine, who gets
     /// the owner's permissions. `None` once the server has stopped.

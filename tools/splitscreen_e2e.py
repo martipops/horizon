@@ -204,6 +204,10 @@ def scenario_join():
         g.ctl(4, 'disconnect')
         three = g.settle([1, 2, 3], [(2 * w, h), (w, h), (w, h)])
         check('three: one wide on top, two below', three, [(2 * w, h), (w, h), (w, h)])
+        # A player's quit leaves splitscreen; only P1's ends the game.
+        g.ctl(3, 'quit')
+        g.wait(lambda: not g.alive(3), 'P3 gone after its quit', seconds=15)
+        check("P3's quit: P3 left, P1 plays on", g.ctl(1, 'state').get('player') is not None, True)
     finally:
         g.quit()
 
