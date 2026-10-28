@@ -58,6 +58,7 @@ use winit::{
 
 mod frames;
 mod hud;
+mod launcher;
 mod pads;
 mod players;
 mod setup;
@@ -140,6 +141,9 @@ pub(super) struct Split<'a> {
     /// P1's name and when it was read: without `--name` reading it opens horizon-player.txt,
     /// too slow for every frame (the badge, the titles).
     p1_name: (String, Instant),
+    /// The launcher's offline names, the profiles to pick from (`launcher.rs`); none without
+    /// the launcher.
+    launcher: Option<Vec<launcher::Profile>>,
     /// The game's window and its compositor first, then monitors' and players' own.
     surfaces: Vec<Surface>,
     /// The views the players were last fitted to.
@@ -219,6 +223,7 @@ impl<'a> Split<'a> {
             spent_frames: 0,
             frame_started: None,
             p1_name: (p1_name, Instant::now()),
+            launcher: launcher::profiles(),
             surfaces,
             applied: Vec::new(),
             window_rects: Default::default(),

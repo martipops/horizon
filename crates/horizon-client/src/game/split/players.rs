@@ -64,6 +64,7 @@ impl<'a> Split<'a> {
         if let Some(pad) = pad {
             self.fresh.push(pad);
         }
+        // The launcher's offline names, and profiles made before (or without) it.
         let profiles = Self::folder()?.join("profiles");
         let mut names: Vec<String> = std::fs::read_dir(&profiles)
             .into_iter()
@@ -73,6 +74,11 @@ impl<'a> Split<'a> {
             .filter_map(|e| e.file_name().into_string().ok())
             .filter(|n| horizon_client::title::valid_profile_name(n))
             .collect();
+        for p in self.launcher.iter().flatten() {
+            if !names.iter().any(|n| n.eq_ignore_ascii_case(&p.name)) {
+                names.push(p.name.clone());
+            }
+        }
         names.sort_by_key(|n| n.to_lowercase());
         let taken = self.taken();
         if let Some(title) = game.title.as_mut() {
@@ -107,6 +113,18 @@ impl<'a> Split<'a> {
     pub(super) fn enter(&mut self, i: usize, name: String) -> Result<()> {
         if self.taken().contains(&name) {
             return Err(format!("{name} is already playing").into());
+        }
+        // One list: a name new to the launcher is kept there too, and plays with its skin.
+        if let Some(list) = &mut self.launcher {
+            if !list.iter().any(|p| p.name.eq_ignore_ascii_case(&name)) {
+                launcher::run(&["add-offline", &name]);
+                list.push(launcher::Profile {
+                    name: name.clone(),
+                    skin: None,
+                    slim: false,
+                });
+            }
+            launcher::wear(list, &name);
         }
         let profile = Self::folder()?.join(format!("profiles/{name}"));
         let options = profile.join("options.txt");
@@ -166,8 +184,17 @@ impl<'a> Split<'a> {
             }) && let Ok(folder) = Self::folder()
             {
                 let path = folder.join("profiles").join(&name);
-                if let Err(e) = std::fs::remove_dir_all(&path) {
+                if path.exists()
+                    && let Err(e) = std::fs::remove_dir_all(&path)
+                {
                     log::warn!("Horizon: splitscreen: deleting profile {name}: {e}");
+                }
+                // The launcher forgets it too, its skin with it.
+                if let Some(list) = &mut self.launcher
+                    && list.iter().any(|p| p.name.eq_ignore_ascii_case(&name))
+                {
+                    list.retain(|p| !p.name.eq_ignore_ascii_case(&name));
+                    launcher::run(&["forget-offline", &name]);
                 }
             }
             // A profile renamed on the picker: its folder moves (not one playing now, not onto
@@ -185,12 +212,22 @@ impl<'a> Split<'a> {
                 let profiles = folder.join("profiles");
                 // A case change only is the same folder on some systems: no "already there".
                 let clash = !after.eq_ignore_ascii_case(&before) && profiles.join(&after).exists();
-                let moved = match clash {
-                    true => Err(std::io::Error::other("a profile has that name")),
-                    false => std::fs::rename(profiles.join(&before), profiles.join(&after)),
+                // A launcher name may have no folder yet (it never played here).
+                let moved = match (clash, profiles.join(&before).exists()) {
+                    (true, _) => Err(std::io::Error::other("a profile has that name")),
+                    (false, true) => std::fs::rename(profiles.join(&before), profiles.join(&after)),
+                    (false, false) => Ok(()),
                 };
                 if let Err(e) = moved {
                     log::warn!("Horizon: splitscreen: renaming profile {before} to {after}: {e}");
+                }
+                if let Some(list) = &mut self.launcher
+                    && let Some(p) = list
+                        .iter_mut()
+                        .find(|p| p.name.eq_ignore_ascii_case(&before))
+                {
+                    p.name.clone_from(&after);
+                    launcher::run(&["rename-offline", &before, &after]);
                 }
             }
             let choice = match self.guests[i].name {

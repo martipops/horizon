@@ -29,6 +29,7 @@ passed.
 import argparse
 import contextlib
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -701,6 +702,43 @@ def scenario_pointer():
         g.quit()
 
 
+
+def scenario_launcher():
+    print("launcher: the picker lists the launcher's offline names; changes go to the launcher")
+    folder = Path(tempfile.mkdtemp(prefix='hz-launcher-'))
+    log = folder / 'calls.txt'
+    # The launcher's stand-in: records each command it gets.
+    fake = folder / 'launcher'
+    fake.write_text(f'#!/bin/sh\necho "$@" >> {log}\n')
+    fake.chmod(0o755)
+    os.environ['HORIZON_PROFILES'] = json.dumps([{'name': 'Bea', 'skin': None, 'model': None, 'cape': None}])
+    os.environ['HORIZON_LAUNCHER_EXE'] = str(fake)
+    g = Game(2, pick=True)
+    try:
+        menu = lambda: g.ctl(2, 'state').get('menu') or {}  # noqa: E731
+        g.wait(lambda: menu().get('mode') == 'splitscreen-profiles', 'the picker')
+        check("the launcher's name on the list", menu().get('profiles'), ['Bea'])
+        calls = lambda: log.read_text().splitlines() if log.exists() else []  # noqa: E731
+        g.ctl(2, 'click-button', 'Edit')
+        g.ctl(2, 'type', '--replace', 'Bee')
+        g.ctl(2, 'click-button', 'Save')
+        g.wait(lambda: 'account rename-offline Bea Bee' in calls(), 'the launcher renaming it', seconds=5)
+        g.ctl(2, 'click-button', 'Edit')
+        g.ctl(2, 'click-button', 'Delete')
+        g.ctl(2, 'click-button', 'Delete')
+        g.wait(lambda: 'account forget-offline Bee' in calls(), 'the launcher forgetting it', seconds=5)
+        g.ctl(2, 'click-button', 'New Profile...')
+        g.ctl(2, 'type', 'Dan')
+        g.ctl(2, 'click-button', 'Create')
+        g.wait(lambda: 'account add-offline Dan' in calls(), 'the launcher keeping the new one', seconds=5)
+        check('the launcher heard each change', calls(),
+              ['account rename-offline Bea Bee', 'account forget-offline Bee', 'account add-offline Dan'])
+    finally:
+        g.quit()
+        os.environ.pop('HORIZON_PROFILES', None)
+        os.environ.pop('HORIZON_LAUNCHER_EXE', None)
+
+
 SCENARIOS = {
     'join': scenario_join,
     'windows': scenario_windows,
@@ -717,6 +755,7 @@ SCENARIOS = {
     'server': scenario_server,
     'packs': scenario_packs,
     'pointer': scenario_pointer,
+    'launcher': scenario_launcher,
 }
 
 

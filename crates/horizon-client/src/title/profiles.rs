@@ -23,9 +23,10 @@ const SHOWN: usize = 6;
 pub(super) const NAME_FIELD: crate::clipboard::FieldId = ("splitscreen.profile-name", 0);
 pub(super) const NAME_MAX: usize = 16;
 
-/// A player name the server takes: 1 to 16 letters, digits or underscores.
+/// A player name the server takes, and the launcher keeps as an offline name: 3 to 16
+/// letters, digits or underscores.
 pub fn valid_name(name: &str) -> bool {
-    (1..=NAME_MAX).contains(&name.len())
+    (3..=NAME_MAX).contains(&name.len())
         && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
@@ -177,7 +178,7 @@ impl Title {
                 }
                 batch.text(
                     atlas,
-                    "Name (letters, digits, _)",
+                    "Name (3 to 16 letters, digits, _)",
                     (w / 2.0).floor() - 100.0,
                     top + 25.0,
                     rgba(160, 160, 160, 255),
@@ -337,6 +338,7 @@ mod tests {
     fn profile_names_are_player_names() {
         assert!(valid_name("Steve_2"));
         assert!(!valid_name(""));
+        assert!(!valid_name("ab"));
         assert!(!valid_name("has space"));
         assert!(!valid_name("seventeen_chars_x"));
     }
