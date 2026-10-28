@@ -628,8 +628,9 @@ impl SecretStore for SystemStore {
 }
 
 /// Keychain on macOS, Credential Manager on Windows (the keyring crate). Credential Manager takes at
-/// most 2560 bytes of UTF-16 per item and a sign-in's secrets are longer, so a secret is kept in
-/// pieces: the first under the account's key, the rest under `key.1`, `key.2`...
+/// most 2560 bytes of UTF-16 per item and a sign-in's secrets are longer, so there a secret is kept
+/// in pieces: the first under the account's key, the rest under `key.1`, `key.2`... The keychain
+/// takes it whole: each item read is a prompt when the launcher changed, so one item.
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 pub struct SystemStore;
 
@@ -646,11 +647,11 @@ fn piece_key(key: &str, n: usize) -> String {
     }
 }
 
-/// `secret` cut into pieces of at most `PIECE` bytes, on character boundaries.
+/// `secret` cut into pieces of at most `PIECE` bytes, on character boundaries (Windows only).
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 fn split_secret(mut secret: &str) -> Vec<&str> {
     let mut pieces = Vec::new();
-    while secret.len() > PIECE {
+    while cfg!(windows) && secret.len() > PIECE {
         let mut cut = PIECE;
         while !secret.is_char_boundary(cut) {
             cut -= 1;
@@ -729,6 +730,78 @@ impl SecretStore for SystemStore {
     }
 }
 
+/// Every account's secrets in one keychain item (`VAULT`, JSON by key), read once per run: one
+/// prompt where the system asks before each item a changed launcher reads (macOS), not one per
+/// account and piece. Secrets kept the older way, an item per account, move into it as they are
+/// read.
+pub struct Vault<S: SecretStore> {
+    inner: S,
+    cache: std::sync::Mutex<Option<std::collections::BTreeMap<String, String>>>,
+}
+
+const VAULT: &str = "vault";
+
+impl<S: SecretStore> Vault<S> {
+    pub fn new(inner: S) -> Self {
+        Self {
+            inner,
+            cache: std::sync::Mutex::new(None),
+        }
+    }
+    /// The vault, read from the keychain the first time.
+    fn with<T>(
+        &self,
+        f: impl FnOnce(&mut std::collections::BTreeMap<String, String>) -> T,
+    ) -> Result<T, String> {
+        let mut cache = self
+            .cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if cache.is_none() {
+            let text = self.inner.get(VAULT)?;
+            *cache = Some(
+                text.and_then(|t| serde_json::from_str(&t).ok())
+                    .unwrap_or_default(),
+            );
+        }
+        Ok(f(cache.as_mut().expect("read above")))
+    }
+    fn save(&self) -> Result<(), String> {
+        let text = self.with(|v| serde_json::to_string(v).unwrap_or_default())?;
+        self.inner.set(VAULT, &text)
+    }
+}
+
+impl<S: SecretStore> SecretStore for Vault<S> {
+    fn get(&self, key: &str) -> Result<Option<String>, String> {
+        if let Some(secret) = self.with(|v| v.get(key).cloned())? {
+            return Ok(Some(secret));
+        }
+        // Kept the older way: into the vault, the old item gone.
+        let Some(old) = self.inner.get(key)? else {
+            return Ok(None);
+        };
+        self.with(|v| v.insert(key.to_owned(), old.clone()))?;
+        if self.save().is_ok() {
+            let _ = self.inner.delete(key);
+        }
+        Ok(Some(old))
+    }
+    fn set(&self, key: &str, secret: &str) -> Result<(), String> {
+        self.with(|v| v.insert(key.to_owned(), secret.to_owned()))?;
+        self.save()
+    }
+    fn delete(&self, key: &str) -> Result<(), String> {
+        self.with(|v| v.remove(key))?;
+        self.save()?;
+        // An item of the older way, never read since.
+        self.inner.delete(key)
+    }
+    fn persistent(&self) -> bool {
+        self.inner.persistent()
+    }
+}
+
 pub const NO_KEYCHAIN: &str = "No keychain available: you are signed in until the launcher closes, then you will have to sign in again.";
 
 /// The keychain if it answers, else memory for this run (said once in the UI with NO_KEYCHAIN).
@@ -748,7 +821,7 @@ pub fn store() -> &'static dyn SecretStore {
             ))]
             if std::env::var_os("HORIZON_NO_KEYCHAIN").is_none() && SystemStore.get("probe").is_ok()
             {
-                return Box::new(SystemStore);
+                return Box::new(Vault::new(SystemStore));
             }
             Box::<MemoryStore>::default()
         })

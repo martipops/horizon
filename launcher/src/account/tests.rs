@@ -527,13 +527,14 @@ fn system_keychain_keeps_long_secrets() {
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 #[test]
-fn long_secrets_split_into_keychain_sized_pieces() {
+fn long_secrets_split_into_credential_manager_sized_pieces() {
     // Mixed 1-, 2- and 4-byte characters, so the cuts land inside some of them.
     let secret = "aé🔑".repeat(300);
     let pieces = split_secret(&secret);
-    assert!(pieces.len() > 1);
+    // Only Credential Manager needs pieces; the keychain takes it whole (one prompt).
+    assert_eq!(pieces.len() > 1, cfg!(windows));
     assert_eq!(pieces.concat(), secret);
-    for piece in &pieces {
+    for piece in pieces.iter().filter(|_| cfg!(windows)) {
         assert!(piece.len() <= PIECE);
         assert!(piece.encode_utf16().count() * 2 <= 2560);
     }
@@ -685,4 +686,30 @@ fn a_splitscreen_player_keeps_an_offline_name() {
     // No owner: nothing kept.
     let mut none = Accounts::default();
     assert!(none.keep_offline(&MemoryStore::default(), "Dan").is_err());
+}
+
+#[test]
+fn every_account_in_one_keychain_item() {
+    let vault = Vault::new(MemoryStore::default());
+    vault.set("abc", "one").unwrap();
+    vault.set("def", "two").unwrap();
+    assert_eq!(vault.get("abc").unwrap().as_deref(), Some("one"));
+    // One item holds both.
+    let inner: std::collections::BTreeMap<String, String> =
+        serde_json::from_str(&vault.inner.get("vault").unwrap().unwrap()).unwrap();
+    assert_eq!(inner.len(), 2);
+    assert!(vault.inner.get("abc").unwrap().is_none());
+    // An account kept the older way moves in as it is read.
+    vault.inner.set("old", "three").unwrap();
+    assert_eq!(vault.get("old").unwrap().as_deref(), Some("three"));
+    assert!(vault.inner.get("old").unwrap().is_none());
+    vault.delete("abc").unwrap();
+    assert!(vault.get("abc").unwrap().is_none());
+    // Read again from the keychain (a new run): the same.
+    let again = Vault::new(MemoryStore::default());
+    again
+        .inner
+        .set("vault", &vault.inner.get("vault").unwrap().unwrap())
+        .unwrap();
+    assert_eq!(again.get("def").unwrap().as_deref(), Some("two"));
 }
