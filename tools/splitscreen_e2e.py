@@ -168,6 +168,14 @@ class Game:
         `by`'s Setup screen and Apply; a window not open yet is a new one."""
         self.setup(by)
         self.press(by, f'P{player}')
+        if where.startswith('Window '):
+            # One window button cycles through the windows: on until it names this one (or a new
+            # window when it never does: the window isn't open yet).
+            for _ in range(8):
+                windows = [l for l in self.labels(by) if l.startswith('Window ')]
+                if not windows or where in windows:
+                    break
+                self.press(by, windows[0])
         self.press(by, where if where in self.labels(by) else 'New window')
         self.press(by, 'Apply')
         self.close_page(by)
@@ -558,7 +566,7 @@ def scenario_setup():
         tap('south')  # picked up
         # The stick to the right: shown in a new window (the D-pad and LB/RB cycle the same way).
         g.ctl(1, 'pad', 'stick', 'left', '1', '0')
-        time.sleep(0.15)
+        time.sleep(0.25)  # a poll or two, under the menu's repeat (0.35 s)
         g.ctl(1, 'pad', 'stick', 'left', '0', '0')
         time.sleep(0.35)
         check('held: nothing in the draft yet', apply_on(), [False])

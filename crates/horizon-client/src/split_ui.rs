@@ -524,7 +524,21 @@ impl SplitUi {
                 (rect, name, Target::Player(i), self.may_move(i))
             })
             .collect();
-        let spots = self.spots();
+        // The move row: one button for the windows, which cycles (the next window after the
+        // player's, by number, wrapping), then a new window and the monitors.
+        let mut spots = self.spots();
+        let mine = self
+            .selected
+            .and_then(|i| self.draft().and_then(|d| d.players.get(i).copied()))
+            .unwrap_or(0);
+        let next = spots
+            .iter()
+            .filter_map(|(_, s)| match s {
+                Spot::Window(n) => Some(*n),
+                _ => None,
+            })
+            .min_by_key(|&n| (n <= mine, n));
+        spots.retain(|(_, s)| !matches!(s, Spot::Window(n) if Some(*n) != next));
         if !spots.is_empty() {
             let items = spots
                 .into_iter()
@@ -1136,6 +1150,32 @@ mod tests {
         assert!(other.pad_pick_up(centre(&other, "P2")));
         let held = other.held.as_ref().unwrap();
         assert!(!held.spots.iter().any(|(l, _)| l.starts_with("Swap")));
+    }
+
+    #[test]
+    fn one_window_button_cycles_through_the_windows() {
+        let mut ui = screen(4);
+        // P2, P3, P4 each in a new window: Windows 2, 3, 4.
+        for p in ["P2", "P3", "P4"] {
+            press(&mut ui, p);
+            press(&mut ui, "New window");
+        }
+        press(&mut ui, "P2");
+        let windows = |ui: &SplitUi| -> Vec<String> {
+            labels(ui)
+                .into_iter()
+                .filter(|l| l.starts_with("Window "))
+                .collect()
+        };
+        assert_eq!(windows(&ui), ["Window 3"]);
+        press(&mut ui, "Window 3");
+        assert_eq!(windows(&ui), ["Window 4"]);
+        press(&mut ui, "Window 4");
+        // Past the last: back to Window 1, then on.
+        assert_eq!(windows(&ui), ["Window 1"]);
+        press(&mut ui, "Window 1");
+        assert_eq!(ui.edit.as_ref().unwrap().players[1], 1);
+        assert!(labels(&ui).contains(&"New window".to_owned()));
     }
 
     #[test]
