@@ -28,16 +28,17 @@ ROWS = [
     ('world', 'World', None),
     ('mode', 'Mode', ['creative', 'survival']),
     ('splitscreen', 'Splitscreen setting', ['on', 'off']),
-    ('test_players', 'Extra players without controllers', ['0', '1', '2', '3']),
+    ('test_players', 'Extra players without controllers', [str(n) for n in range(8)]),
     ('size', 'Window', SIZES),
     ('audio', 'Audio', ['on', 'off']),
     ('home', 'Game folder', ['dev/home', 'fresh (deleted after)']),
     ('build', 'Build before launch', ['on', 'off']),
     ('stats', 'Performance readout (every 5 s)', ['off', 'on']),
+    ('framerate', 'Frame rate', ['as set in game', 'uncapped']),
 ]
 DEFAULTS = {'world': 'Splitscreen', 'mode': 'creative', 'splitscreen': 'on', 'test_players': '0',
             'size': '1600x900', 'audio': 'on', 'home': 'dev/home', 'build': 'on',
-            'stats': 'off'}
+            'stats': 'off', 'framerate': 'as set in game'}
 # Windows curses sends the keypad's Enter as PADENTER.
 ENTER = (10, 13, curses.KEY_ENTER, getattr(curses, 'PADENTER', curses.KEY_ENTER))
 
@@ -54,9 +55,9 @@ def load():
     return c
 
 
-def set_extra(home, key, value):
-    """One `key:value` line of horizon-extras.txt, keeping the others."""
-    path = home / 'horizon-extras.txt'
+def set_extra(home, key, value, file='horizon-extras.txt'):
+    """One `key:value` line of horizon-extras.txt (or options.txt), keeping the others."""
+    path = home / file
     lines = path.read_text().splitlines() if path.exists() else []
     lines = [l for l in lines if not l.startswith(f'{key}:')] + [f'{key}:{value}']
     path.write_text('\n'.join(lines) + '\n')
@@ -82,6 +83,10 @@ def launch(c):
     home = Path(tempfile.mkdtemp(prefix='horizon-dev-')) if fresh else DEV / 'home'
     home.mkdir(parents=True, exist_ok=True)
     set_extra(home, 'splitscreen', 'true' if c['splitscreen'] == 'on' else 'false')
+    if c['framerate'] == 'uncapped':
+        # P1's options pace every player in splitscreen. 260 is the slider's Unlimited.
+        set_extra(home, 'enableVsync', 'false', 'options.txt')
+        set_extra(home, 'maxFps', '260', 'options.txt')
     env = dict(os.environ)
     env.update(HORIZON_HOME=str(home), HORIZON_LAUNCHER_HOME=str(home / '.launcher'),
                XDG_DATA_HOME=str(home / '.xdg-data'), XDG_CONFIG_HOME=str(home / '.xdg-config'),
