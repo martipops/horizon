@@ -58,12 +58,19 @@ pub(super) enum Hold {
     Ask,
     /// One of the answers, pressed while asked.
     Answer(Button),
+    /// A bumper while asked (`true`: LB, back): the player's view moves, the question stays.
+    Move(bool),
 }
 
 impl HoldSelect {
     fn update(&mut self, pad: PadState, answers: &[Button]) -> Hold {
         let last = std::mem::replace(&mut self.last, pad);
         if self.asking {
+            for (bumper, back) in [(Button::LeftBumper, true), (Button::RightBumper, false)] {
+                if pad.held(bumper) && !last.held(bumper) {
+                    return Hold::Move(back);
+                }
+            }
             return match answers.iter().find(|&&b| pad.held(b) && !last.held(b)) {
                 Some(&b) => {
                     self.asking = false;
@@ -98,12 +105,16 @@ impl<'a> Split<'a> {
 
     /// Player `i` (not P1) holding Select 2 s is asked "Leave splitscreen?": A leaves, X
     /// switches profile (leaves, then chooses again where it was), Y opens the Setup screen, B
-    /// stays.
+    /// stays; the bumpers move its view meanwhile, as when it joined.
     pub(super) fn leave_by_controller(&mut self, i: usize) {
         let pad = self.pad_now(i);
-        let g = &mut self.guests[i - 1];
         let answers = [Button::South, Button::West, Button::North, Button::East];
-        match g.hold.update(pad, &answers) {
+        let hold = self.guests[i - 1].hold.update(pad, &answers);
+        if let Hold::Move(back) = hold {
+            return self.move_with_bumpers(i, back);
+        }
+        let g = &mut self.guests[i - 1];
+        match hold {
             Hold::Ask => {
                 g.game.split_hud.prompt = Some(Prompt {
                     ask: Ask::Leave,
@@ -112,6 +123,7 @@ impl<'a> Split<'a> {
                         (Button::South, "Leave"),
                         (Button::West, "Switch profile"),
                         (Button::North, "Setup"),
+                        (Button::RightBumper, "Move"),
                         (Button::East, "Stay"),
                     ],
                 });
@@ -139,20 +151,21 @@ impl<'a> Split<'a> {
                     log::warn!("Horizon: splitscreen: {e}");
                 }
             }
-            Hold::Nothing => {}
+            Hold::Move(_) | Hold::Nothing => {}
         }
     }
 
     /// P1 holding Select 2 s, as the others do to leave: P1 hosts the world (it ends splitscreen
     /// from the pause menu), but its controller can go: A takes it from P1 (keyboard and mouse
     /// stay), and in a world a button on it then offers to join as a new player; Y opens the
-    /// Setup screen; B keeps it.
+    /// Setup screen; B keeps it; the bumpers move P1's view meanwhile.
     pub(super) fn p1_holds_select(&mut self) {
         let pad = self.pad_now(0);
         match self
             .p1_hold
             .update(pad, &[Button::South, Button::North, Button::East])
         {
+            Hold::Move(back) => self.move_with_bumpers(0, back),
             Hold::Ask => {
                 self.host.split_hud.prompt = Some(Prompt {
                     ask: Ask::Controller,
@@ -160,6 +173,7 @@ impl<'a> Split<'a> {
                     choices: vec![
                         (Button::South, "Remove it from P1"),
                         (Button::North, "Setup"),
+                        (Button::RightBumper, "Move"),
                         (Button::East, "Keep it"),
                     ],
                 });

@@ -407,6 +407,22 @@ def scenario_leave():
         check('P1 plays on after keeping its controller', g.ctl(1, 'status')['fps'] > 10, True)
     finally:
         g.quit()
+    print('leave: in the hold-Select menu, the bumpers move the view; B keeps it there')
+    g = Game(2)
+    try:
+        half = g.size(1)
+        g.ctl(2, 'pad', 'select', 'down')
+        time.sleep(2.5)
+        g.ctl(2, 'pad', 'select', 'up')
+        time.sleep(0.3)
+        g.ctl(2, 'pad', 'rb', 'tap')  # from "Window 1 (2 of 2)" to a new window
+        whole = (2 * half[0], half[1])
+        check('RB: P2 to a new window, P1 alone', g.settle([1], [whole]), [whole])
+        g.ctl(2, 'pad', 'east', 'tap')  # Stay
+        time.sleep(1)
+        check('B: P2 stays in its new window, still playing', (g.alive(2), g.size(2) != half), (True, True))
+    finally:
+        g.quit()
 
 
 def scenario_signedin():

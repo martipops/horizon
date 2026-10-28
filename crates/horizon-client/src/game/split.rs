@@ -713,9 +713,9 @@ impl ApplicationHandler for Split<'_> {
                 ];
                 let before = std::mem::replace(&mut self.guests[i].bumpers, held);
                 if held[0] && !before[0] {
-                    self.place_joining(i + 1, true);
+                    self.move_with_bumpers(i + 1, true);
                 } else if held[1] && !before[1] {
-                    self.place_joining(i + 1, false);
+                    self.move_with_bumpers(i + 1, false);
                 }
             } else {
                 self.leave_by_controller(i + 1);

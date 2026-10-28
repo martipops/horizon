@@ -380,9 +380,9 @@ impl<'a> Split<'a> {
         self.order = order;
     }
 
-    /// A joining player's bumper: its view moves to the next place it could play (`back`: the
-    /// one before), at once, so it sees where it will be; choosing its profile keeps it there.
-    pub(super) fn place_joining(&mut self, i: usize, back: bool) {
+    /// A bumper while joining or in the hold-Select menu: player `i`'s view moves to the next
+    /// place it could play (`back`: the one before), at once, so it sees where it will be.
+    pub(super) fn move_with_bumpers(&mut self, i: usize, back: bool) {
         let stops = self.joining_stops(i);
         let n = stops.len();
         if n == 0 {
@@ -396,10 +396,12 @@ impl<'a> Split<'a> {
         let (shown, next, k) = stops[if back { (at + n - 1) % n } else { (at + 1) % n }].clone();
         self.choose(i, next);
         self.put_at(i, k);
-        self.guests[i - 1].game.split_hud.place = Some((
-            format!("LB < {shown} > RB"),
-            Instant::now() + Duration::from_secs(3),
-        ));
+        if let Some(game) = self.game_mut(i) {
+            game.split_hud.place = Some((
+                format!("LB < {shown} > RB"),
+                Instant::now() + Duration::from_secs(3),
+            ));
+        }
     }
 
     /// How many players come before `i` in its window.
