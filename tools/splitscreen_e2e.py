@@ -292,7 +292,7 @@ def scenario_live():
 
 
 def scenario_picker():
-    print('picker: delete a profile, RB to a new window, then a new profile')
+    print('picker: rename and delete a profile, RB to a new window, then a new profile')
 
     def seed(home):
         (home / 'splitscreen/profiles/Zed').mkdir(parents=True)
@@ -302,10 +302,18 @@ def scenario_picker():
         menu = lambda: g.ctl(2, 'state').get('menu') or {}  # noqa: E731
         g.wait(lambda: menu().get('mode') == 'splitscreen-profiles', 'the picker')
         check('Zed on the list', menu().get('profiles'), ['Zed'])
-        g.ctl(2, 'click-button', 'X')
+        # Edit: renamed Zed -> Zoe (its folder moves), then Edit, Delete, and Delete again to
+        # confirm.
+        g.ctl(2, 'click-button', 'Edit')
+        g.ctl(2, 'type', '--replace', 'Zoe')
+        g.ctl(2, 'click-button', 'Save')
+        g.wait(lambda: (g.home / 'splitscreen/profiles/Zoe').exists(), 'Zed renamed Zoe', seconds=5)
+        check('renamed on the list', menu().get('profiles'), ['Zoe'])
+        g.ctl(2, 'click-button', 'Edit')
         g.ctl(2, 'click-button', 'Delete')
-        g.wait(lambda: not (g.home / 'splitscreen/profiles/Zed').exists(), "Zed's folder gone", seconds=5)
-        check('Zed deleted', menu().get('profiles'), [])
+        g.ctl(2, 'click-button', 'Delete')
+        g.wait(lambda: not (g.home / 'splitscreen/profiles/Zoe').exists(), "Zoe's folder gone", seconds=5)
+        check('Zoe deleted', menu().get('profiles'), [])
         half = g.size(1)  # P2 picks in Window 1 beside P1
         g.ctl(2, 'pad', 'rb', 'tap')  # Window 1 -> New window
         g.settle([1], [(2 * half[0], half[1])])
@@ -402,7 +410,7 @@ def scenario_bumpers():
 
 
 def scenario_leave():
-    print('leave: hold Select, then A to leave or X to switch profile')
+    print('leave: from the pause menu, or hold Select then X to switch profile')
     g = Game(3)
     try:
         def hold_select(n):
@@ -410,11 +418,18 @@ def scenario_leave():
             time.sleep(2.5)
             g.ctl(n, 'pad', 'select', 'up')
             time.sleep(0.3)
+        # Its splitscreen menu doesn't leave (A does nothing); its pause menu does.
         hold_select(3)
         g.ctl(3, 'pad', 'south', 'tap')
+        time.sleep(1)
+        check('A in the splitscreen menu: P3 still plays', g.alive(3), True)
+        g.ctl(3, 'pad', 'east', 'tap')
+        g.ctl(3, 'key', 'esc', 'tap')
+        time.sleep(0.6)
+        g.press(3, 'Leave')
         g.wait(lambda: not g.alive(3), 'P3 gone', seconds=10)
         w, h = g.size(1)
-        check('A: P3 left, P1 and P2 share the window', g.settle([1, 2], [(w, h), (w, h)]), [(w, h), (w, h)])
+        check('Leave: P3 left, P1 and P2 share the window', g.settle([1, 2], [(w, h), (w, h)]), [(w, h), (w, h)])
         hold_select(2)
         g.ctl(2, 'pad', 'west', 'tap')
         g.wait(lambda: g.alive(2) and (g.ctl(2, 'state').get('menu') or {}).get('mode') == 'splitscreen-profiles',
@@ -438,7 +453,7 @@ def scenario_leave():
         g.ctl(2, 'pad', 'rb', 'tap')  # from "Window 1 (2 of 2)" to a new window
         whole = (2 * half[0], half[1])
         check('RB: P2 to a new window, P1 alone', g.settle([1], [whole]), [whole])
-        g.ctl(2, 'pad', 'east', 'tap')  # Stay
+        g.ctl(2, 'pad', 'east', 'tap')  # Close
         time.sleep(1)
         check('B: P2 stays in its new window, still playing', (g.alive(2), g.size(2) != half), (True, True))
     finally:

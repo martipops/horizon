@@ -13,9 +13,11 @@ const CREATE: u8 = 72;
 const BACK: u8 = 73;
 const DELETE: u8 = 74;
 const KEEP: u8 = 75;
-/// Profile `i` is button `FIRST + i`, its X `REMOVE + i`.
+/// The edit view's Delete: a button with red words (`Title`'s button drawing).
+pub(super) const DELETE_ASK: u8 = 76;
+/// Profile `i` is button `FIRST + i`, its Edit `EDIT + i`.
 const FIRST: u8 = 80;
-const REMOVE: u8 = 90;
+const EDIT: u8 = 90;
 /// ponytail: the first few profiles only; a scrolling list when someone has more.
 const SHOWN: usize = 6;
 pub(super) const NAME_FIELD: crate::clipboard::FieldId = ("splitscreen.profile-name", 0);
@@ -40,6 +42,12 @@ impl Title {
     /// A profile deleted on the picker, for the game to remove its folder. Taken once.
     pub fn take_deleted_profile(&mut self) -> Option<String> {
         self.profile_deleted.take()
+    }
+
+    /// A profile renamed on the picker (before, after), for the game to move its folder. Taken
+    /// once.
+    pub fn take_renamed_profile(&mut self) -> Option<(String, String)> {
+        self.profile_renamed.take()
     }
 
     /// What the joining player chose: a profile's name, or `None` to leave. Taken once.
@@ -73,16 +81,16 @@ impl Title {
             Mode::Profiles { names, taken, .. } => {
                 let mut buttons = Vec::new();
                 for (i, name) in names.iter().take(SHOWN).enumerate() {
-                    // The name, and its X (delete) beside it; not while it plays.
+                    // The name, and its Edit beside it; not while it plays.
                     let (y, free) = (44.0 + i as f32 * 24.0, !taken.contains(name));
                     let pick = button(y, name.clone(), free, FIRST + i as u8);
-                    let remove = Button {
-                        x: x + 180.0,
-                        w: 20.0,
-                        ..button(y, "X".into(), free, REMOVE + i as u8)
+                    let edit = Button {
+                        x: x + 160.0,
+                        w: 40.0,
+                        ..button(y, "Edit".into(), free, EDIT + i as u8)
                     };
-                    buttons.push(Button { w: 176.0, ..pick });
-                    buttons.push(remove);
+                    buttons.push(Button { w: 156.0, ..pick });
+                    buttons.push(edit);
                 }
                 let y = 52.0 + names.len().min(SHOWN) as f32 * 24.0;
                 buttons.push(button(y, "New Profile...".into(), true, NEW));
@@ -94,18 +102,32 @@ impl Title {
                 ));
                 buttons
             }
-            Mode::NewProfile { name, taken, .. } => {
+            Mode::NewProfile {
+                name,
+                taken,
+                names,
+                editing,
+                ..
+            } => {
                 let top = edit_top(h);
                 let name = name.trim();
-                vec![
-                    button(
-                        top + 64.0,
-                        "Create".into(),
-                        valid_name(name) && !taken.iter().any(|t| t.eq_ignore_ascii_case(name)),
-                        CREATE,
-                    ),
+                let label = if editing.is_some() { "Save" } else { "Create" };
+                let ok = valid_name(name)
+                    && !taken.iter().any(|t| t.eq_ignore_ascii_case(name))
+                    // Renamed: not to another profile's name.
+                    && !editing.as_ref().is_some_and(|before| {
+                        names
+                            .iter()
+                            .any(|n| n != before && n.eq_ignore_ascii_case(name))
+                    });
+                let mut buttons = vec![
+                    button(top + 64.0, label.into(), ok, CREATE),
                     button(top + 89.0, lang::get_or("gui.back", "Back"), true, BACK),
-                ]
+                ];
+                if editing.is_some() {
+                    buttons.push(button(top + 120.0, "Delete".into(), true, DELETE_ASK));
+                }
+                buttons
             }
             _ => Vec::new(),
         }
@@ -135,9 +157,24 @@ impl Title {
                 let hint = "LB / RB on your controller: where you play";
                 centered(atlas, batch, hint, 32.0, rgba(160, 160, 160, 255));
             }
-            Mode::NewProfile { name, focused, .. } => {
-                centered(atlas, batch, "New Profile", 20.0, u32::MAX);
+            Mode::NewProfile {
+                name,
+                focused,
+                editing,
+                ..
+            } => {
+                let title = if editing.is_some() {
+                    "Edit Profile"
+                } else {
+                    "New Profile"
+                };
+                centered(atlas, batch, title, 20.0, u32::MAX);
                 let top = edit_top(h);
+                if editing.is_some() {
+                    // Worlds know an offline player by its name.
+                    let note = "Renamed, it starts afresh in worlds it played";
+                    centered(atlas, batch, note, top + 6.0, rgba(160, 160, 160, 255));
+                }
                 batch.text(
                     atlas,
                     "Name (letters, digits, _)",
@@ -179,13 +216,16 @@ impl Title {
                 },
                 _,
             ) => {}
-            (
-                Mode::Profiles {
-                    names, deleting, ..
-                },
-                Some(id),
-            ) if id >= REMOVE => {
-                *deleting = names.get(usize::from(id - REMOVE)).cloned();
+            (Mode::Profiles { names, taken, .. }, Some(id)) if id >= EDIT => {
+                if let Some(before) = names.get(usize::from(id - EDIT)).cloned() {
+                    self.mode = Mode::NewProfile {
+                        name: before.clone(),
+                        focused: true,
+                        names: std::mem::take(names),
+                        taken: std::mem::take(taken),
+                        editing: Some(before),
+                    };
+                }
             }
             (Mode::Profiles { names, .. }, Some(id)) if id >= FIRST => {
                 self.profile_choice = names.get(usize::from(id - FIRST)).cloned().map(Some);
@@ -196,11 +236,28 @@ impl Title {
                     focused: true,
                     names: std::mem::take(names),
                     taken: std::mem::take(taken),
+                    editing: None,
                 };
             }
             (Mode::Profiles { .. }, Some(CANCEL)) => self.profile_choice = Some(None),
             (Mode::NewProfile { .. }, Some(CREATE)) => self.confirm_profile(),
             (Mode::NewProfile { .. }, Some(BACK)) => self.profile_back(),
+            // Delete, while editing: "Delete it?", asked first.
+            (
+                Mode::NewProfile {
+                    names,
+                    taken,
+                    editing: Some(before),
+                    ..
+                },
+                Some(DELETE_ASK),
+            ) => {
+                self.mode = Mode::Profiles {
+                    names: std::mem::take(names),
+                    taken: std::mem::take(taken),
+                    deleting: Some(before.clone()),
+                };
+            }
             (Mode::NewProfile { focused, .. }, None) => {
                 *focused = y >= edit_top(h) + 39.0
                     && y < edit_top(h) + 59.0
@@ -210,12 +267,44 @@ impl Title {
         }
     }
 
-    /// Enter on the name: make the profile, if the name will do.
+    /// Create or Save (or Enter on the name), if the name will do: a new profile plays; an
+    /// edited one is renamed, back on the list.
     pub(super) fn confirm_profile(&mut self) {
-        if let Mode::NewProfile { name, taken, .. } = &self.mode {
-            let name = name.trim();
-            if valid_name(name) && !taken.iter().any(|t| t.eq_ignore_ascii_case(name)) {
-                self.profile_choice = Some(Some(name.to_owned()));
+        let (w, h) = (0.0, 0.0);
+        if !self
+            .profile_buttons(w, h)
+            .iter()
+            .any(|b| b.id == CREATE && b.enabled)
+        {
+            return;
+        }
+        let Mode::NewProfile {
+            name,
+            names,
+            taken,
+            editing,
+            ..
+        } = &mut self.mode
+        else {
+            return;
+        };
+        let name = name.trim().to_owned();
+        match editing.take() {
+            None => self.profile_choice = Some(Some(name)),
+            Some(before) => {
+                let mut names = std::mem::take(names);
+                if name != before {
+                    for n in names.iter_mut().filter(|n| **n == before) {
+                        n.clone_from(&name);
+                    }
+                    names.sort_by_key(|n| n.to_lowercase());
+                    self.profile_renamed = Some((before, name));
+                }
+                self.mode = Mode::Profiles {
+                    names,
+                    taken: std::mem::take(taken),
+                    deleting: None,
+                };
             }
         }
     }

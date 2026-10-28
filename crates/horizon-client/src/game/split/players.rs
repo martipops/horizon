@@ -170,6 +170,29 @@ impl<'a> Split<'a> {
                     log::warn!("Horizon: splitscreen: deleting profile {name}: {e}");
                 }
             }
+            // A profile renamed on the picker: its folder moves (not one playing now, not onto
+            // another profile's).
+            let renamed = self.guests[i]
+                .game
+                .title
+                .as_mut()
+                .and_then(|t| t.take_renamed_profile());
+            if let Some((before, after)) = renamed.filter(|(b, a)| {
+                let valid = horizon_client::title::valid_profile_name;
+                valid(b) && valid(a) && !self.taken().contains(b)
+            }) && let Ok(folder) = Self::folder()
+            {
+                let profiles = folder.join("profiles");
+                // A case change only is the same folder on some systems: no "already there".
+                let clash = !after.eq_ignore_ascii_case(&before) && profiles.join(&after).exists();
+                let moved = match clash {
+                    true => Err(std::io::Error::other("a profile has that name")),
+                    false => std::fs::rename(profiles.join(&before), profiles.join(&after)),
+                };
+                if let Err(e) = moved {
+                    log::warn!("Horizon: splitscreen: renaming profile {before} to {after}: {e}");
+                }
+            }
             let choice = match self.guests[i].name {
                 None => self.guests[i]
                     .game
