@@ -5,6 +5,7 @@
 //! splitscreen is on and it is open, and takes `apply` and `identify`.
 use crate::{
     extras::{SPLIT_THREE, SPLIT_TWO},
+    gamepad::Button as PadButton,
     graphics_style::STYLE,
     hud::{HudAtlas, HudBatch, rgba},
     split_layout::{Draft, Monitor, Placement, Spot, Warning},
@@ -39,8 +40,19 @@ pub struct SplitUi {
     moved: Option<Spot>,
     /// A tile held by the mouse: whose, and where the pointer is (`None` until it moves).
     drag: Option<(usize, Option<(f32, f32)>)>,
-    /// The screen's size at the last press (a release doesn't say).
-    size: (f32, f32),
+    /// A player picked up with the controller (A), moved with the D-pad.
+    held: Option<Held>,
+    /// The screen's size: at the last draw (the options screen sets it) or press.
+    pub(crate) size: (f32, f32),
+}
+
+/// A player picked up with the controller: where it could go, the one picked so far, and the
+/// draft with it there (the map shows it).
+struct Held {
+    player: usize,
+    spots: Vec<(String, Spot)>,
+    at: Option<usize>,
+    preview: Option<Draft>,
 }
 
 /// What a press lands on.
@@ -115,10 +127,82 @@ impl SplitUi {
         self.selected = None;
         self.apply = None;
         self.drag = None;
+        self.held = None;
     }
 
+    /// The draft shown: with a held player where the D-pad put it, else the changes so far,
+    /// else the arrangement now.
     fn draft(&self) -> Option<&Draft> {
-        self.edit.as_ref().or(self.live.as_ref())
+        let preview = self.held.as_ref().and_then(|h| h.preview.as_ref());
+        preview.or(self.edit.as_ref()).or(self.live.as_ref())
+    }
+
+    /// The controller (`pad_menu`), A at `at`: on a player's tile it may move, picks it up. True
+    /// when it did (the press is taken).
+    pub fn pad_pick_up(&mut self, at: (f32, f32)) -> bool {
+        let (w, h) = self.size;
+        let hit = self
+            .buttons(w, h)
+            .into_iter()
+            .rev()
+            .find(|([x, y, bw, bh], _, _, active)| *active && ui::hovered(at, *x, *y, *bw, *bh));
+        let Some((_, _, Target::Player(i), _)) = hit else {
+            return false;
+        };
+        self.selected = Some(i);
+        let spots = self.spots();
+        self.held = Some(Held {
+            player: i,
+            spots,
+            at: None,
+            preview: None,
+        });
+        true
+    }
+
+    /// The controller while a player is held: the D-pad picks where it goes (the map shows it
+    /// there), A drops it there (into the draft), B puts it back. True when the button was taken
+    /// (every button is, while one is held).
+    pub fn pad_button(&mut self, button: PadButton) -> bool {
+        let Some(held) = &self.held else {
+            return false;
+        };
+        match button {
+            PadButton::DPadLeft
+            | PadButton::DPadUp
+            | PadButton::DPadRight
+            | PadButton::DPadDown => {
+                let n = held.spots.len();
+                if n == 0 {
+                    return true;
+                }
+                let back = matches!(button, PadButton::DPadLeft | PadButton::DPadUp);
+                let next = match held.at {
+                    None if back => n - 1,
+                    None => 0,
+                    Some(k) if back => (k + n - 1) % n,
+                    Some(k) => (k + 1) % n,
+                };
+                let (player, spot) = (held.player, held.spots[next].1.clone());
+                let preview = self.edit.clone().or(self.live.clone()).map(|mut draft| {
+                    draft.place_player(player, spot);
+                    draft
+                });
+                if let Some(held) = &mut self.held {
+                    held.at = Some(next);
+                    held.preview = preview;
+                }
+            }
+            PadButton::South => {
+                let held = self.held.take().expect("held");
+                if let Some(k) = held.at {
+                    self.place(held.player, held.spots[k].1.clone());
+                }
+            }
+            PadButton::East => self.held = None,
+            _ => {}
+        }
+        true
     }
 
     /// The draft to change: the changes so far, else the arrangement now.
@@ -504,7 +588,21 @@ impl SplitUi {
     /// What to do next, and the warnings.
     fn draw_notes(&self, batch: &mut HudBatch, atlas: &HudAtlas) {
         let (w, h) = (batch.width, batch.height);
+        let held = self.held.as_ref().map(|h| {
+            let who = self
+                .names
+                .get(h.player)
+                .map_or("this player", String::as_str);
+            match h.at {
+                Some(k) => format!(
+                    "{who} to {}: A drops it here, B puts it back.",
+                    h.spots[k].0
+                ),
+                None => format!("{who} picked up: the D-pad picks where, A drops, B puts it back."),
+            }
+        });
         let note = match self.selected {
+            _ if held.is_some() => held.unwrap_or_default(),
             None if self.host => "Click a player, or drag it to a window or a monitor.".to_owned(),
             None => "Click yourself, or drag yourself to a window or a monitor.".to_owned(),
             Some(_) if self.edit.is_some() => "Apply to play this way, Revert to undo.".to_owned(),
@@ -527,6 +625,10 @@ impl SplitUi {
     /// A press at `(x, y)` on a screen `w` x `h`, or the mouse moving with it held (`drag`).
     pub fn click(&mut self, (x, y): (f32, f32), (w, h): (f32, f32), drag: bool) -> Click {
         self.size = (w, h);
+        // The mouse takes over from a player held with the controller.
+        if !drag {
+            self.held = None;
+        }
         if drag {
             if let Some((_, at)) = &mut self.drag {
                 *at = Some((x, y));
@@ -769,6 +871,51 @@ mod tests {
         ui.live = ui.apply.take();
         press(&mut ui, "P2");
         assert_eq!(ui.selected, Some(1));
+    }
+
+    fn centre(ui: &SplitUi, label: &str) -> (f32, f32) {
+        let [x, y, w, h] = rect(ui, label);
+        (x + w / 2.0, y + h / 2.0)
+    }
+
+    #[test]
+    fn a_controller_picks_a_player_up_moves_it_and_drops_it() {
+        let mut ui = screen(2);
+        ui.size = SIZE;
+        assert!(ui.pad_pick_up(centre(&ui, "P2")));
+        // Nothing moves until the D-pad does; then the map shows it there (New window first).
+        assert_eq!(ui.draft().unwrap().players, [1, 1]);
+        assert!(ui.pad_button(PadButton::DPadRight));
+        assert_eq!(ui.draft().unwrap().players, [1, 2]);
+        assert_eq!(ui.edit, None);
+        // Right again: filling the TV; A drops it there, into the draft.
+        assert!(ui.pad_button(PadButton::DPadRight));
+        assert!(ui.pad_button(PadButton::South));
+        let draft = ui.edit.as_ref().unwrap();
+        assert_eq!(draft.players, [1, 2]);
+        assert_eq!(draft.windows[1].placement, Placement::Fill("TV".into()));
+        // Not held any more: the buttons go back to the menu.
+        assert!(!ui.pad_button(PadButton::DPadRight));
+    }
+
+    #[test]
+    fn b_puts_a_held_player_back() {
+        let mut ui = screen(2);
+        ui.size = SIZE;
+        assert!(ui.pad_pick_up(centre(&ui, "P2")));
+        ui.pad_button(PadButton::DPadRight);
+        assert!(ui.pad_button(PadButton::East));
+        assert_eq!(ui.edit, None);
+        assert_eq!(ui.draft().unwrap().players, [1, 1]);
+    }
+
+    #[test]
+    fn another_player_picks_up_only_itself() {
+        let mut ui = screen(3);
+        ui.size = SIZE;
+        (ui.host, ui.me) = (false, 1);
+        assert!(!ui.pad_pick_up(centre(&ui, "P3")));
+        assert!(ui.pad_pick_up(centre(&ui, "P2")));
     }
 
     #[test]

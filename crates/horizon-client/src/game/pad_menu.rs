@@ -363,6 +363,21 @@ impl Game<'_> {
             }
             return self.handle_option_events(vec![Event::Changed]);
         }
+        // Splitscreen Setup: A picks up the focused player's tile, then the D-pad moves it, A
+        // drops it, B puts it back (`split_ui`).
+        if self.screen == Screen::Options && self.ui.options.page() == Page::SplitSetup {
+            let setup = &mut self.ui.options.split_setup;
+            if setup.pad_button(button) {
+                return Ok(());
+            }
+            if button == Button::South
+                && self.pad_focusing()
+                && let Some(focus) = self.pad.menu.focus
+                && self.ui.options.split_setup.pad_pick_up(focus.center())
+            {
+                return Ok(());
+            }
+        }
         // The on-screen keyboard takes every button while it is open.
         if let Some(keyboard) = self.pad.menu.osk.as_mut() {
             if let Some(out) = keyboard.button(button) {

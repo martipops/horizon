@@ -490,6 +490,30 @@ def scenario_setup():
         check('Done: P2 plays again', 'Apply' in g.labels(2), False)
     finally:
         g.quit()
+    print('setup: with the controller, A picks a player up, the D-pad moves it, A drops it')
+    g = Game(2)
+    try:
+        w, h = g.size(1)
+        g.setup(1)
+
+        def tap(button):
+            g.ctl(1, 'pad', button, 'tap')
+            time.sleep(0.35)
+
+        def apply_on():
+            return [x.get('enabled') for x in g.ctl(1, 'ui')['widgets'] if x.get('label') == 'Apply']
+        tap('right')  # the focus starts on P1's tile
+        tap('right')  # P2's
+        tap('south')  # picked up
+        tap('right')  # shown in a new window
+        check('held: nothing in the draft yet', apply_on(), [False])
+        tap('south')  # dropped there
+        check('dropped: in the draft', apply_on(), [True])
+        g.press(1, 'Apply')
+        g.wait(lambda: g.size(1) == (2 * w, h), 'P1 alone in Window 1', seconds=15)
+        check('P2 in a new window, P1 alone', (g.size(1), g.size(2) != (w, h)), ((2 * w, h), True))
+    finally:
+        g.quit()
 
 
 @contextlib.contextmanager

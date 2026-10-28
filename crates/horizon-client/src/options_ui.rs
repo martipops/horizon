@@ -2114,6 +2114,7 @@ impl OptionsUi {
         }
         if self.page() == Page::SplitSetup {
             self.split_setup.on = s.extras.splitscreen;
+            self.split_setup.size = (batch.width, batch.height);
             self.split_setup.draw(batch, atlas, cursor, self.in_world);
             return;
         }
