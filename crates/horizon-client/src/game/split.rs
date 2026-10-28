@@ -297,13 +297,17 @@ impl<'a> Split<'a> {
         }
     }
 
-    /// Player `i`'s seat (P1's is 1) and name ("choosing" while it picks its profile).
+    /// Player `i`'s seat (P1's is 1) and the name players see ("New player" while it picks its
+    /// profile). Screens show the name; the seat stays internal.
     fn who(&self, i: usize) -> (usize, String) {
         match i {
             0 => (1, self.p1_name.0.clone()),
             _ => {
                 let g = &self.guests[i - 1];
-                (g.seat, g.name.clone().unwrap_or_else(|| "choosing".into()))
+                (
+                    g.seat,
+                    g.name.clone().unwrap_or_else(|| "New player".into()),
+                )
             }
         }
     }

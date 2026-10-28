@@ -171,9 +171,9 @@ impl<'a> Split<'a> {
             Hold::Ask => {
                 self.host.split_hud.prompt = Some(Prompt {
                     ask: Ask::Controller,
-                    title: "P1's controller".to_owned(),
+                    title: "Your controller".to_owned(),
                     choices: vec![
-                        (Button::South, "Remove it from P1"),
+                        (Button::South, "Hand it to a new player"),
                         (Button::North, "Setup"),
                         // LB and RB both move (back and forth): "LB RB Move".
                         (Button::LeftBumper, ""),
@@ -366,7 +366,8 @@ impl<'a> Split<'a> {
             id,
             uuid,
         });
-        g.game.split_hud.prompt = Some(lost_prompt(g.seat));
+        let name = g.name.as_deref().unwrap_or("New player");
+        g.game.split_hud.prompt = Some(lost_prompt(name));
     }
 
     /// Player in `seat` plays with controller `id` (back, or another): its question goes.

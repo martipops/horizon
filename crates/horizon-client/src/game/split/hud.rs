@@ -32,10 +32,10 @@ pub(super) enum Ask {
 }
 
 /// The question on a waiting player's view.
-pub(super) fn lost_prompt(seat: usize) -> Prompt {
+pub(super) fn lost_prompt(name: &str) -> Prompt {
     Prompt {
         ask: Ask::Lost,
-        title: format!("P{seat}: controller disconnected"),
+        title: format!("{name}: controller disconnected"),
         choices: vec![(Button::South, "Use another"), (Button::East, "Leave")],
     }
 }

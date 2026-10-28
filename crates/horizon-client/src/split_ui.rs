@@ -170,7 +170,7 @@ impl SplitUi {
                     .names
                     .get(j)
                     .cloned()
-                    .unwrap_or_else(|| format!("P{}", j + 1));
+                    .unwrap_or_else(|| format!("Player {}", j + 1));
                 spots.push((format!("Swap with {name}"), Drop::Swap(j)));
             }
         }
@@ -424,7 +424,7 @@ impl SplitUi {
                     .names
                     .get(i)
                     .cloned()
-                    .unwrap_or_else(|| format!("P{}", i + 1));
+                    .unwrap_or_else(|| format!("Player {}", i + 1));
                 // The part no later window covers: what can be seen and pressed.
                 let at = windows.iter().position(|(n, _)| *n == tiles[i].0);
                 let covers = at.map_or(&[][..], |k| &windows[k + 1..]);
@@ -463,8 +463,8 @@ impl SplitUi {
             let two = SPLIT_TWO[usize::from(draft.two.min(2))];
             let three = SPLIT_THREE[usize::from(draft.three.min(2))];
             let layouts = vec![
-                (144.0, format!("Two: {two}"), Target::Two, true),
-                (152.0, format!("Three: {three}"), Target::Three, true),
+                (144.0, format!("2 sharing: {two}"), Target::Two, true),
+                (152.0, format!("3 sharing: {three}"), Target::Three, true),
                 switch,
             ];
             row(&mut out, h - 2.0 * ROW - 3.0, layouts);
@@ -478,6 +478,35 @@ impl SplitUi {
         ];
         row(&mut out, h - 27.0, footer);
         out
+    }
+
+    /// What a button does, for the line under the map while the pointer (or the controller's
+    /// focus) is on it; for one that can't be pressed, why not.
+    fn help(&self, (_, label, target, active): &Button) -> Option<String> {
+        let me = self.names.get(self.me).map_or("you", String::as_str);
+        Some(match target {
+            Target::Player(_) if *active => format!("Click or drag {label} to move them."),
+            Target::Player(_) => format!("Only {me}'s own place can be changed here."),
+            Target::Move(_) => return None,
+            Target::Preset(Preset::Here) => "Everyone shares Window 1.".to_owned(),
+            Target::Preset(Preset::DeskTv) if *active => {
+                "You stay here; everyone else shares a window filling the other monitor.".to_owned()
+            }
+            Target::Preset(Preset::DeskTv) => "Desk + TV needs a second monitor.".to_owned(),
+            Target::Preset(Preset::Apart) => {
+                "A window each, filling the other monitors first.".to_owned()
+            }
+            Target::Two => {
+                "How 2 players share a window. Auto: side by side if it's wide.".to_owned()
+            }
+            Target::Three => "How 3 players share a window.".to_owned(),
+            Target::Switch => "Splitscreen for this computer, on or off.".to_owned(),
+            Target::Identify => "Each player's view shows which window it is in.".to_owned(),
+            Target::Revert if *active => "Undo the changes not applied yet.".to_owned(),
+            Target::Apply if *active => "Play the way the map shows.".to_owned(),
+            Target::Revert | Target::Apply => "Nothing changed yet.".to_owned(),
+            Target::Done => return None,
+        })
     }
 
     fn warnings(&self) -> Vec<String> {
@@ -538,7 +567,7 @@ impl SplitUi {
         let buttons = self.buttons(w, h);
         let yellow = rgba(255, 255, 85, 255);
         // Each window, then its players: a window over another covers it.
-        for (number, [x, y, ww, wh]) in windows {
+        for &(number, [x, y, ww, wh]) in &windows {
             batch.fill(atlas, x, y, ww, wh, rgba(255, 255, 85, 200));
             batch.fill(
                 atlas,
@@ -548,14 +577,17 @@ impl SplitUi {
                 wh - 2.0,
                 rgba(40, 40, 40, 230),
             );
-            let label = Text::literal(format!("Window {number}"));
-            batch.text_styled(atlas, &label, x + 3.0, y - 10.0, yellow, true);
             for b in buttons
                 .iter()
                 .filter(|b| matches!(b.2, Target::Player(i) if tiles[i].0 == number))
             {
                 self.draw_button(batch, atlas, cursor, b);
             }
+        }
+        // The windows' names over everything, so another window's tiles never hide them.
+        for (number, [x, y, _, _]) in windows {
+            let label = Text::literal(format!("Window {number}"));
+            batch.text_styled(atlas, &label, x + 3.0, y - 10.0, yellow, true);
         }
         for b in buttons.iter().filter(|b| !matches!(b.2, Target::Player(_))) {
             self.draw_button(batch, atlas, cursor, b);
@@ -582,7 +614,7 @@ impl SplitUi {
             let label = Text::literal(format!("Monitor {}", n + 1));
             batch.text_styled(atlas, &label, x + 1.0, y + mh + 2.0, grey, true);
         }
-        self.draw_notes(batch, atlas);
+        self.draw_notes(batch, atlas, cursor, &buttons);
     }
 
     fn draw_button(
@@ -613,8 +645,14 @@ impl SplitUi {
         );
     }
 
-    /// What to do next, and the warnings.
-    fn draw_notes(&self, batch: &mut HudBatch, atlas: &HudAtlas) {
+    /// What to do next (or what the button under the pointer does), and the warnings.
+    fn draw_notes(
+        &self,
+        batch: &mut HudBatch,
+        atlas: &HudAtlas,
+        cursor: (f32, f32),
+        buttons: &[Button],
+    ) {
         let (w, h) = (batch.width, batch.height);
         let held = self.held.as_ref().map(|h| {
             let who = self
@@ -629,8 +667,16 @@ impl SplitUi {
                 None => format!("{who} picked up: the D-pad picks where, A drops, B puts it back."),
             }
         });
+        // The pointer's button; disabled ones too, to say why. Not the selected player's tile:
+        // the pointer is still on it after the click, and the question about it matters more.
+        let help = buttons
+            .iter()
+            .filter(|b| ui::hovered(cursor, b.0[0], b.0[1], b.0[2], b.0[3]))
+            .filter(|b| !matches!(b.2, Target::Player(i) if Some(i) == self.selected))
+            .find_map(|b| self.help(b));
         let note = match self.selected {
             _ if held.is_some() => held.unwrap_or_default(),
+            _ if help.is_some() => help.unwrap_or_default(),
             None if self.host => "Click a player, or drag it to a window or a monitor.".to_owned(),
             None => "Click yourself, or drag yourself to a window or a monitor.".to_owned(),
             Some(_) if self.edit.is_some() => "Apply to play this way, Revert to undo.".to_owned(),
@@ -1041,7 +1087,7 @@ mod tests {
         let mut ui = screen(3);
         press(&mut ui, "Desk + TV");
         assert_eq!(ui.edit.as_ref().unwrap().players, [1, 2, 2]);
-        press(&mut ui, "Two: Auto");
+        press(&mut ui, "2 sharing: Auto");
         assert_eq!(ui.edit.as_ref().unwrap().two, 1);
         press(&mut ui, "Everyone here");
         assert_eq!(ui.edit.as_ref().unwrap().players, [1, 1, 1]);
@@ -1052,6 +1098,13 @@ mod tests {
             !ui.buttons(SIZE.0, SIZE.1)
                 .iter()
                 .any(|b| b.1 == "Desk + TV" && b.3)
+        );
+        // Hovering it says why.
+        let buttons = ui.buttons(SIZE.0, SIZE.1);
+        let tv = buttons.iter().find(|b| b.1 == "Desk + TV").unwrap();
+        assert_eq!(
+            ui.help(tv).as_deref(),
+            Some("Desk + TV needs a second monitor.")
         );
     }
 

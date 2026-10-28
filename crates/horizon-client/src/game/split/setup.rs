@@ -125,9 +125,9 @@ impl<'a> Split<'a> {
             .map(|i| {
                 let (seat, who) = self.who(i);
                 if self.lost.iter().any(|l| l.seat == seat) {
-                    format!("P{seat} {who} (no controller)")
+                    format!("{who} (no controller)")
                 } else {
-                    format!("P{seat} {who}")
+                    who
                 }
             })
             .collect();

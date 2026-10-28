@@ -75,7 +75,7 @@ class Game:
         try:
             self.ctl(1, 'launch', *(['--wait'] if ready else []), '--world', 'Split', '--creative',
                      '--resources', str(RESOURCES), '--width', str(WIDTH), '--height', str(HEIGHT),
-                     '--render-distance', '4',
+                     '--render-distance', '4', '--name', 'P1',
                      # Another scenario's windows closing take the focus: no pause on losing it.
                      '--no-pause', *args)
             if not ready:
@@ -167,7 +167,7 @@ class Game:
         """Move player `player` to `where` ('Window 2', 'New window', 'Fill Monitor 2') on player
         `by`'s Setup screen and Apply; a window not open yet is a new one."""
         self.setup(by)
-        self.press(by, f'P{player} ')
+        self.press(by, f'P{player}')
         self.press(by, where if where in self.labels(by) else 'New window')
         self.press(by, 'Apply')
         self.close_page(by)
@@ -246,7 +246,7 @@ def scenario_three():
         ]
         for name, want in layouts:
             g.setup()
-            g.press(1, 'Three:')
+            g.press(1, '3 sharing:')
             g.press(1, 'Apply')
             g.close_page()
             got = g.settle([1, 2, 3], want) if want else g.settle([1, 2, 3], [g.size(1)] * 3)
@@ -284,11 +284,20 @@ def scenario_live():
 
 
 def scenario_picker():
-    print('picker: RB to a new window, then a new profile')
-    g = Game(2, pick=True)
+    print('picker: delete a profile, RB to a new window, then a new profile')
+
+    def seed(home):
+        (home / 'splitscreen/profiles/Zed').mkdir(parents=True)
+
+    g = Game(2, pick=True, seed=seed)
     try:
-        g.wait(lambda: (g.ctl(2, 'state').get('menu') or {}).get('mode') == 'splitscreen-profiles',
-               'the picker')
+        menu = lambda: g.ctl(2, 'state').get('menu') or {}  # noqa: E731
+        g.wait(lambda: menu().get('mode') == 'splitscreen-profiles', 'the picker')
+        check('Zed on the list', menu().get('profiles'), ['Zed'])
+        g.ctl(2, 'click-button', 'X')
+        g.ctl(2, 'click-button', 'Delete')
+        g.wait(lambda: not (g.home / 'splitscreen/profiles/Zed').exists(), "Zed's folder gone", seconds=5)
+        check('Zed deleted', menu().get('profiles'), [])
         half = g.size(1)  # P2 picks in Window 1 beside P1
         g.ctl(2, 'pad', 'rb', 'tap')  # Window 1 -> New window
         g.settle([1], [(2 * half[0], half[1])])
@@ -377,9 +386,8 @@ def scenario_bumpers():
         check('still halves of Window 1', g.settle([1, 2], [half, half]), [half, half])
         # Who is first shows on the Setup screen's map.
         g.setup(1)
-        tiles = {w['label'].split()[0]: w['bounds'] for w in g.ctl(1, 'ui')['widgets']
-                 if w.get('label', '').startswith('P')}
-        check('Bea (P2) before P1: left of it', tiles['P2'][0] < tiles['P1'][0], True)
+        tiles = {w['label']: w['bounds'] for w in g.ctl(1, 'ui')['widgets']}
+        check('Bea before P1: left of it', tiles['Bea'][0] < tiles['P1'][0], True)
         g.press(1, 'Done')
     finally:
         g.quit()
@@ -452,7 +460,7 @@ def scenario_monitor():
     try:
         half = g.size(1)
         g.setup(1)
-        g.press(1, 'P2 ')
+        g.press(1, 'P2')
         fill = [l for l in g.labels(1) if l.startswith('Fill Monitor')]
         if not fill:
             print('  skip one monitor only')
@@ -544,7 +552,7 @@ def scenario_setup():
         def apply_on():
             return [x.get('enabled') for x in g.ctl(1, 'ui')['widgets'] if x.get('label') == 'Apply']
         # The map's tiles come with the game's first sync of the screen.
-        g.wait(lambda: any(l.startswith('P2 ') for l in g.labels(1)), "P2's tile", seconds=5)
+        g.wait(lambda: any(l == 'P2' for l in g.labels(1)), "P2's tile", seconds=5)
         tap('right')  # the focus starts on P1's tile
         tap('right')  # P2's
         tap('south')  # picked up
