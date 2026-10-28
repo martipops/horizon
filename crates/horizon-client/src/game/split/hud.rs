@@ -18,7 +18,9 @@ pub(in crate::game) struct Hud {
 pub(super) struct Notice {
     title: String,
     body: String,
-    shown: Option<Instant>,
+    /// When it was raised: it goes that long after, drawn or not (a notice raised on the way
+    /// out of a world must not wait for the next one).
+    raised: Instant,
 }
 
 impl Notice {
@@ -26,7 +28,7 @@ impl Notice {
         Self {
             title: title.into(),
             body: body.into(),
-            shown: None,
+            raised: Instant::now(),
         }
     }
 }
@@ -182,8 +184,7 @@ impl Game<'_> {
         let Some(notice) = &mut self.split_hud.notice else {
             return;
         };
-        let shown = *notice.shown.get_or_insert_with(Instant::now);
-        if shown.elapsed() > shown_for {
+        if notice.raised.elapsed() > shown_for {
             self.split_hud.notice = None;
             return;
         }

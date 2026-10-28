@@ -278,6 +278,11 @@ impl<'a> Split<'a> {
         let p1_left = self.host.title.is_some()
             || (self.host.integrated.is_none() && self.host.remote.is_none());
         let before = self.guests.len();
+        // Out of the world: the others drop with it, which is no news (their connections may
+        // have gone a frame before P1's: a notice raised then is wrong).
+        if p1_left {
+            self.host.split_hud.notice = None;
+        }
         for k in (0..self.guests.len()).rev() {
             let g = &self.guests[k];
             // A player picking a profile has no connection yet.
