@@ -161,6 +161,9 @@ ROWS = [
     ('mode', 'Mode', ['creative', 'survival']),
     ('splitscreen', 'Splitscreen setting', ['on', 'off']),
     ('test_players', 'Extra players without controllers', [str(n) for n in range(8)]),
+    # They stop at the profile picker (click into a view to give it the mouse), or join at once
+    # as P2, P3...
+    ('pick', 'Extra players pick a profile', ['on', 'off']),
     ('size', 'Window', SIZES),
     ('audio', 'Audio', ['on', 'off']),
     ('home', 'Game folder', ['dev/home', 'fresh (deleted after)']),
@@ -173,7 +176,7 @@ ROWS = [
     # game's own profile folders.
     ('profiles', 'Splitscreen profiles', ['launcher', 'game folders']),
 ]
-DEFAULTS = {'world': 'Splitscreen', 'mode': 'creative', 'splitscreen': 'on', 'test_players': '0',
+DEFAULTS = {'world': 'Splitscreen', 'mode': 'creative', 'splitscreen': 'on', 'test_players': '0', 'pick': 'on',
             'size': '1600x900', 'audio': 'on', 'home': 'dev/home', 'build': 'on',
             'stats': 'off', 'framerate': 'as set in game', 'account': OFFLINE, 'profiles': 'launcher'}
 # Windows curses sends the keypad's Enter as PADENTER.
@@ -235,8 +238,11 @@ def launch(c):
                XDG_DATA_HOME=str(home / '.xdg-data'), XDG_CONFIG_HOME=str(home / '.xdg-config'),
                HORIZON_LAUNCHER_NO_SELF_UPDATE='1')
     env.pop('HORIZON_SPLIT', None)
+    env.pop('HORIZON_SPLIT_PICK', None)
     if c['test_players'] != '0':
         env['HORIZON_SPLIT'] = str(int(c['test_players']) + 1)
+        if c['pick'] == 'on':
+            env['HORIZON_SPLIT_PICK'] = '1'
     if c['stats'] == 'on':
         env['HORIZON_SPLIT_STATS'] = '1'
     if c['audio'] == 'off':
