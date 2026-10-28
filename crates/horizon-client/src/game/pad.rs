@@ -86,7 +86,7 @@ mod hardware {
 
     pub(in crate::game) type PadId = usize;
     #[derive(Default)]
-    pub(in crate::game) struct PadRouter;
+    pub(in crate::game) struct PadRouter {}
     impl PadRouter {
         pub(in crate::game) fn events(&mut self) -> Vec<super::PadEvent> {
             Vec::new()
