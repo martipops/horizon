@@ -157,6 +157,13 @@ pub enum Placement {
 /// A new free window's size, in logical pixels.
 pub const NEW_WINDOW: [f64; 2] = [854.0, 480.0];
 
+/// How far window `number` opens right and down of the centre, in logical pixels: Window 2
+/// centred, each next one a step further, as systems cascade new windows (back to the centre
+/// after six), so new windows never open exactly on one another.
+pub fn cascade(number: u8) -> f64 {
+    f64::from(number.saturating_sub(2) % 6) * 32.0
+}
+
 /// A window: its number (1 is the game's own) and where it is.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Window {
@@ -333,8 +340,9 @@ impl Draft {
                         (at, m.scale, at[2] / f64::from(m.size[0].max(1)))
                     });
                     let size = NEW_WINDOW.map(|v| (v * scale).round() as u32);
-                    let x = at[0] + (at[2] - f64::from(size[0]) * k) / 2.0;
-                    let y = at[1] + (at[3] - f64::from(size[1]) * k) / 2.0;
+                    let step = cascade(w.number) * scale * k;
+                    let x = at[0] + (at[2] - f64::from(size[0]) * k) / 2.0 + step;
+                    let y = at[1] + (at[3] - f64::from(size[1]) * k) / 2.0 + step;
                     Some(([x as i32, y as i32], size))
                 }
                 Placement::Fill(name) if w.number != 1 && name == main => None,
@@ -522,6 +530,19 @@ mod tests {
         let views = tv.preview(&m, "Built-in");
         assert_eq!(views[0], (0, [0, 0], size(2000, 1200)));
         assert_eq!(views[1], (1, [0, 0], size(3840, 1080)));
+    }
+
+    #[test]
+    fn new_windows_cascade_instead_of_stacking() {
+        let m = monitors();
+        let mut d = here(3);
+        d.place_player(1, Spot::New);
+        d.place_player(2, Spot::New);
+        let rects = d.rects(&m, "Built-in");
+        let ((a, _), (b, _)) = (rects[1].unwrap(), rects[2].unwrap());
+        // Window 3 a step right and down of Window 2, on the same diagonal.
+        assert!(b[0] > a[0] && b[0] - a[0] == b[1] - a[1]);
+        assert_eq!((cascade(2), cascade(3), cascade(8)), (0.0, 32.0, 0.0));
     }
 
     #[test]

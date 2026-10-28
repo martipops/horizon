@@ -20,8 +20,9 @@ pub(super) fn cover(m: &MonitorHandle) -> (winit::dpi::Position, winit::dpi::Siz
     }
 }
 
-/// Where a new 854 x 480 window sits centred on monitor `m`, in `cover`'s units.
-pub(super) fn centred(m: &MonitorHandle) -> winit::dpi::Position {
+/// Where new window `number` (854 x 480) opens on monitor `m`, in `cover`'s units: centred, and
+/// cascaded from the others (`layout::cascade`).
+pub(super) fn centred(m: &MonitorHandle, number: u8) -> winit::dpi::Position {
     let (at, size) = cover(m);
     // The numbers as they are, logical or physical.
     let (at, size) = (at.to_physical::<f64>(1.0), size.to_physical::<f64>(1.0));
@@ -30,8 +31,9 @@ pub(super) fn centred(m: &MonitorHandle) -> winit::dpi::Position {
     } else {
         m.scale_factor()
     };
-    let x = at.x + (size.width - 854.0 * u) / 2.0;
-    let y = at.y + (size.height - 480.0 * u) / 2.0;
+    let step = layout::cascade(number) * u;
+    let x = at.x + (size.width - 854.0 * u) / 2.0 + step;
+    let y = at.y + (size.height - 480.0 * u) / 2.0 + step;
     if cfg!(target_os = "macos") {
         winit::dpi::LogicalPosition::new(x, y).into()
     } else {
@@ -506,7 +508,7 @@ impl<'a> Split<'a> {
                             let attributes =
                                 attributes.with_inner_size(LogicalSize::new(854.0, 480.0));
                             match home {
-                                Some((_, m)) => attributes.with_position(centred(m)),
+                                Some((_, m)) => attributes.with_position(centred(m, *key)),
                                 None => attributes,
                             }
                         }
