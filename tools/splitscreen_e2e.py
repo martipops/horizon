@@ -655,6 +655,26 @@ def scenario_eight():
         g.quit()
 
 
+
+def scenario_pointer():
+    print('pointer: only the player with the keyboard and mouse grabs the pointer')
+    g = Game(2)
+    try:
+        time.sleep(3)
+        grabbed = lambda n: g.ctl(n, 'state').get('pointer_grabbed')  # noqa: E731
+        g.ctl(1, 'mouse', 'left', 'click')
+        time.sleep(0.5)
+        check('P1 plays with the mouse, P2 never grabs it', (grabbed(1), grabbed(2)), (True, False))
+        # P2's menus (its controller) leave P1's pointer alone.
+        g.ctl(2, 'key', 'e', 'tap')
+        time.sleep(0.6)
+        g.ctl(2, 'key', 'esc', 'tap')
+        time.sleep(0.6)
+        check("after P2's inventory: still P1's", (grabbed(1), grabbed(2)), (True, False))
+    finally:
+        g.quit()
+
+
 SCENARIOS = {
     'join': scenario_join,
     'windows': scenario_windows,
@@ -670,6 +690,7 @@ SCENARIOS = {
     'setup': scenario_setup,
     'server': scenario_server,
     'packs': scenario_packs,
+    'pointer': scenario_pointer,
 }
 
 

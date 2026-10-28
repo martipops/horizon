@@ -316,7 +316,9 @@ impl<'a> Split<'a> {
     /// events).
     fn player(&mut self, i: usize) -> Option<(&mut dyn ApplicationHandler, WindowId)> {
         self.turn(i);
+        let focus = self.focus;
         let game = self.game_mut(i)?;
+        game.keyboard_mouse = i == focus;
         let id = game.window.as_ref()?.id();
         Some((game, id))
     }
@@ -428,6 +430,10 @@ impl<'a> Split<'a> {
         self.host.window = Some(main.window.clone());
         self.host.options.offscreen = false;
         self.host.options.paced_by_split = false;
+        // Alone again: the pointer is P1's, its view the whole window.
+        self.focus = 0;
+        self.host.keyboard_mouse = true;
+        self.host.view_at = [0, 0];
         // From the offscreen renderer it took no vsync: P1's settings again.
         self.host.apply_settings();
         self.host.clear_lod();

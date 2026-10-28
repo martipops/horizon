@@ -299,13 +299,14 @@ impl<'a> Split<'a> {
     pub(super) fn relayout(&mut self, event_loop: &ActiveEventLoop) {
         let views = self.views();
         let before = std::mem::replace(&mut self.applied, views);
-        for (i, &(surface, _, size)) in self.applied.clone().iter().enumerate() {
+        for (i, &(surface, at, size)) in self.applied.clone().iter().enumerate() {
             let Some(window) = self.surfaces.get(surface).map(|s| s.window.clone()) else {
                 continue;
             };
             let moved = before.get(i).is_none_or(|b| b.0 != surface);
             if let Some(game) = self.game_mut(i) {
                 into_window(game, window.clone(), moved);
+                game.view_at = at;
             }
             if moved && i == self.focus && before.get(i).is_some() {
                 window.focus_window();

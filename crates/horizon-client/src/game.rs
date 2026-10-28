@@ -1475,6 +1475,11 @@ struct Game<'a> {
     /// The cursor icon the window shows (`widgets::take_cursor` each frame).
     cursor_icon: horizon_client::widgets::Cursor,
     captured: bool,
+    /// Splitscreen: whether this player has the keyboard and mouse (one does; the others never
+    /// grab or free the pointer), and its view's corner in its window (the pointer goes to the
+    /// view's centre). Alone: true, and the window's corner.
+    keyboard_mouse: bool,
+    view_at: [u32; 2],
     /// Splitscreen: what it draws over this player's view (its badge, frame, questions).
     split_hud: split::Hud,
     focused: bool,
@@ -5675,13 +5680,21 @@ impl Game<'_> {
         }
         // The real pointer takes over from an agent's.
         self.agent_pointer = false;
+        // Splitscreen: another player has the pointer; this one's menus leave it alone.
+        if !self.keyboard_mouse {
+            self.captured = false;
+            return;
+        }
         let Some(window) = &self.window else { return };
         let size = self.renderer.as_ref().map_or_else(
             || window.inner_size().into(),
             |r| [r.config.width, r.config.height],
         );
-        let centre =
-            winit::dpi::PhysicalPosition::new(f64::from(size[0]) / 2.0, f64::from(size[1]) / 2.0);
+        let [vx, vy] = self.view_at.map(f64::from);
+        let centre = winit::dpi::PhysicalPosition::new(
+            vx + f64::from(size[0]) / 2.0,
+            vy + f64::from(size[1]) / 2.0,
+        );
         let warp = |window: &Window| {
             let _ = window.set_cursor_position(centre);
         };
@@ -13716,6 +13729,8 @@ impl<'a> Game<'a> {
             cursor: (0.0, 0.0),
             cursor_icon: horizon_client::widgets::Cursor::Arrow,
             captured: false,
+            keyboard_mouse: true,
+            view_at: [0, 0],
             split_hud: Default::default(),
             focused: true,
             modifiers: winit::keyboard::ModifiersState::empty(),
