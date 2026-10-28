@@ -164,13 +164,6 @@ pub fn forget(dir: &Path, name: &str) {
     let _ = std::fs::remove_file(cape);
 }
 
-/// `before`'s skin and cape files, now `after`'s (a renamed offline name).
-pub fn rename(dir: &Path, before: &str, after: &str) {
-    let (from, to) = (files(dir, before), files(dir, after));
-    let _ = std::fs::rename(from.0, to.0);
-    let _ = std::fs::rename(from.1, to.1);
-}
-
 /// The variables the game gets for `name`'s look.
 pub fn env(dir: &Path, name: &str, look: &Look) -> Vec<(&'static str, String)> {
     let (skin, cape) = files(dir, name);

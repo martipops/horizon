@@ -710,7 +710,10 @@ impl Launcher {
                     if let Some(tag) = self.starting_client.take() {
                         let mut cmd = backend::client_command(&tag);
                         let (file, offline) = match session {
-                            Ok(pass) => pass,
+                            Ok(pass) => {
+                                cmd.envs(pass.env);
+                                (pass.file, pass.offline)
+                            }
                             Err(account::NoOwner) => {
                                 self.owner = Some(false);
                                 self.owner_screen_open = true;

@@ -107,8 +107,6 @@ enum AccountCmd {
     ForgetOffline { name: String },
     /// Keep an offline name without playing as it (a splitscreen player's)
     AddOffline { name: String },
-    /// Rename one of your offline names; its skin and cape go with it
-    RenameOffline { name: String, to: String },
     /// Show or set an offline name's skin and cape: a 64x64 (or 64x32) skin PNG, a 64x32 cape
     /// PNG, the model. Kept by the launcher and given to the game when that name plays
     Skin {
@@ -1592,11 +1590,6 @@ fn account_command(action: AccountCmd, as_json: bool) -> Result<(), String> {
             let kept = accounts.keep_offline(account::store(), &name)?;
             accounts.save()?;
             println!("Kept the offline name {kept}.");
-        }
-        AccountCmd::RenameOffline { name, to } => {
-            accounts.rename_offline(&name, &to, &horizon_launcher::skins::dir())?;
-            accounts.save()?;
-            println!("Renamed the offline name {name} to {to}.");
         }
     }
     Ok(())

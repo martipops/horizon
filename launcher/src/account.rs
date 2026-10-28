@@ -901,44 +901,6 @@ impl Accounts {
         self.add_offline(name)
     }
 
-    /// Renames an offline name: its look, its skin and cape files and, if it plays, who plays.
-    pub fn rename_offline(&mut self, name: &str, to: &str, skins_dir: &Path) -> Result<(), String> {
-        let to = to.trim();
-        if !valid_offline_name(to) {
-            return Err(format!(
-                "{to}: an offline name is 3 to 16 letters, digits or _"
-            ));
-        }
-        let Some(i) = self
-            .offline
-            .iter()
-            .position(|n| n.eq_ignore_ascii_case(name))
-        else {
-            return Err(format!("No offline name {name}."));
-        };
-        let before = self.offline[i].clone();
-        if self
-            .offline
-            .iter()
-            .any(|n| n.eq_ignore_ascii_case(to) && !n.eq_ignore_ascii_case(&before))
-        {
-            return Err(format!("{to} is already one of your offline names."));
-        }
-        self.offline[i] = to.to_string();
-        if let Some(look) = self.looks.remove(&before.to_ascii_lowercase()) {
-            self.looks.insert(to.to_ascii_lowercase(), look);
-        }
-        crate::skins::rename(skins_dir, &before, to);
-        if self
-            .offline_selected
-            .as_ref()
-            .is_some_and(|n| n.eq_ignore_ascii_case(&before))
-        {
-            self.offline_selected = Some(to.to_string());
-        }
-        Ok(())
-    }
-
     /// Keeps an offline name (once, in any case); returns it as kept.
     fn add_offline(&mut self, name: &str) -> Result<String, String> {
         let name = name.trim();
@@ -1220,9 +1182,20 @@ impl SignIn {
     }
 }
 
+/// What the game about to start gets from the accounts.
+#[derive(Debug, Default)]
+pub struct GameSession {
+    /// The playing account's session (`--session-file`); none: offline.
+    pub file: Option<PathBuf>,
+    /// Why the account plays offline this time, if it does.
+    pub offline: Option<String>,
+    /// The other accounts' sessions, for splitscreen players (`account_sessions`).
+    pub env: Vec<(&'static str, String)>,
+}
+
 /// The owner gate for the game about to start, then the selected account's session in a file
-/// for it: the file (none: offline) and why the account plays offline this time, if it does.
-pub fn session_for_game(game_home: &Path) -> Result<(Option<PathBuf>, Option<String>), NoOwner> {
+/// for it, and the other accounts' for its splitscreen players.
+pub fn session_for_game(game_home: &Path) -> Result<GameSession, NoOwner> {
     let mut accounts = Accounts::load();
     let pass = launch(
         &Endpoints::live(),
@@ -1230,14 +1203,78 @@ pub fn session_for_game(game_home: &Path) -> Result<(Option<PathBuf>, Option<Str
         store(),
         &mut accounts,
     )?;
+    let dir = game_home.join("sessions");
+    let env = account_sessions(&dir, &mut accounts);
     let _ = accounts.save();
     let Some((account, secrets)) = pass.session else {
-        return Ok((None, pass.offline));
+        return Ok(GameSession {
+            offline: pass.offline,
+            env,
+            ..GameSession::default()
+        });
     };
-    match write_session_file(&game_home.join("sessions"), &account, &secrets) {
-        Ok(file) => Ok((Some(file), None)),
-        Err(e) => Ok((None, Some(e))),
+    Ok(match write_session_file(&dir, &account, &secrets) {
+        Ok(file) => GameSession {
+            file: Some(file),
+            env,
+            ..GameSession::default()
+        },
+        Err(e) => GameSession {
+            offline: Some(e),
+            env,
+            ..GameSession::default()
+        },
+    })
+}
+
+/// The signed-in accounts but the one that plays, each its session in a file of its own, for
+/// the game's splitscreen players to sign in with (`HORIZON_ACCOUNT_SESSIONS`: name, uuid and
+/// file each). Only accounts that own the game; a token renewed only when due, and the services
+/// asked only then (it was known to own the game). Nothing with one account.
+fn account_sessions(dir: &Path, accounts: &mut Accounts) -> Vec<(&'static str, String)> {
+    let (ep, id, store) = (Endpoints::live(), client_id(), store());
+    let others: Vec<Account> = accounts
+        .accounts
+        .iter()
+        .filter(|a| Some(&a.uuid) != accounts.selected.as_ref())
+        .cloned()
+        .collect();
+    let mut list = Vec::new();
+    for account in others {
+        let Some(secrets) = secrets_in(store, &account.uuid) else {
+            continue;
+        };
+        let before = serde_json::to_string(&secrets).ok();
+        let fresh = secrets.owns && secrets.minecraft_expires_at > now() + RENEW_BEFORE;
+        let (account, secrets, owns) = match fresh {
+            true => (account, secrets, true),
+            false => match check(&ep, id.as_deref(), &account, secrets) {
+                Check::Owns(renewed, secrets) => {
+                    accounts.update(renewed.clone());
+                    (renewed, secrets, true)
+                }
+                Check::DoesNot(secrets) | Check::NoAnswer(_, secrets) => (account, secrets, false),
+            },
+        };
+        // A renewed token, or the services' answer, kept for the next launch.
+        let after = serde_json::to_string(&secrets).ok();
+        if let (true, Some(text)) = (after != before, after) {
+            let _ = store.set(&account.uuid, &text);
+        }
+        if !owns {
+            continue;
+        }
+        if let Ok(file) = write_session_file(dir, &account, &secrets) {
+            list.push(json!({ "name": account.name, "uuid": account.uuid, "file": file }));
+        }
     }
+    if list.is_empty() {
+        return Vec::new();
+    }
+    vec![(
+        "HORIZON_ACCOUNT_SESSIONS",
+        serde_json::Value::from(list).to_string(),
+    )]
 }
 
 #[cfg(test)]
