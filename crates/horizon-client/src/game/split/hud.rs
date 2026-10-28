@@ -67,6 +67,9 @@ impl Game<'_> {
         let atlas = &self.gui.atlas;
         let (w, h) = (batch.width, batch.height);
         let width = |text: &str| HudBatch::text_width(atlas, text).ceil();
+        // After a choice's words, room before the next; a glyph without words ("LB" of "LB RB
+        // Move") sits right next to the next glyph.
+        let gap = |what: &str| if what.is_empty() { 0.0 } else { 12.0 };
         // The badge, top left: who, and a moment where. F1 hides it with the rest of the HUD.
         if let (false, Some(badge)) = (hidden, &self.split_hud.badge) {
             let place = self.split_hud.place.as_ref();
@@ -90,7 +93,7 @@ impl Game<'_> {
                 .collect();
             let line: f32 = glyphs
                 .iter()
-                .map(|(g, _, what)| width(g) + 8.0 + width(what) + 12.0)
+                .map(|(g, _, what)| width(g) + 8.0 + width(what) + gap(what))
                 .sum::<f32>()
                 - 12.0;
             let pw = width(&prompt.title).max(line) + 16.0;
@@ -127,7 +130,7 @@ impl Game<'_> {
                 batch.text(atlas, glyph, x + 1.0, y, rgba(r, g, b, 255), false);
                 x += gw + 4.0;
                 batch.text(atlas, what, x, y, rgba(220, 220, 220, 255), false);
-                x += width(what) + 12.0;
+                x += width(what) + gap(what);
             }
         }
         // Notices nobody answers: a toast.

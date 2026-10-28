@@ -123,6 +123,8 @@ impl<'a> Split<'a> {
                         (Button::South, "Leave"),
                         (Button::West, "Switch profile"),
                         (Button::North, "Setup"),
+                        // LB and RB both move (back and forth): "LB RB Move".
+                        (Button::LeftBumper, ""),
                         (Button::RightBumper, "Move"),
                         (Button::East, "Stay"),
                     ],
@@ -173,6 +175,8 @@ impl<'a> Split<'a> {
                     choices: vec![
                         (Button::South, "Remove it from P1"),
                         (Button::North, "Setup"),
+                        // LB and RB both move (back and forth): "LB RB Move".
+                        (Button::LeftBumper, ""),
                         (Button::RightBumper, "Move"),
                         (Button::East, "Keep it"),
                     ],
