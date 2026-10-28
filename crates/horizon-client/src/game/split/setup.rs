@@ -162,10 +162,15 @@ impl<'a> Split<'a> {
             match change {
                 Ok(draft) => self.apply(draft),
                 // Another player's move: a window it named may have closed since.
-                Err(Spot::Window(n)) if self.placement(n).is_none() => {
+                Err((Spot::Window(n), _)) if self.placement(n).is_none() => {
                     self.choose(i, Spot::Window(1))
                 }
-                Err(spot) => self.choose(i, spot),
+                Err((spot, place)) => {
+                    self.choose(i, spot);
+                    if let Some(k) = place {
+                        self.put_at(i, k);
+                    }
+                }
             }
         }
         // Every view says where it is: after a change, or asked.

@@ -30,17 +30,17 @@ pub struct SplitUi {
     /// Apply pressed: the arrangement for the game to make (P1's screen), or where this player
     /// goes (another's: its draft may be older than P1's changes, so only its move counts).
     pub apply: Option<Draft>,
-    pub apply_move: Option<Spot>,
+    pub apply_move: Option<(Spot, Option<usize>)>,
     /// Identify pressed: every view says which window it is in.
     pub identify: bool,
     /// The changes not applied yet.
     edit: Option<Draft>,
     selected: Option<usize>,
     /// This player's last move in the draft (another player's screen).
-    moved: Option<Spot>,
+    moved: Option<(Spot, Option<usize>)>,
     /// A tile held by the mouse: whose, and where the pointer is (`None` until it moves).
     drag: Option<(usize, Option<(f32, f32)>)>,
-    /// A player picked up with the controller (A), moved with the D-pad.
+    /// A player picked up with the controller (A), moved with the bumpers.
     held: Option<Held>,
     /// The screen's size: at the last draw (the options screen sets it) or press.
     pub(crate) size: (f32, f32),
@@ -60,6 +60,8 @@ struct Held {
 enum Drop {
     At(Spot),
     Swap(usize),
+    /// Place `k` among the players in a window (another player's screen: the bumpers' stops).
+    Place(u8, usize),
 }
 
 /// What a press lands on.
@@ -181,11 +183,14 @@ impl SplitUi {
             return false;
         };
         self.selected = Some(i);
-        let mut spots: Vec<(String, Drop)> = self
-            .spots()
-            .into_iter()
-            .map(|(label, spot)| (label, Drop::At(spot)))
-            .collect();
+        let mut spots: Vec<(String, Drop)> = match self.host {
+            true => self
+                .spots()
+                .into_iter()
+                .map(|(label, spot)| (label, Drop::At(spot)))
+                .collect(),
+            false => self.stops(i),
+        };
         // P1 also swaps it with another player (a swap moves that one too).
         if self.host {
             let players = self.draft().map_or(0, |d| d.players.len());
@@ -207,23 +212,20 @@ impl SplitUi {
         true
     }
 
-    /// The controller while a player is held: the D-pad picks where it goes (the map shows it
-    /// there), A drops it there (into the draft), B puts it back. True when the button was taken
-    /// (every button is, while one is held).
+    /// The controller while a player is held: the bumpers pick where it goes, as when joining
+    /// (the map shows it there), A drops it there (into the draft), B puts it back. True when
+    /// the button was taken; the D-pad still moves the menu's focus.
     pub fn pad_button(&mut self, button: PadButton) -> bool {
         let Some(held) = &self.held else {
             return false;
         };
         match button {
-            PadButton::DPadLeft
-            | PadButton::DPadUp
-            | PadButton::DPadRight
-            | PadButton::DPadDown => {
+            PadButton::LeftBumper | PadButton::RightBumper => {
                 let n = held.spots.len();
                 if n == 0 {
                     return true;
                 }
-                let back = matches!(button, PadButton::DPadLeft | PadButton::DPadUp);
+                let back = button == PadButton::LeftBumper;
                 let next = match held.at {
                     None if back => n - 1,
                     None => 0,
@@ -235,6 +237,10 @@ impl SplitUi {
                     match drop {
                         Drop::At(spot) => draft.place_player(player, spot),
                         Drop::Swap(j) => draft.swap(player, j),
+                        Drop::Place(n, k) => {
+                            draft.place_player(player, Spot::Window(n));
+                            draft.put_at(player, k);
+                        }
                     }
                     draft
                 });
@@ -248,13 +254,52 @@ impl SplitUi {
                 match held.at.map(|k| held.spots[k].1.clone()) {
                     Some(Drop::At(spot)) => self.place(held.player, spot),
                     Some(Drop::Swap(j)) => self.swap(held.player, j),
+                    Some(Drop::Place(n, k)) => self.place_at(held.player, n, k),
                     None => {}
                 }
             }
             PadButton::East => self.held = None,
+            PadButton::DPadLeft
+            | PadButton::DPadUp
+            | PadButton::DPadRight
+            | PadButton::DPadDown => return false,
             _ => {}
         }
         true
+    }
+
+    /// Where another player's screen can put it, as its bumpers step: each place in each window
+    /// ("Window 1 (2 of 3)"), a new window, a monitor no window fills.
+    fn stops(&self, i: usize) -> Vec<(String, Drop)> {
+        let Some(draft) = self.draft() else {
+            return Vec::new();
+        };
+        let mut stops = Vec::new();
+        for w in &draft.windows {
+            let others = draft.sharing(i, w.number).len();
+            if others == 0 {
+                stops.push((
+                    format!("Window {}", w.number),
+                    Drop::At(Spot::Window(w.number)),
+                ));
+            }
+            for k in (0..=others).filter(|_| others > 0) {
+                let label = format!("Window {} ({} of {})", w.number, k + 1, others + 1);
+                stops.push((label, Drop::Place(w.number, k)));
+            }
+        }
+        stops.push(("New window".to_owned(), Drop::At(Spot::New)));
+        for m in &self.monitors {
+            let filled = draft
+                .windows
+                .iter()
+                .any(|w| w.placement == Placement::Fill(m.name.clone()));
+            if m.name != self.main && !filled {
+                let label = format!("Fill {}", self.monitor_name(&m.name));
+                stops.push((label, Drop::At(Spot::Fill(m.name.clone()))));
+            }
+        }
+        stops
     }
 
     /// The draft to change: the changes so far, else the arrangement now.
@@ -699,7 +744,7 @@ impl SplitUi {
                     "{who} to {}: A drops it here, B puts it back.",
                     h.spots[k].0
                 ),
-                None => format!("{who} picked up: the D-pad picks where, A drops, B puts it back."),
+                None => format!("{who} picked up: LB/RB picks where, A drops, B puts it back."),
             }
         });
         // The pointer's button; disabled ones too, to say why. Not the selected player's tile:
@@ -713,7 +758,8 @@ impl SplitUi {
             _ if held.is_some() => held.unwrap_or_default(),
             _ if help.is_some() => help.unwrap_or_default(),
             None if self.host => "Click a player, or drag it to a window or a monitor.".to_owned(),
-            None => "Click yourself, or drag yourself to a window or a monitor.".to_owned(),
+            None => "Drag yourself onto a player to take their place, or to a window or a monitor."
+                .to_owned(),
             Some(_) if self.edit.is_some() => "Apply to play this way, Revert to undo.".to_owned(),
             Some(i) => format!(
                 "Where should {} play?",
@@ -808,7 +854,8 @@ impl SplitUi {
         if !self.may_move(i) {
             return false;
         }
-        // On another player's tile: they swap (P1's screen).
+        // On another player's tile: they swap (P1's screen), or this player takes that place and
+        // the others move along (another's).
         let on = self
             .buttons(w, h)
             .into_iter()
@@ -816,9 +863,18 @@ impl SplitUi {
             .find(|([x, y, bw, bh], _, _, _)| ui::hovered(at, *x, *y, *bw, *bh));
         if let Some((_, _, Target::Player(j), _)) = on
             && j != i
-            && self.host
         {
-            self.swap(i, j);
+            if self.host {
+                self.swap(i, j);
+            } else if let Some(draft) = self.draft() {
+                let n = draft.players[j];
+                let k = draft
+                    .sharing(i, n)
+                    .iter()
+                    .position(|&p| p == j)
+                    .unwrap_or(0);
+                self.place_at(i, n, k);
+            }
             return true;
         }
         let Some(spot) = self.drop_spot(at, w, h) else {
@@ -839,10 +895,21 @@ impl SplitUi {
     /// Player `i` to `spot` in the draft.
     fn place(&mut self, i: usize, spot: Spot) {
         if !self.host {
-            self.moved = Some(spot.clone());
+            self.moved = Some((spot.clone(), None));
         }
         if let Some(draft) = self.editing() {
             draft.place_player(i, spot);
+        }
+    }
+
+    /// Player `i` to place `k` among the players of window `n` in the draft.
+    fn place_at(&mut self, i: usize, n: u8, k: usize) {
+        self.place(i, Spot::Window(n));
+        if !self.host {
+            self.moved = Some((Spot::Window(n), Some(k)));
+        }
+        if let Some(draft) = self.editing() {
+            draft.put_at(i, k);
         }
     }
 
@@ -996,17 +1063,17 @@ mod tests {
         assert!(ui.pad_pick_up(centre(&ui, "P2")));
         // Nothing moves until the D-pad does; then the map shows it there (New window first).
         assert_eq!(ui.draft().unwrap().players, [1, 1]);
-        assert!(ui.pad_button(PadButton::DPadRight));
+        assert!(ui.pad_button(PadButton::RightBumper));
         assert_eq!(ui.draft().unwrap().players, [1, 2]);
         assert_eq!(ui.edit, None);
         // Right again: filling the TV; A drops it there, into the draft.
-        assert!(ui.pad_button(PadButton::DPadRight));
+        assert!(ui.pad_button(PadButton::RightBumper));
         assert!(ui.pad_button(PadButton::South));
         let draft = ui.edit.as_ref().unwrap();
         assert_eq!(draft.players, [1, 2]);
         assert_eq!(draft.windows[1].placement, Placement::Fill("TV".into()));
         // Not held any more: the buttons go back to the menu.
-        assert!(!ui.pad_button(PadButton::DPadRight));
+        assert!(!ui.pad_button(PadButton::RightBumper));
     }
 
     #[test]
@@ -1021,7 +1088,7 @@ mod tests {
             .and_then(|h| h.at.map(|k| h.spots[k].0.clone()))
             .is_some_and(|label| label == "Swap with P1")
         {
-            assert!(ui.pad_button(PadButton::DPadRight));
+            assert!(ui.pad_button(PadButton::RightBumper));
         }
         assert!(ui.pad_button(PadButton::South));
         assert_eq!(ui.edit.as_ref().unwrap().order, [1, 0]);
@@ -1039,7 +1106,7 @@ mod tests {
         let mut ui = screen(2);
         ui.size = SIZE;
         assert!(ui.pad_pick_up(centre(&ui, "P2")));
-        ui.pad_button(PadButton::DPadRight);
+        ui.pad_button(PadButton::RightBumper);
         assert!(ui.pad_button(PadButton::East));
         assert_eq!(ui.edit, None);
         assert_eq!(ui.draft().unwrap().players, [1, 1]);
@@ -1052,6 +1119,56 @@ mod tests {
         (ui.host, ui.me) = (false, 1);
         assert!(!ui.pad_pick_up(centre(&ui, "P3")));
         assert!(ui.pad_pick_up(centre(&ui, "P2")));
+    }
+
+    #[test]
+    fn another_player_steps_through_the_places_with_the_bumpers() {
+        let mut ui = screen(3);
+        ui.size = SIZE;
+        (ui.host, ui.me) = (false, 1);
+        assert!(ui.pad_pick_up(centre(&ui, "P2")));
+        let stops: Vec<String> = ui
+            .held
+            .as_ref()
+            .unwrap()
+            .spots
+            .iter()
+            .map(|s| s.0.clone())
+            .collect();
+        assert_eq!(
+            stops,
+            [
+                "Window 1 (1 of 3)",
+                "Window 1 (2 of 3)",
+                "Window 1 (3 of 3)",
+                "New window",
+                "Fill Monitor 2"
+            ]
+        );
+        // The D-pad is the menu's: not taken.
+        assert!(!ui.pad_button(PadButton::DPadRight));
+        // RB to the first place: before P1, shown on the map, dropped with A.
+        assert!(ui.pad_button(PadButton::RightBumper));
+        assert_eq!(ui.draft().unwrap().order[..2], [1, 0]);
+        assert!(ui.pad_button(PadButton::South));
+        press(&mut ui, "Apply");
+        assert_eq!(ui.apply_move, Some((Spot::Window(1), Some(0))));
+    }
+
+    #[test]
+    fn another_player_dropped_on_a_tile_takes_that_place() {
+        let mut ui = screen(3);
+        (ui.host, ui.me) = (false, 2);
+        let (p3, p1) = (rect(&ui, "P3"), rect(&ui, "P1"));
+        ui.click((p3[0] + 2.0, p3[1] + 2.0), SIZE, false);
+        ui.click((p1[0] + 2.0, p1[1] + 2.0), SIZE, true);
+        assert!(ui.release());
+        // P3 first, the others along; nobody else changed window.
+        let draft = ui.edit.as_ref().unwrap();
+        assert_eq!(
+            (draft.players.clone(), draft.order.clone()),
+            (vec![1, 1, 1], vec![2, 0, 1])
+        );
     }
 
     #[test]
@@ -1146,7 +1263,7 @@ mod tests {
         press(&mut ui, "Apply");
         assert_eq!(
             (ui.apply.as_ref(), ui.apply_move.as_ref()),
-            (None, Some(&Spot::New))
+            (None, Some(&(Spot::New, None)))
         );
     }
 }

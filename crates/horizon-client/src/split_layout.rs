@@ -230,6 +230,42 @@ impl Draft {
         self.order = order;
     }
 
+    /// Player `i` to place `k` among the others in its window (0: before them all; past the
+    /// last: after them), the others keeping their order: the bumpers' "Window 1 (2 of 3)".
+    pub fn put_at(&mut self, i: usize, k: usize) {
+        let n = self.players.len();
+        if i >= n {
+            return;
+        }
+        let mine = self.players[i];
+        let mut order: Vec<usize> = ordered(&self.order, n)
+            .into_iter()
+            .filter(|&p| p != i)
+            .collect();
+        let others: Vec<usize> = order
+            .iter()
+            .copied()
+            .filter(|&p| self.players[p] == mine)
+            .collect();
+        let at = match others.get(k) {
+            Some(j) => order.iter().position(|p| p == j).unwrap_or(order.len()),
+            None => others
+                .last()
+                .and_then(|j| order.iter().position(|p| p == j))
+                .map_or(order.len(), |p| p + 1),
+        };
+        order.insert(at, i);
+        self.order = order;
+    }
+
+    /// The players but `i` in window `number`, in their order.
+    pub fn sharing(&self, i: usize, number: u8) -> Vec<usize> {
+        ordered(&self.order, self.players.len())
+            .into_iter()
+            .filter(|&p| p != i && self.players[p] == number)
+            .collect()
+    }
+
     /// A new free window, numbered with the lowest number free; its number.
     pub fn add_window(&mut self) -> u8 {
         self.open(Placement::Free(None))
@@ -486,6 +522,20 @@ mod tests {
         let views = tv.preview(&m, "Built-in");
         assert_eq!(views[0], (0, [0, 0], size(2000, 1200)));
         assert_eq!(views[1], (1, [0, 0], size(3840, 1080)));
+    }
+
+    #[test]
+    fn put_at_a_place_among_a_window_s_players() {
+        let mut d = here(3);
+        d.put_at(2, 0);
+        assert_eq!(d.order, [2, 0, 1]);
+        d.put_at(2, 5); // past the last: after them
+        assert_eq!(d.order, [0, 1, 2]);
+        // Players in another window keep their places.
+        d.players = vec![1, 2, 1];
+        d.put_at(2, 0);
+        assert_eq!(d.sharing(2, 1), [0]);
+        assert_eq!(d.order, [2, 0, 1]);
     }
 
     #[test]

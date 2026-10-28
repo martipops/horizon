@@ -147,10 +147,11 @@ Settings → Splitscreen... opens the Setup screen, which holds the switch.
   quarters and rows. Who comes first in a window stays until changed.
 - **Setup screen:** the monitors to scale with every window and player; move
   players with the mouse (drag, or click then a destination) or the controller
-  (A picks up, the D-pad steps, A drops, B puts back), swap two players; a
-  square button for how two (or three) share a window shows while a window has
-  that many. Nothing changes until Apply. Other players open it too and move
-  only themselves.
+  (A picks up, LB/RB step, A drops, B puts back), swap two players; a square
+  button for how two (or three) share a window shows while a window has that
+  many. Nothing changes until Apply. Other players open it too and move only
+  themselves, through the same places as their bumpers (dropped on another
+  player's tile, they take that place).
 - **Leaving:** a player's pause menu, or holding Select 2 s: A leave, X switch
   profile, Y Setup, LB/RB move, B stay. P1 holding Select can give its
   controller away. A controller that disconnects leaves its player waiting:
