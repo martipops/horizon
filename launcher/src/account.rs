@@ -334,14 +334,16 @@ fn minecraft_login(ep: &Endpoints, ms_access: &str) -> Result<Minecraft, String>
         return Err("Xbox Live refused the sign-in.".into());
     };
     let xuid = claims.and_then(|c| str_field(c, "xid"));
+    // The launchers' sign-in (`launcher/login`, as the official launcher and others use): its
+    // token names the account's Java profile, which the session service needs to let it join a
+    // server. `authentication/login_with_xbox` gave a new account a token without it ("Profile
+    // not found").
     let (status, mc) = send(
-        request_to(
-            "POST",
-            &format!("{}/authentication/login_with_xbox", ep.minecraft),
-        ),
-        Some(Body::Json(
-            json!({ "identityToken": format!("XBL3.0 x={uhs};{xsts_token}") }),
-        )),
+        request_to("POST", &format!("{}/launcher/login", ep.minecraft)),
+        Some(Body::Json(json!({
+            "xtoken": format!("XBL3.0 x={uhs};{xsts_token}"),
+            "platform": "PC_LAUNCHER",
+        }))),
         "the Minecraft services",
     )?;
     match (status, str_field(&mc, "access_token")) {

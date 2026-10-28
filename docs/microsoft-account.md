@@ -25,7 +25,7 @@ no Microsoft sign-in"); release builds have it.
      at sign-in time; `offline_access` gives the refresh token.
    - Copy the **Application (client) ID** (a GUID).
 2. **Minecraft API access** (Mojang): new Azure apps are refused by
-   `api.minecraftservices.com/authentication/login_with_xbox` (HTTP 403, "Invalid app registration")
+   the Minecraft services' sign-in (`api.minecraftservices.com`, HTTP 403, "Invalid app registration")
    until Mojang approves them. Apply with the form linked from https://aka.ms/mce-reviewappid
    (Minecraft Java "App ID review"), giving the client ID above, the app name, the project URL
    (https://github.com/horizon-rust/horizon) and a short description ("open-source Minecraft Java
@@ -58,8 +58,11 @@ All requests use HTTPS and JSON except the two OAuth calls (form-encoded):
    `SandboxId=RETAIL`, `RelyingParty=rp://api.minecraftservices.com/`. The `XErr` codes become
    messages: 2148916233 no Xbox profile yet, 2148916235 Xbox Live not available in the country,
    2148916236/2148916237 adult verification (South Korea), 2148916238 child account (needs a family).
-5. **Minecraft**: `POST https://api.minecraftservices.com/authentication/login_with_xbox`
-   (`identityToken = "XBL3.0 x=<uhs>;<XSTS token>"`). Result: the Minecraft access token (24 h).
+5. **Minecraft**: `POST https://api.minecraftservices.com/launcher/login`
+   (`xtoken = "XBL3.0 x=<uhs>;<XSTS token>"`, `platform = "PC_LAUNCHER"`), as the official launcher
+   signs in. Result: the Minecraft access token (24 h), naming the account's Java profile, which the
+   session service needs to let it join a server (`authentication/login_with_xbox` gave a new
+   account a token without it: "Profile not found" on joining).
 6. **Entitlements**: `GET https://api.minecraftservices.com/entitlements/mcstore`: the account must
    own `game_minecraft` or `product_minecraft` (Game Pass included), else "This account doesn't own
    Minecraft Java Edition".

@@ -83,9 +83,10 @@ fn route(mock: &mut Mock, method: &str, path: &str, auth: &str, body: &str) -> (
                 ),
             }
         }
-        ("POST", "/mc/authentication/login_with_xbox") => {
+        ("POST", "/mc/launcher/login") => {
             let v: Value = serde_json::from_str(body).unwrap();
-            assert_eq!(v["identityToken"], "XBL3.0 x=uhs-1;xsts-token");
+            assert_eq!(v["xtoken"], "XBL3.0 x=uhs-1;xsts-token");
+            assert_eq!(v["platform"], "PC_LAUNCHER");
             reply(
                 200,
                 json!({"username": "mock", "access_token": "mc-token", "token_type": "Bearer", "expires_in": 86400}),
@@ -225,7 +226,7 @@ fn the_whole_chain() {
             "/ms/token",
             "/xbl",
             "/xsts",
-            "/mc/authentication/login_with_xbox",
+            "/mc/launcher/login",
             "/mc/entitlements/mcstore",
             "/mc/minecraft/profile"
         ]
