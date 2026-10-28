@@ -129,6 +129,50 @@ and the container screen tests are unchanged).
   server accepts it; a unit test replays the planned clicks through the menu
   engine on random chests.
 
+### Splitscreen (`splitscreen`, default off; `splitscreenTwo`, `splitscreenThree`, default 0)
+Up to 8 players on one computer, each with a controller, as on a console
+(`game/split.rs`, `game/split/`, `split_ui.rs`, `split_layout.rs`). Horizon
+Settings → Splitscreen... opens the Setup screen, which holds the switch.
+
+- **Joining:** in a world, another controller pressing a button is offered to
+  join; A adds a player, who picks a profile (`splitscreen/profiles/<name>/`:
+  its own options, controls and graphics) while its bumpers choose where its
+  view goes: a place in each window ("Window 1 (1 of 2)"), a new window, or
+  filling another monitor. P1 keeps the keyboard and mouse, and the first
+  controller used in a menu.
+- **Where players play:** in numbered windows, Window 1 being the game's. A
+  window is free or fills a monitor (borderless, over its menu bar on macOS).
+  Players in one window share it: halves for two (`splitscreenTwo`: auto, side
+  by side, top and bottom), three one wide and two (`splitscreenThree`), then
+  quarters and rows. Who comes first in a window stays until changed.
+- **Setup screen:** the monitors to scale with every window and player; move
+  players with the mouse (drag, or click then a destination) or the controller
+  (A picks up, the D-pad steps, A drops, B puts back), swap two players, use a
+  preset; nothing changes until Apply. Other players open it too and move only
+  themselves.
+- **Leaving:** a player's pause menu, or holding Select 2 s: A leave, X switch
+  profile, Y Setup, LB/RB move, B stay. P1 holding Select can give its
+  controller away. A controller that disconnects leaves its player waiting:
+  the same controller back takes it again, A on another takes over, B on
+  another lets it leave.
+- **Servers:** the others join wherever P1 plays: its own world (through
+  memory) or a server, LAN world or friend's invite, each as its own profile
+  without an account. Online-mode servers refuse them (no Microsoft account of
+  their own), and P1 is told why. A server's resource packs follow P1's answer.
+- **Sound:** one output; each sound is heard from the nearest player's camera,
+  once.
+- **Limits:** one keyboard and mouse (they drive the player whose view was
+  clicked last); no DualSense rumble or triggers while splitscreen reads the
+  controllers; every player renders on one thread, so the frame rate falls with
+  each player. `HORIZON_SPLIT_STATS=1` logs every 5 s where a frame's time
+  goes (the players' turns with their renders, the windows' presents, the GPU
+  wait, outside the loop) and each player's fps and CPU and GPU time.
+
+Off, the game runs as without it: P1 draws straight to its window. On, every
+player renders offscreen and a compositor copies the views into the windows.
+`tools/splitscreen_e2e.py` drives it with real windows (`HORIZON_SPLIT=N`
+adds N-1 players without controllers); it needs a desktop, so CI doesn't run it.
+
 ## Shared rules
 
 - All extras are hidden with F1 and drawn in the HUD layer: under screens, over

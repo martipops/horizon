@@ -1,4 +1,4 @@
-//! The frame-time readout (`HORIZON_SPLIT_STATS=1`, docs/profiling.md). The players render one
+//! The frame-time readout (`HORIZON_SPLIT_STATS=1`, docs/extras.md). The players render one
 //! after another: on threads, their renders slowed each other down (the GPU driver's per-process
 //! state) more than they overlapped.
 use super::*;

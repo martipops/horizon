@@ -486,4 +486,57 @@ mod tests {
             Claim::Wait
         );
     }
+
+    fn pressed(button: Button) -> PadState {
+        let mut pad = PadState::default();
+        pad.set(button, true);
+        pad
+    }
+
+    #[test]
+    fn while_asked_the_bumpers_move_and_an_answer_closes_the_question() {
+        let mut hold = HoldSelect {
+            asking: true,
+            ..Default::default()
+        };
+        let answers = [Button::South, Button::East];
+        assert!(matches!(
+            hold.update(pressed(Button::RightBumper), &answers),
+            Hold::Move(false)
+        ));
+        // Held down: not pressed again.
+        assert!(matches!(
+            hold.update(pressed(Button::RightBumper), &answers),
+            Hold::Nothing
+        ));
+        assert!(matches!(
+            hold.update(pressed(Button::LeftBumper), &answers),
+            Hold::Move(true)
+        ));
+        assert!(hold.asking, "a bumper keeps the question open");
+        // A button that isn't an answer does nothing; an answer closes it.
+        assert!(matches!(
+            hold.update(pressed(Button::North), &answers),
+            Hold::Nothing
+        ));
+        assert!(matches!(
+            hold.update(pressed(Button::East), &answers),
+            Hold::Answer(Button::East)
+        ));
+        assert!(!hold.asking);
+    }
+
+    #[test]
+    fn select_held_less_than_two_seconds_asks_nothing() {
+        let mut hold = HoldSelect::default();
+        assert!(matches!(
+            hold.update(pressed(Button::Select), &[]),
+            Hold::Nothing
+        ));
+        assert!(matches!(
+            hold.update(PadState::default(), &[]),
+            Hold::Nothing
+        ));
+        assert!(!hold.asking && hold.since.is_none());
+    }
 }
