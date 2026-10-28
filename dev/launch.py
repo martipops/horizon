@@ -53,17 +53,27 @@ def accounts():
     return sorted(found, key=lambda a: a[1] != data.get('selected'))
 
 
-def secrets(uuid):
-    """The account's tokens as the launcher keeps them (JSON), from the system's keychain: in
-    pieces "<uuid>", "<uuid>.1", "<uuid>.2"... (account.rs `split_secret`), joined."""
-    first = keychain_item(uuid)
+def item(key):
+    """A launcher keychain item, its pieces "<key>", "<key>.1"... joined (account.rs
+    `split_secret`: Windows only)."""
+    first = keychain_item(key)
     if first is None:
         return None
     pieces, n = [first], 1
-    while (piece := keychain_item(f'{uuid}.{n}')) is not None:
+    while (piece := keychain_item(f'{key}.{n}')) is not None:
         pieces.append(piece)
         n += 1
     return ''.join(pieces)
+
+
+def secrets(uuid):
+    """The account's tokens as the launcher keeps them (JSON): in its one "vault" item (every
+    account's, by UUID), else an item of its own (launchers before it)."""
+    try:
+        vault = json.loads(item('vault') or '{}')
+    except ValueError:
+        vault = {}
+    return vault.get(uuid) or item(uuid)
 
 
 def keychain_item(key):
