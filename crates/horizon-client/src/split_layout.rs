@@ -298,9 +298,19 @@ impl Draft {
             Spot::Fill(name) => self.open(Placement::Fill(name)),
         };
         self.players[i] = number;
+    }
+
+    /// The windows nobody plays in, gone (Window 1 stays): at Apply. While a draft is edited
+    /// they stay, so its windows and their numbers hold still as players move.
+    pub fn drop_empty(&mut self) {
         let players = &self.players;
         self.windows
             .retain(|w| w.number == 1 || players.contains(&w.number));
+    }
+
+    /// Whether nobody plays in window `number`.
+    pub fn empty(&self, number: u8) -> bool {
+        !self.players.contains(&number)
     }
 
     /// What to tell before Apply, in window order.
@@ -605,12 +615,14 @@ mod tests {
         d.place_player(2, Spot::New);
         assert_eq!(d.players, [1, 2, 3]);
         assert!(d.warnings(&m, "Built-in").is_empty());
-        // The window left behind closes, Window 1 never.
+        // The window left behind stays while the draft is edited (numbers hold still), and
+        // closes at Apply; Window 1 never.
         d.place_player(1, Spot::Window(1));
-        assert_eq!(
-            d.windows.iter().map(|w| w.number).collect::<Vec<_>>(),
-            [1, 3]
-        );
+        let numbers = |d: &Draft| d.windows.iter().map(|w| w.number).collect::<Vec<_>>();
+        assert_eq!(numbers(&d), [1, 2, 3]);
+        assert!(d.empty(2));
+        d.drop_empty();
+        assert_eq!(numbers(&d), [1, 3]);
         assert!(d.warnings(&m, "Built-in").is_empty());
         d.place_player(0, Spot::Window(3));
         d.place_player(1, Spot::Window(3));
