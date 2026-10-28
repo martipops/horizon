@@ -9,7 +9,62 @@ pub(in crate::game) struct Hud {
     pub(super) badge: Option<String>,
     pub(super) place: Option<(String, Instant)>,
     pub(super) prompt: Option<Prompt>,
-    pub(super) notice: Option<horizon_client::toasts::SystemToast>,
+    pub(super) notice: Option<Notice>,
+}
+
+/// A notice nobody answers: a strip at the top of the view in the prompts' style, its words
+/// wrapped to the view (a toast is as wide as its longest line: off a narrow view's edge), gone
+/// after the toasts' time (`notification_display_time`).
+pub(super) struct Notice {
+    title: String,
+    body: String,
+    shown: Option<Instant>,
+}
+
+impl Notice {
+    pub(super) fn new(title: impl Into<String>, body: impl Into<String>) -> Self {
+        Self {
+            title: title.into(),
+            body: body.into(),
+            shown: None,
+        }
+    }
+}
+
+/// `text` in lines no wider than `max` (by `width`), broken between words.
+fn wrap(text: &str, max: f32, width: impl Fn(&str) -> f32) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    for word in text.split_whitespace() {
+        let longer = if line.is_empty() {
+            word.to_owned()
+        } else {
+            format!("{line} {word}")
+        };
+        if width(&longer) > max && !line.is_empty() {
+            lines.push(std::mem::replace(&mut line, word.to_owned()));
+        } else {
+            line = longer;
+        }
+    }
+    if !line.is_empty() {
+        lines.push(line);
+    }
+    lines
+}
+
+/// The prompts' and notices' box: dark, a faint edge.
+fn panel(batch: &mut HudBatch, atlas: &horizon_client::hud::HudAtlas, [px, py, pw, ph]: [f32; 4]) {
+    batch.fill(atlas, px, py, pw, ph, rgba(0, 0, 0, 210));
+    let edge = rgba(255, 255, 255, 90);
+    for [x, y, fw, fh] in [
+        [px, py, pw, 1.0],
+        [px, py + ph - 1.0, pw, 1.0],
+        [px, py, 1.0, ph],
+        [px + pw - 1.0, py, 1.0, ph],
+    ] {
+        batch.fill(atlas, x, y, fw, fh, edge);
+    }
 }
 
 /// A question on a player's view, answered with its controller's buttons.
@@ -58,12 +113,7 @@ impl Game<'_> {
     }
 
     /// Splitscreen over this player's view, above the other toasts (`ToastManager`'s slots).
-    pub(in crate::game) fn draw_split_hud(
-        &mut self,
-        batch: &mut HudBatch,
-        slot: usize,
-        hidden: bool,
-    ) {
+    pub(in crate::game) fn draw_split_hud(&mut self, batch: &mut HudBatch, hidden: bool) {
         let atlas = &self.gui.atlas;
         let (w, h) = (batch.width, batch.height);
         let width = |text: &str| HudBatch::text_width(atlas, text).ceil();
@@ -102,16 +152,7 @@ impl Game<'_> {
                 ((w - pw) / 2.0).floor(),
                 if dim { ((h - ph) / 2.0).floor() } else { 18.0 },
             );
-            batch.fill(atlas, px, py, pw, ph, rgba(0, 0, 0, 210));
-            let edge = rgba(255, 255, 255, 90);
-            for [x, y, fw, fh] in [
-                [px, py, pw, 1.0],
-                [px, py + ph - 1.0, pw, 1.0],
-                [px, py, 1.0, ph],
-                [px + pw - 1.0, py, 1.0, ph],
-            ] {
-                batch.fill(atlas, x, y, fw, fh, edge);
-            }
+            panel(batch, atlas, [px, py, pw, ph]);
             let tx = (px + (pw - width(&prompt.title)) / 2.0).floor();
             batch.text(
                 atlas,
@@ -133,17 +174,39 @@ impl Game<'_> {
                 x += width(what) + gap(what);
             }
         }
-        // Notices nobody answers: a toast.
-        let multiplier = f64::from(self.settings.notification_display_time);
+        // A notice nobody answers: at the top, under a joining controller's strip, for as long
+        // as a toast shows (5 s, times the setting).
+        let below_strip = matches!(&self.split_hud.prompt, Some(p) if p.ask == Ask::Join);
+        let shown_for =
+            Duration::from_secs_f64(5.0 * f64::from(self.settings.notification_display_time));
         let Some(notice) = &mut self.split_hud.notice else {
             return;
         };
-        let (_, finished) = notice.update(multiplier);
-        if finished {
+        let shown = *notice.shown.get_or_insert_with(Instant::now);
+        if shown.elapsed() > shown_for {
             self.split_hud.notice = None;
             return;
         }
-        notice.draw(&self.gui.atlas, batch, 32.0 * slot as f32);
+        let max = (w - 24.0).min(260.0);
+        let lines = wrap(&notice.body, max, width);
+        let inner = lines
+            .iter()
+            .map(|l| width(l))
+            .fold(width(&notice.title), f32::max);
+        let (pw, ph) = (inner.min(max) + 16.0, 20.0 + 10.0 * lines.len() as f32);
+        let (px, py) = (
+            ((w - pw) / 2.0).floor(),
+            if below_strip { 56.0 } else { 18.0 },
+        );
+        panel(batch, atlas, [px, py, pw, ph]);
+        let white = rgba(255, 255, 255, 255);
+        let tx = (px + (pw - width(&notice.title)) / 2.0).floor();
+        batch.text(atlas, &notice.title, tx, py + 6.0, white, true);
+        for (k, line) in lines.iter().enumerate() {
+            let lx = (px + (pw - width(line)) / 2.0).floor();
+            let y = py + 18.0 + 10.0 * k as f32;
+            batch.text(atlas, line, lx, y, rgba(200, 200, 200, 255), false);
+        }
     }
 }
 
@@ -182,5 +245,28 @@ impl<'a> Split<'a> {
         if let Some(game) = self.game_mut(i) {
             game.split_hud.place = place;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::wrap;
+
+    #[test]
+    fn a_notice_wraps_to_the_view_between_words() {
+        // Each character 6 wide: no line over 60.
+        let width = |s: &str| 6.0 * s.len() as f32;
+        let lines = wrap("This server needs each player's own account", 60.0, width);
+        assert!(lines.iter().all(|l| width(l) <= 60.0));
+        assert_eq!(
+            lines.join(" "),
+            "This server needs each player's own account"
+        );
+        // A word longer than the line keeps a line of its own.
+        assert_eq!(
+            wrap("a verylongwordindeed b", 30.0, width),
+            ["a", "verylongwordindeed", "b"]
+        );
+        assert!(wrap("", 60.0, width).is_empty());
     }
 }

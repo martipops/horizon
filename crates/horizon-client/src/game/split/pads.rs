@@ -191,9 +191,9 @@ impl<'a> Split<'a> {
                     && let Some(id) = self.p1_pad.take()
                 {
                     self.fresh.retain(|&p| p != id);
-                    self.host.split_hud.notice = Some(horizon_client::toasts::SystemToast::new(
-                        "Controller removed".to_owned(),
-                        Some("Press a button on it to join as a new player".to_owned()),
+                    self.host.split_hud.notice = Some(Notice::new(
+                        "Controller removed",
+                        "Press a button on it to join as a new player",
                     ));
                 }
             }
@@ -342,9 +342,9 @@ impl<'a> Split<'a> {
             }
             if self.in_world() {
                 self.lost.push(Lost { seat: 1, id, uuid });
-                self.host.split_hud.notice = Some(horizon_client::toasts::SystemToast::new(
-                    "Controller disconnected".to_owned(),
-                    Some("Reconnect it, or press a button on another".to_owned()),
+                self.host.split_hud.notice = Some(Notice::new(
+                    "Controller disconnected",
+                    "Reconnect it, or press a button on another",
                 ));
             }
             return;
@@ -386,10 +386,7 @@ impl<'a> Split<'a> {
         if hud.prompt.as_ref().is_some_and(|p| p.ask == Ask::Lost) {
             hud.prompt = None;
         }
-        hud.notice = Some(horizon_client::toasts::SystemToast::new(
-            "Controller connected".to_owned(),
-            None,
-        ));
+        hud.notice = Some(Notice::new("Controller connected", ""));
     }
 
     /// A button on a controller nobody has while players wait for one: true when it answered

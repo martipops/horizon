@@ -285,10 +285,8 @@ impl<'a> Split<'a> {
             if p1_left || !playing || g.game.error.is_some() {
                 // A server that turned it away (online mode, its name taken, full): P1 hears why.
                 if let (false, Some(name), Some(why)) = (p1_left, &g.name, turned_away(&g.game)) {
-                    self.host.split_hud.notice = Some(horizon_client::toasts::SystemToast::new(
-                        format!("{name} could not stay"),
-                        Some(why),
-                    ));
+                    self.host.split_hud.notice =
+                        Some(Notice::new(format!("{name} could not stay"), why));
                 }
                 self.remove_guest(k);
             }
