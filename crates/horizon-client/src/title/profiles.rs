@@ -11,8 +11,11 @@ const NEW: u8 = 70;
 const CANCEL: u8 = 71;
 const CREATE: u8 = 72;
 const BACK: u8 = 73;
-/// Profile `i` is button `FIRST + i`.
+const DELETE: u8 = 74;
+const KEEP: u8 = 75;
+/// Profile `i` is button `FIRST + i`, its X `REMOVE + i`.
 const FIRST: u8 = 80;
+const REMOVE: u8 = 90;
 /// ponytail: the first few profiles only; a scrolling list when someone has more.
 const SHOWN: usize = 6;
 pub(super) const NAME_FIELD: crate::clipboard::FieldId = ("splitscreen.profile-name", 0);
@@ -27,7 +30,16 @@ pub fn valid_name(name: &str) -> bool {
 impl Title {
     /// The profile list for a joining player; `taken` are playing now and can't be picked.
     pub fn profile_picker(&mut self, names: Vec<String>, taken: Vec<String>) {
-        self.mode = Mode::Profiles { names, taken };
+        self.mode = Mode::Profiles {
+            names,
+            taken,
+            deleting: None,
+        };
+    }
+
+    /// A profile deleted on the picker, for the game to remove its folder. Taken once.
+    pub fn take_deleted_profile(&mut self) -> Option<String> {
+        self.profile_deleted.take()
     }
 
     /// What the joining player chose: a profile's name, or `None` to leave. Taken once.
@@ -47,20 +59,31 @@ impl Title {
             icon: None,
         };
         match &self.mode {
-            Mode::Profiles { names, taken } => {
-                let mut buttons: Vec<_> = names
-                    .iter()
-                    .take(SHOWN)
-                    .enumerate()
-                    .map(|(i, name)| {
-                        button(
-                            44.0 + i as f32 * 24.0,
-                            name.clone(),
-                            !taken.contains(name),
-                            FIRST + i as u8,
-                        )
-                    })
-                    .collect();
+            Mode::Profiles {
+                deleting: Some(_), ..
+            } => vec![
+                button(h / 2.0, "Delete".into(), true, DELETE),
+                button(
+                    h / 2.0 + 24.0,
+                    lang::get_or("gui.cancel", "Cancel"),
+                    true,
+                    KEEP,
+                ),
+            ],
+            Mode::Profiles { names, taken, .. } => {
+                let mut buttons = Vec::new();
+                for (i, name) in names.iter().take(SHOWN).enumerate() {
+                    // The name, and its X (delete) beside it; not while it plays.
+                    let (y, free) = (44.0 + i as f32 * 24.0, !taken.contains(name));
+                    let pick = button(y, name.clone(), free, FIRST + i as u8);
+                    let remove = Button {
+                        x: x + 180.0,
+                        w: 20.0,
+                        ..button(y, "X".into(), free, REMOVE + i as u8)
+                    };
+                    buttons.push(Button { w: 176.0, ..pick });
+                    buttons.push(remove);
+                }
                 let y = 52.0 + names.len().min(SHOWN) as f32 * 24.0;
                 buttons.push(button(y, "New Profile...".into(), true, NEW));
                 buttons.push(button(
@@ -92,6 +115,21 @@ impl Title {
         let (w, h) = (batch.width.ceil(), batch.height.ceil());
         crate::ui::menu_background(batch, atlas, 0.0, 0.0, w, h, false);
         match &self.mode {
+            Mode::Profiles {
+                deleting: Some(name),
+                ..
+            } => {
+                let top = (h / 2.0 - 40.0).floor();
+                centered(atlas, batch, &format!("Delete {name}?"), top, u32::MAX);
+                let grey = rgba(160, 160, 160, 255);
+                let lines = [
+                    "Its settings on this computer are deleted.",
+                    "Worlds keep what it had there.",
+                ];
+                for (k, line) in lines.into_iter().enumerate() {
+                    centered(atlas, batch, line, top + 14.0 + 11.0 * k as f32, grey);
+                }
+            }
             Mode::Profiles { .. } => {
                 centered(atlas, batch, "Who's playing?", 20.0, u32::MAX);
                 let hint = "LB / RB on your controller: where you play";
@@ -123,10 +161,36 @@ impl Title {
 
     pub(super) fn profile_click(&mut self, x: f32, y: f32, (w, h): (f32, f32), hit: Option<u8>) {
         match (&mut self.mode, hit) {
+            (
+                Mode::Profiles {
+                    names, deleting, ..
+                },
+                Some(DELETE),
+            ) => {
+                if let Some(name) = deleting.take() {
+                    names.retain(|n| *n != name);
+                    self.profile_deleted = Some(name);
+                }
+            }
+            (Mode::Profiles { deleting, .. }, Some(KEEP)) => *deleting = None,
+            (
+                Mode::Profiles {
+                    deleting: Some(_), ..
+                },
+                _,
+            ) => {}
+            (
+                Mode::Profiles {
+                    names, deleting, ..
+                },
+                Some(id),
+            ) if id >= REMOVE => {
+                *deleting = names.get(usize::from(id - REMOVE)).cloned();
+            }
             (Mode::Profiles { names, .. }, Some(id)) if id >= FIRST => {
                 self.profile_choice = names.get(usize::from(id - FIRST)).cloned().map(Some);
             }
-            (Mode::Profiles { names, taken }, Some(NEW)) => {
+            (Mode::Profiles { names, taken, .. }, Some(NEW)) => {
                 self.mode = Mode::NewProfile {
                     name: String::new(),
                     focused: true,
@@ -163,8 +227,14 @@ impl Title {
                 self.mode = Mode::Profiles {
                     names: std::mem::take(names),
                     taken: std::mem::take(taken),
+                    deleting: None,
                 };
             }
+            // Escape on "Delete it?": keep it.
+            Mode::Profiles {
+                deleting: deleting @ Some(_),
+                ..
+            } => *deleting = None,
             _ => self.profile_choice = Some(None),
         }
     }

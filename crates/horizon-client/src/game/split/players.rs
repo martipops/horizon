@@ -154,6 +154,22 @@ impl<'a> Split<'a> {
         let mut changed = false;
         let mut i = 0;
         while i < self.guests.len() {
+            // A profile deleted on the picker: its folder (its options), unless it plays now. The
+            // picker takes only valid names, so it's always one folder under `profiles`.
+            let deleted = self.guests[i]
+                .game
+                .title
+                .as_mut()
+                .and_then(|t| t.take_deleted_profile());
+            if let Some(name) = deleted.filter(|n| {
+                horizon_client::title::valid_profile_name(n) && !self.taken().contains(n)
+            }) && let Ok(folder) = Self::folder()
+            {
+                let path = folder.join("profiles").join(&name);
+                if let Err(e) = std::fs::remove_dir_all(&path) {
+                    log::warn!("Horizon: splitscreen: deleting profile {name}: {e}");
+                }
+            }
             let choice = match self.guests[i].name {
                 None => self.guests[i]
                     .game

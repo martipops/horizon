@@ -110,6 +110,8 @@ pub enum Mode {
     Profiles {
         names: Vec<String>,
         taken: Vec<String>,
+        /// The profile its X asked about: "Delete it?"
+        deleting: Option<String>,
     },
     NewProfile {
         name: String,
@@ -174,6 +176,8 @@ pub struct Title {
     recent: std::cell::RefCell<Option<(std::time::Instant, Vec<WorldEntry>)>>,
     /// Splitscreen: the profile a joining player chose, or `None` to leave (`profiles.rs`).
     profile_choice: Option<Option<String>>,
+    /// Splitscreen: a profile deleted on the picker, for the game to remove (`profiles.rs`).
+    profile_deleted: Option<String>,
     /// WorldCreationGameRulesScreen, over Create New World while it is open.
     rules: RefCell<Option<RulesScreen>>,
 }
@@ -286,6 +290,7 @@ impl Title {
             ),
             recent: std::cell::RefCell::new(None),
             profile_choice: None,
+            profile_deleted: None,
             rules: RefCell::new(None),
         }
     }

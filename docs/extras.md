@@ -138,8 +138,8 @@ Settings → Splitscreen... opens the Setup screen, which holds the switch.
   join; A adds a player, who picks a profile (`splitscreen/profiles/<name>/`:
   its own options, controls and graphics) while its bumpers choose where its
   view goes: a place in each window ("Window 1 (1 of 2)"), a new window, or
-  filling another monitor. P1 keeps the keyboard and mouse, and the first
-  controller used in a menu.
+  filling another monitor. A profile's X deletes it (not one playing). P1
+  keeps the keyboard and mouse, and the first controller used in a menu.
 - **Where players play:** in numbered windows, Window 1 being the game's. A
   window is free or fills a monitor (borderless, over its menu bar on macOS).
   Players in one window share it: halves for two (`splitscreenTwo`: auto, side
