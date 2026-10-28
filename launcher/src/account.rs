@@ -31,8 +31,14 @@ const NO_PROFILE: &str =
 const OTHER_PROFILE: &str =
     "The Microsoft account now has another Minecraft profile. Sign in again.";
 const SIGN_IN_AGAIN: &str = "Your Microsoft sign-in expired. Sign in again.";
-/// The Minecraft token is renewed when it has less than this left.
-const RENEW_BEFORE: u64 = 3600;
+/// The Minecraft token is renewed when it has less than this left (a fresh one lasts 24 h), and
+/// the first time each run of the launcher uses the account (`Endpoints::renew_each_run`), as
+/// Prism Launcher and the official one renew.
+const RENEW_BEFORE: u64 = 12 * 3600;
+
+/// The accounts renewed in this run of the launcher.
+static RENEWED: Mutex<std::collections::BTreeSet<String>> =
+    Mutex::new(std::collections::BTreeSet::new());
 
 /// The configured Azure app, if any: the run-time variable wins over the build-time one, and an
 /// empty value means none.
@@ -53,6 +59,9 @@ pub struct Endpoints {
     pub xsts: String,
     /// api.minecraftservices.com.
     pub minecraft: String,
+    /// Renew each account once per run of the launcher, beside when its token runs low (tests
+    /// turn it off, to see exactly which requests go).
+    pub renew_each_run: bool,
 }
 
 impl Endpoints {
@@ -68,6 +77,7 @@ impl Endpoints {
             xbox_user: "https://user.auth.xboxlive.com/user/authenticate".into(),
             xsts: "https://xsts.auth.xboxlive.com/xsts/authorize".into(),
             minecraft: "https://api.minecraftservices.com".into(),
+            renew_each_run: true,
         }
     }
 }
@@ -460,6 +470,10 @@ pub struct Secrets {
     /// existed passed the same check at sign-in, which refuses everyone else.
     #[serde(default = "owned_at_sign_in")]
     owns: bool,
+    /// Microsoft refused to renew the sign-in (expired, revoked, the password changed): it needs
+    /// signing in again, and isn't asked again until then. A new sign-in clears it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    sign_in_again: bool,
 }
 fn owned_at_sign_in() -> bool {
     true
@@ -488,6 +502,7 @@ impl Secrets {
             minecraft_expires_at: mc.expires_at,
             xuid: mc.xuid,
             owns: true,
+            sign_in_again: false,
         }
     }
 }
@@ -506,7 +521,16 @@ enum Check {
 /// first when it has less than an hour left. The secrets come back renewed whatever the answer.
 fn check(ep: &Endpoints, client_id: Option<&str>, account: &Account, secrets: Secrets) -> Check {
     let mut secrets = secrets;
-    if secrets.minecraft_expires_at <= now() + RENEW_BEFORE {
+    // Refused before: only a new sign-in mends it.
+    if secrets.sign_in_again {
+        return Check::NoAnswer(SIGN_IN_AGAIN.into(), secrets);
+    }
+    let first_this_run = ep.renew_each_run
+        && !RENEWED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(&account.uuid);
+    if first_this_run || secrets.minecraft_expires_at <= now() + RENEW_BEFORE {
         let renewed = client_id
             .ok_or_else(|| NOT_CONFIGURED.to_string())
             .and_then(|id| refresh_ms(ep, id, &secrets.refresh_token))
@@ -516,8 +540,21 @@ fn check(ep: &Endpoints, client_id: Option<&str>, account: &Account, secrets: Se
                 secrets = Secrets {
                     owns: secrets.owns,
                     ..Secrets::new(refresh, mc)
+                };
+                if ep.renew_each_run {
+                    RENEWED
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .insert(account.uuid.clone());
                 }
             }
+            // Microsoft refused the sign-in for good: kept, so the launcher says it plainly.
+            Err(e) if e == SIGN_IN_AGAIN => {
+                secrets.sign_in_again = true;
+                return Check::NoAnswer(e, secrets);
+            }
+            // Still valid for a while: renewing can wait (no network, the run's renewal).
+            Err(_) if secrets.minecraft_expires_at > now() + 60 => {}
             Err(e) => return Check::NoAnswer(e, secrets),
         }
     }
@@ -863,6 +900,11 @@ const OFFLINE_NEEDS_OWNER: &str =
     "Offline names need a Microsoft account that owns Minecraft: Java Edition in the launcher.";
 
 /// The secrets an account keeps in `store`, if it still has them there.
+/// Whether Microsoft refused to renew this account's sign-in: it needs signing in again.
+pub fn needs_sign_in(store: &dyn SecretStore, uuid: &str) -> bool {
+    secrets_in(store, uuid).is_some_and(|s| s.sign_in_again)
+}
+
 fn secrets_in(store: &dyn SecretStore, uuid: &str) -> Option<Secrets> {
     store
         .get(uuid)

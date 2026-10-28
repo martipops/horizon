@@ -170,6 +170,7 @@ fn serve(mock: Arc<Mutex<Mock>>) -> Endpoints {
         xbox_user: format!("{base}/xbl"),
         xsts: format!("{base}/xsts"),
         minecraft: format!("{base}/mc"),
+        renew_each_run: false,
     }
 }
 
@@ -248,9 +249,10 @@ fn secrets(token: &str, owns: bool) -> Secrets {
     Secrets {
         refresh_token: "ms-refresh-1".into(),
         minecraft_token: token.into(),
-        minecraft_expires_at: now() + 7200,
+        minecraft_expires_at: now() + 20 * 3600,
         xuid: None,
         owns,
+        sign_in_again: false,
     }
 }
 
@@ -261,6 +263,7 @@ fn offline() -> Endpoints {
         xbox_user: "http://127.0.0.1:9/xbl".into(),
         xsts: "http://127.0.0.1:9/xsts".into(),
         minecraft: "http://127.0.0.1:9/mc".into(),
+        renew_each_run: false,
     }
 }
 
@@ -276,7 +279,7 @@ fn refresh_only_when_the_token_runs_out() {
         panic!("owns");
     };
     assert_eq!(kept.refresh_token, "ms-refresh-1");
-    // Entitlements and profile only: the token had two hours left.
+    // Entitlements and profile only: the token had 20 hours left.
     assert_eq!(m.lock().unwrap().log.len(), 2);
     let stale = Secrets {
         minecraft_expires_at: now() + 60,
@@ -299,10 +302,43 @@ fn refresh_only_when_the_token_runs_out() {
         minecraft_expires_at: 0,
         ..kept
     };
+    let Check::NoAnswer(e, refused) = check(&ep, Some("test-client"), &notch(), revoked) else {
+        panic!("refused");
+    };
+    // Kept as needing a new sign-in, and not asked again until then.
+    assert_eq!(
+        (e.as_str(), refused.owns, refused.sign_in_again),
+        (SIGN_IN_AGAIN, true, true)
+    );
+    let asked = m.lock().unwrap().log.len();
     assert!(matches!(
-        check(&ep, Some("test-client"), &notch(), revoked),
-        Check::NoAnswer(e, s) if e == SIGN_IN_AGAIN && s.owns
+        check(&ep, Some("test-client"), &notch(), refused),
+        Check::NoAnswer(e, _) if e == SIGN_IN_AGAIN
     ));
+    assert_eq!(m.lock().unwrap().log.len(), asked);
+}
+
+#[test]
+fn renewed_once_each_run_as_prism_does() {
+    let (m, mut ep) = mock(|_| {});
+    ep.renew_each_run = true;
+    // The only test that renews once per run: the run's set is the process's.
+    let account = notch();
+    let fresh = secrets("mc-token", true);
+    let Check::Owns(_, once) = check(&ep, Some("test-client"), &account, fresh) else {
+        panic!("owns");
+    };
+    assert_eq!(
+        once.refresh_token, "ms-refresh-2",
+        "renewed the first time this run"
+    );
+    let before = m.lock().unwrap().log.len();
+    let Check::Owns(_, again) = check(&ep, Some("test-client"), &account, once) else {
+        panic!("owns");
+    };
+    assert_eq!(again.refresh_token, "ms-refresh-2", "not twice in a run");
+    // Entitlements and profile only.
+    assert_eq!(m.lock().unwrap().log.len() - before, 2);
 }
 
 /// An accounts.json with Notch signed in and playing, his secrets in `store`.
@@ -491,6 +527,7 @@ fn accounts_keep_secrets_in_the_store_only() {
         minecraft_expires_at: 1,
         xuid: None,
         owns: true,
+        sign_in_again: false,
     };
     accounts.add(&store, account.clone(), &secrets).unwrap();
     assert_eq!(accounts.selected(), Some(&account));
@@ -556,6 +593,7 @@ fn session_files_are_private_and_complete() {
         minecraft_expires_at: 1,
         xuid: Some("25".into()),
         owns: true,
+        sign_in_again: false,
     };
     let path = write_session_file(&dir, &account, &secrets).unwrap();
     let v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();

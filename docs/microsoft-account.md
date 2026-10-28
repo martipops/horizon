@@ -108,19 +108,25 @@ download can be cancelled and goes on where it stopped. CI, agents, harnesses an
 download or keep Mojang's files.
 
 Refresh: the Minecraft token is renewed from the Microsoft refresh token (steps 2-5 with
-`grant_type=refresh_token`) when it has less than an hour left, before every launch; steps 6-7 run
-at every launch (the owner gate). A refused
-refresh token (`invalid_grant`) asks the player to sign in again. Several accounts can be signed in;
-one is selected. "Sign out" deletes the account's secrets from the keychain.
+`grant_type=refresh_token`) the first time each run of the launcher uses the account, and whenever
+it has less than 12 hours left (a fresh one lasts 24), as Prism Launcher and the official launcher
+renew; steps 6-7 run at every launch (the owner gate). A renewal that fails while the token still
+has time left waits for the next launch. A refused refresh token (`invalid_grant`: expired,
+revoked, the password changed) is kept with the account ("sign in again"): the launcher doesn't
+ask Microsoft again, `account list` and the account's row say so (Sign in again), and a new
+sign-in clears it. Several accounts can be signed in; one is selected. "Sign out" deletes the
+account's secrets from the keychain.
 
 ## Token storage
 
 - Secrets (the Microsoft refresh token, the Minecraft access token and its expiry, the last
-  ownership answer) go to the OS
-  keychain, one item per account: Keychain on macOS, Credential Manager on Windows, the Secret
-  Service (GNOME Keyring, KWallet) on Linux. Service name `dev.playhorizon.launcher`, account = the
-  Minecraft UUID. Credential Manager takes at most 2560 bytes per item, which the secrets of a sign-in
-  exceed: on macOS and Windows a longer secret is split over the items `<uuid>`, `<uuid>.1`, `<uuid>.2`...
+  ownership answer, whether it needs signing in again) go to the OS keychain: Keychain on macOS,
+  Credential Manager on Windows, the Secret Service (GNOME Keyring, KWallet) on Linux. Service name
+  `dev.playhorizon.launcher`. Every account's secrets are one item, `vault`
+  (JSON by Minecraft UUID), read once per run: macOS asks before each item a changed launcher reads,
+  so one prompt, not one per account. Credential Manager takes at most 2560 bytes per item: there
+  the vault is split over `vault`, `vault.1`, `vault.2`... Accounts kept the older way, an item per
+  account (`<uuid>`, `<uuid>.1`...), move into the vault as they are read.
 - `accounts.json` in the launcher's data folder keeps only public data: UUID, name, skin URL, which
   account is selected. Never a token.
 - No keychain available (a Linux box without a Secret Service, a locked keychain): sign-in still

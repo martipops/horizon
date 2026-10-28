@@ -3429,6 +3429,21 @@ impl Launcher {
                     ),
                 );
             }
+            // Microsoft refused to renew it: a new sign-in mends it.
+            if account::needs_sign_in(account::store(), &uuid) {
+                actions = actions.child(
+                    button(
+                        format!("sign-in-again-{i}"),
+                        "Sign in again",
+                        Kind::Secondary,
+                        &t,
+                    )
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        this.start_sign_in();
+                        cx.notify();
+                    })),
+                );
+            }
             actions = actions.child(
                 button(format!("sign-out-{i}"), "Sign out", Kind::Ghost, &t).on_click(cx.listener(
                     move |this, _: &ClickEvent, _, cx| {

@@ -1437,6 +1437,7 @@ fn account_command(action: AccountCmd, as_json: bool) -> Result<(), String> {
                     "accounts": accounts.accounts.iter().map(|a| serde_json::json!({
                         "name": a.name, "uuid": a.uuid,
                         "selected": accounts.selected.as_ref() == Some(&a.uuid),
+                        "sign_in_again": account::needs_sign_in(account::store(), &a.uuid),
                     })).collect::<Vec<_>>(),
                     "offline": accounts.offline.iter().map(|n| serde_json::json!({
                         "name": n,
@@ -1457,7 +1458,12 @@ fn account_command(action: AccountCmd, as_json: bool) -> Result<(), String> {
                     } else {
                         " "
                     };
-                    println!("{mark} {}  {}", a.name, a.uuid);
+                    // Microsoft refused to renew it.
+                    let again = match account::needs_sign_in(account::store(), &a.uuid) {
+                        true => "  (sign in again: horizon-launcher account sign-in)",
+                        false => "",
+                    };
+                    println!("{mark} {}  {}{again}", a.name, a.uuid);
                 }
                 for n in &accounts.offline {
                     let on = accounts.player() == account::Player::Offline(n.clone());
