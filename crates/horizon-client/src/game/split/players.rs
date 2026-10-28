@@ -30,6 +30,27 @@ fn boxed(start: impl FnOnce() -> Result<Option<Game<'static>>>) -> Result<Box<Ga
 }
 
 impl<'a> Split<'a> {
+    /// A server's resource packs: the others answer as P1 did (asked once, by P1). A player
+    /// joining after P1 answered is answered at once; one asked before waits for P1's answer.
+    pub(super) fn follow_pack_answer(&mut self) {
+        let Some(yes) = self.host.pack_answer() else {
+            return;
+        };
+        for i in 0..self.guests.len() {
+            if !self.guests[i].game.pack_prompt_open() {
+                continue;
+            }
+            self.turn(i + 1);
+            if let Err(e) = self.guests[i].game.answer_pack_prompt(yes) {
+                log::warn!(
+                    "Horizon: splitscreen: P{}'s server packs: {e}",
+                    self.guests[i].seat
+                );
+            }
+        }
+        self.turn(0);
+    }
+
     /// Add a player driven by `pad`: it picks a profile and where to play in its view first,
     /// unless `name` is given (tests).
     pub(super) fn join(&mut self, pad: Option<PadId>, name: Option<String>) -> Result<()> {

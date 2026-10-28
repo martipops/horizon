@@ -27,6 +27,7 @@ passed.
 """
 
 import argparse
+import contextlib
 import json
 import shutil
 import subprocess
@@ -59,7 +60,9 @@ def check(name, got, want):
 class Game:
     """One splitscreen session: P1 launched with `players` (HORIZON_SPLIT), each on its socket."""
 
-    def __init__(self, players, pick=False, seed=None, args=()):
+    def __init__(self, players, pick=False, seed=None, args=(), ready=True):
+        """`ready=False`: return once P1's game answers, before it is in a world (it may be asked
+        something first); the caller waits for the players."""
         self.home = Path(tempfile.mkdtemp(prefix='horizon-split-e2e-'))
         if seed:
             seed(self.home)
@@ -70,10 +73,14 @@ class Game:
         self.env = lab.game_env(HORIZON_HOME=self.home, **extra)
         self.players = players
         try:
-            self.ctl(1, 'launch', '--wait', '--world', 'Split', '--creative', '--resources', str(RESOURCES),
-                     '--width', str(WIDTH), '--height', str(HEIGHT), '--render-distance', '4',
+            self.ctl(1, 'launch', *(['--wait'] if ready else []), '--world', 'Split', '--creative',
+                     '--resources', str(RESOURCES), '--width', str(WIDTH), '--height', str(HEIGHT),
+                     '--render-distance', '4',
                      # Another scenario's windows closing take the focus: no pause on losing it.
                      '--no-pause', *args)
+            if not ready:
+                self.wait(lambda: self.alive(1), "P1's game")
+                return
             self.wait(lambda: all(self.alive(n) for n in range(1, players + 1)), 'every player in')
             # The automatic GUI scale keeps menus about 400 x 240: room for every row of the page.
             self.ctl(1, 'options-set', 'guiScale', '2')
@@ -485,8 +492,9 @@ def scenario_setup():
         g.quit()
 
 
-def scenario_server():
-    print('server: P1 on a dedicated server; the others join it, a kicked one drops out, all leave with P1')
+@contextlib.contextmanager
+def dedicated(**extra):
+    """A Horizon dedicated server, offline mode, started and ready: (server, port)."""
     from test_dedicated_server_parity import Server
     port = lab.free_port()
     folder = Path(tempfile.mkdtemp(prefix='hz-split-server-'))
@@ -494,7 +502,7 @@ def scenario_server():
     directory.mkdir()
     properties = {'online-mode': 'false', 'white-list': 'false', 'server-port': str(port), 'level-type': 'minecraft\\:flat',
                   'generate-structures': 'false', 'view-distance': '3', 'simulation-distance': '3',
-                  'pause-when-empty-seconds': '-1', 'spawn-protection': '0'}
+                  'pause-when-empty-seconds': '-1', 'spawn-protection': '0', **extra}
     (directory / 'server.properties').write_text(''.join(f'{k}={v}\n' for k, v in properties.items()),
                                                  encoding='iso-8859-1')
     (directory / 'eula.txt').write_text('eula=true\n')
@@ -502,6 +510,40 @@ def scenario_server():
                      '--nogui'], directory, 'server')
     try:
         server.wait_for(r'Done \(')
+        yield server, port
+    finally:
+        server.stop()
+        shutil.rmtree(folder, ignore_errors=True)
+
+
+def scenario_packs():
+    print("packs: the server's resource pack: P1 says Yes, the others follow without being asked")
+    from server_pack_e2e import Files, build_pack
+    folder = Path(tempfile.mkdtemp(prefix='hz-split-pack-'))
+    sha1 = build_pack(folder / 'pack.zip')
+    files = Files({'/pack.zip': (folder / 'pack.zip').read_bytes()})
+    try:
+        with dedicated(**{'resource-pack': files.url('/pack.zip'), 'resource-pack-sha1': sha1,
+                          'require-resource-pack': 'false'}) as (server, port):
+            g = Game(2, args=('--server', f'127.0.0.1:{port}'), ready=False)
+            try:
+                g.wait(lambda: 'Yes' in g.labels(1), "P1 asked about the server's pack", seconds=60)
+                g.ctl(1, 'click-button', 'Yes')
+                server.wait_for(r'P2 joined the game', timeout=90)
+                check("P2 joins on P1's Yes, never asked itself", True, True)
+                # P2 finds P1's copy in their shared downloads folder (same SHA-1).
+                downloads = [p for p, _ in files.requests if p == '/pack.zip']
+                check('the pack downloaded once, for both', len(downloads), 1)
+            finally:
+                g.quit()
+    finally:
+        files.shutdown()
+        shutil.rmtree(folder, ignore_errors=True)
+
+
+def scenario_server():
+    print('server: P1 on a dedicated server; the others join it, a kicked one drops out, all leave with P1')
+    with dedicated() as (server, port):
         g = Game(3, args=('--server', f'127.0.0.1:{port}'))
         try:
             server.wait_for(r'P2 joined the game', timeout=60)
@@ -515,9 +557,6 @@ def scenario_server():
             check('P1 leaves: P2 leaves with it', True, True)
         finally:
             g.quit()
-    finally:
-        server.stop()
-        shutil.rmtree(folder, ignore_errors=True)
 
 
 def scenario_eight():
@@ -555,6 +594,7 @@ SCENARIOS = {
     'monitor': scenario_monitor,
     'setup': scenario_setup,
     'server': scenario_server,
+    'packs': scenario_packs,
 }
 
 

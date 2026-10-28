@@ -658,6 +658,7 @@ impl ApplicationHandler for Split<'_> {
             }
         }
         changed |= self.pick_profiles();
+        self.follow_pack_answer();
         // Testing: players without controllers, one per frame, once.
         if self.in_world() && self.test_players > 0 {
             // HORIZON_SPLIT_PICK: they pick a profile like a controller's player, else P2...
