@@ -110,16 +110,12 @@ pub enum Mode {
     Profiles {
         names: Vec<String>,
         taken: Vec<String>,
-        /// The profile whose Delete asked: "Delete it?"
-        deleting: Option<String>,
     },
-    /// A new profile's name, or (`editing`, its name before) a profile being edited.
     NewProfile {
         name: String,
         focused: bool,
         names: Vec<String>,
         taken: Vec<String>,
-        editing: Option<String>,
     },
     /// CreateFlatWorldScreen over Create New World: the fields that screen
     /// keeps and the superflat editor on top of them.
@@ -178,10 +174,8 @@ pub struct Title {
     recent: std::cell::RefCell<Option<(std::time::Instant, Vec<WorldEntry>)>>,
     /// Splitscreen: the profile a joining player chose, or `None` to leave (`profiles.rs`).
     profile_choice: Option<Option<String>>,
-    /// Splitscreen: a profile deleted on the picker, for the game to remove (`profiles.rs`).
-    profile_deleted: Option<String>,
-    /// Splitscreen: a profile renamed on the picker (before, after), for the game to move.
-    profile_renamed: Option<(String, String)>,
+    /// Splitscreen: the picker's names that are signed-in Microsoft accounts.
+    profile_accounts: Vec<String>,
     /// WorldCreationGameRulesScreen, over Create New World while it is open.
     rules: RefCell<Option<RulesScreen>>,
 }
@@ -294,8 +288,7 @@ impl Title {
             ),
             recent: std::cell::RefCell::new(None),
             profile_choice: None,
-            profile_deleted: None,
-            profile_renamed: None,
+            profile_accounts: Vec::new(),
             rules: RefCell::new(None),
         }
     }
@@ -1295,13 +1288,10 @@ impl Title {
                 right.u0 = r.u1 - (r.u1 - r.u0) * (half / r.w as f32);
                 batch.rect_uv(b.x + half, b.y, half, 20.0, right, u32::MAX);
             }
-            let color = if !b.enabled {
-                rgba(160, 160, 160, 255)
-            } else if matches!(self.mode, Mode::NewProfile { .. }) && b.id == profiles::DELETE_ASK {
-                // A splitscreen profile's Delete: red words, as a danger.
-                rgba(255, 85, 85, 255)
-            } else {
+            let color = if b.enabled {
                 u32::MAX
+            } else {
+                rgba(160, 160, 160, 255)
             };
             if let Some((icon, size)) = b.icon {
                 // CenteredIcon divides the button and sprite sizes separately:

@@ -144,6 +144,9 @@ pub(super) struct Split<'a> {
     /// The launcher's offline names, the profiles to pick from (`launcher.rs`); none without
     /// the launcher.
     launcher: Option<Vec<launcher::Profile>>,
+    /// The launcher's other Microsoft accounts' sessions, for splitscreen players to sign in
+    /// with (`launcher::accounts`).
+    accounts: Vec<std::sync::Arc<horizon_client::auth::AuthSession>>,
     /// The game's window and its compositor first, then monitors' and players' own.
     surfaces: Vec<Surface>,
     /// The views the players were last fitted to.
@@ -224,6 +227,7 @@ impl<'a> Split<'a> {
             frame_started: None,
             p1_name: (p1_name, Instant::now()),
             launcher: launcher::profiles(),
+            accounts: launcher::accounts(),
             surfaces,
             applied: Vec::new(),
             window_rects: Default::default(),

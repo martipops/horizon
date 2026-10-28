@@ -1,9 +1,11 @@
 //! The launcher's offline names as splitscreen profiles: one list. The launcher hands the game
 //! every name with its look (`HORIZON_PROFILES`) and itself (`HORIZON_LAUNCHER_EXE`); a joining
-//! player picks from them, and making, renaming or forgetting one goes through the launcher's
-//! own commands, so its list stays the one list. Each name keeps its options in its profile
-//! folder. Without the launcher (a development run) the folders are the list.
-use std::path::PathBuf;
+//! player picks from them, and a name made on the picker is kept by the launcher too
+//! (`add-offline`), so its list stays the one list: the launcher manages them. Each name keeps
+//! its options in its profile folder. Without the launcher (a development run) the folders are
+//! the list.
+use horizon_client::auth::AuthSession;
+use std::{path::PathBuf, sync::Arc};
 
 /// An offline name and its skin, as the launcher keeps them.
 #[derive(Clone, Debug, PartialEq)]
@@ -34,8 +36,28 @@ fn parse(json: &str) -> Option<Vec<Profile>> {
     )
 }
 
-/// One of the launcher's account commands (`add-offline`, `rename-offline`, `forget-offline`),
-/// run beside the game: its data is the launcher's to change. Nothing without a launcher.
+/// The launcher's other signed-in accounts (`HORIZON_ACCOUNT_SESSIONS`: name, uuid and a session
+/// file each), for splitscreen players to sign in with. Read at once: the files go when read and
+/// are refused once a couple of minutes old.
+pub(super) fn accounts() -> Vec<Arc<AuthSession>> {
+    let Ok(json) = std::env::var("HORIZON_ACCOUNT_SESSIONS") else {
+        return Vec::new();
+    };
+    let list: Vec<serde_json::Value> = serde_json::from_str(&json).unwrap_or_default();
+    list.iter()
+        .filter_map(|a| a.get("file")?.as_str())
+        .filter_map(|file| match AuthSession::load(std::path::Path::new(file)) {
+            Ok(session) => Some(Arc::new(session)),
+            Err(e) => {
+                log::warn!("Horizon: splitscreen: an account's session: {e}");
+                None
+            }
+        })
+        .collect()
+}
+
+/// One of the launcher's account commands (`add-offline`), run beside the game: its data is the
+/// launcher's to change. Nothing without a launcher.
 pub(super) fn run(args: &[&str]) {
     let Some(exe) = std::env::var_os("HORIZON_LAUNCHER_EXE") else {
         return;

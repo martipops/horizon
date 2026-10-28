@@ -1509,6 +1509,9 @@ struct Game<'a> {
     /// view's centre). Alone: true, and the window's corner.
     keyboard_mouse: bool,
     view_at: [u32; 2],
+    /// Splitscreen: this player's own Microsoft account session (one of the launcher's other
+    /// accounts), in place of the process's (P1's) for its connections and skin.
+    split_auth: Option<std::sync::Arc<horizon_client::auth::AuthSession>>,
     /// Splitscreen: what it draws over this player's view (its badge, frame, questions).
     split_hud: split::Hud,
     focused: bool,
@@ -13865,6 +13868,7 @@ impl<'a> Game<'a> {
             captured: false,
             keyboard_mouse: true,
             view_at: [0, 0],
+            split_auth: None,
             split_hud: Default::default(),
             focused: true,
             modifiers: winit::keyboard::ModifiersState::empty(),

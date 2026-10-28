@@ -293,28 +293,11 @@ def scenario_live():
 
 
 def scenario_picker():
-    print('picker: rename and delete a profile, RB to a new window, then a new profile')
-
-    def seed(home):
-        (home / 'splitscreen/profiles/Zed').mkdir(parents=True)
-
-    g = Game(2, pick=True, seed=seed)
+    print('picker: RB to a new window, then a new profile')
+    g = Game(2, pick=True)
     try:
-        menu = lambda: g.ctl(2, 'state').get('menu') or {}  # noqa: E731
-        g.wait(lambda: menu().get('mode') == 'splitscreen-profiles', 'the picker')
-        check('Zed on the list', menu().get('profiles'), ['Zed'])
-        # Edit: renamed Zed -> Zoe (its folder moves), then Edit, Delete, and Delete again to
-        # confirm.
-        g.ctl(2, 'click-button', 'Edit')
-        g.ctl(2, 'type', '--replace', 'Zoe')
-        g.ctl(2, 'click-button', 'Save')
-        g.wait(lambda: (g.home / 'splitscreen/profiles/Zoe').exists(), 'Zed renamed Zoe', seconds=5)
-        check('renamed on the list', menu().get('profiles'), ['Zoe'])
-        g.ctl(2, 'click-button', 'Edit')
-        g.ctl(2, 'click-button', 'Delete')
-        g.ctl(2, 'click-button', 'Delete')
-        g.wait(lambda: not (g.home / 'splitscreen/profiles/Zoe').exists(), "Zoe's folder gone", seconds=5)
-        check('Zoe deleted', menu().get('profiles'), [])
+        g.wait(lambda: (g.ctl(2, 'state').get('menu') or {}).get('mode') == 'splitscreen-profiles',
+               'the picker')
         half = g.size(1)  # P2 picks in Window 1 beside P1
         g.ctl(2, 'pad', 'rb', 'tap')  # Window 1 -> New window
         g.settle([1], [(2 * half[0], half[1])])
@@ -704,39 +687,42 @@ def scenario_pointer():
 
 
 def scenario_launcher():
-    print("launcher: the picker lists the launcher's offline names; changes go to the launcher")
+    print("launcher: its offline names and other accounts are the profiles; a new one is kept there")
     folder = Path(tempfile.mkdtemp(prefix='hz-launcher-'))
     log = folder / 'calls.txt'
     # The launcher's stand-in: records each command it gets.
     fake = folder / 'launcher'
     fake.write_text(f'#!/bin/sh\necho "$@" >> {log}\n')
     fake.chmod(0o755)
+    # Another signed-in account's session, as the launcher writes it (a token nobody checks:
+    # P1's own world is offline-mode).
+    session = folder / 'session-ann.json'
+    session.write_text(json.dumps({'name': 'Ann', 'uuid': '069a79f444e94726a5befca90e38aaf5',
+                                   'access_token': 'not-a-real-token', 'user_type': 'msa'}))
+    session.chmod(0o600)
     os.environ['HORIZON_PROFILES'] = json.dumps([{'name': 'Bea', 'skin': None, 'model': None, 'cape': None}])
     os.environ['HORIZON_LAUNCHER_EXE'] = str(fake)
-    g = Game(2, pick=True)
+    os.environ['HORIZON_ACCOUNT_SESSIONS'] = json.dumps(
+        [{'name': 'Ann', 'uuid': '069a79f444e94726a5befca90e38aaf5', 'file': str(session)}])
+    g = Game(3, pick=True)
     try:
-        menu = lambda: g.ctl(2, 'state').get('menu') or {}  # noqa: E731
-        g.wait(lambda: menu().get('mode') == 'splitscreen-profiles', 'the picker')
-        check("the launcher's name on the list", menu().get('profiles'), ['Bea'])
+        menu = lambda n: g.ctl(n, 'state').get('menu') or {}  # noqa: E731
+        g.wait(lambda: menu(2).get('mode') == 'splitscreen-profiles', 'the picker')
+        check('offline names, then the accounts', menu(2).get('profiles'), ['Bea', 'Ann'])
+        check('the account marked', 'Ann (Microsoft)' in g.labels(2), True)
+        g.ctl(2, 'click-button', 'Ann (Microsoft)')
+        g.wait(lambda: g.ctl(2, 'state').get('player') is not None, 'Ann in the world')
         calls = lambda: log.read_text().splitlines() if log.exists() else []  # noqa: E731
-        g.ctl(2, 'click-button', 'Edit')
-        g.ctl(2, 'type', '--replace', 'Bee')
-        g.ctl(2, 'click-button', 'Save')
-        g.wait(lambda: 'account rename-offline Bea Bee' in calls(), 'the launcher renaming it', seconds=5)
-        g.ctl(2, 'click-button', 'Edit')
-        g.ctl(2, 'click-button', 'Delete')
-        g.ctl(2, 'click-button', 'Delete')
-        g.wait(lambda: 'account forget-offline Bee' in calls(), 'the launcher forgetting it', seconds=5)
-        g.ctl(2, 'click-button', 'New Profile...')
-        g.ctl(2, 'type', 'Dan')
-        g.ctl(2, 'click-button', 'Create')
+        g.wait(lambda: menu(3).get('mode') == 'splitscreen-profiles', "P3's picker")
+        g.ctl(3, 'click-button', 'New Profile...')
+        g.ctl(3, 'type', 'Dan')
+        g.ctl(3, 'click-button', 'Create')
         g.wait(lambda: 'account add-offline Dan' in calls(), 'the launcher keeping the new one', seconds=5)
-        check('the launcher heard each change', calls(),
-              ['account rename-offline Bea Bee', 'account forget-offline Bee', 'account add-offline Dan'])
+        check('only the new name went to the launcher', calls(), ['account add-offline Dan'])
     finally:
         g.quit()
-        os.environ.pop('HORIZON_PROFILES', None)
-        os.environ.pop('HORIZON_LAUNCHER_EXE', None)
+        for key in ('HORIZON_PROFILES', 'HORIZON_LAUNCHER_EXE', 'HORIZON_ACCOUNT_SESSIONS'):
+            os.environ.pop(key, None)
 
 
 SCENARIOS = {

@@ -79,10 +79,14 @@ impl<'a> Split<'a> {
                 names.push(p.name.clone());
             }
         }
+        // The other Microsoft accounts: a player signs in with one as itself.
+        let accounts: Vec<String> = self.accounts.iter().map(|a| a.name.clone()).collect();
+        names.retain(|n| !accounts.iter().any(|a| a.eq_ignore_ascii_case(n)));
         names.sort_by_key(|n| n.to_lowercase());
+        names.extend(accounts.iter().cloned());
         let taken = self.taken();
         if let Some(title) = game.title.as_mut() {
-            title.profile_picker(names, taken);
+            title.profile_picker(names, taken, accounts);
         }
         self.guests.push(Guest {
             game,
@@ -114,8 +118,11 @@ impl<'a> Split<'a> {
         if self.taken().contains(&name) {
             return Err(format!("{name} is already playing").into());
         }
+        // A Microsoft account signs in as itself (its own connections and skin).
+        let account = self.accounts.iter().find(|a| a.name == name).cloned();
+        self.guests[i].game.split_auth = account.clone();
         // One list: a name new to the launcher is kept there too, and plays with its skin.
-        if let Some(list) = &mut self.launcher {
+        if let (None, Some(list)) = (&account, &mut self.launcher) {
             if !list.iter().any(|p| p.name.eq_ignore_ascii_case(&name)) {
                 launcher::run(&["add-offline", &name]);
                 list.push(launcher::Profile {
@@ -172,64 +179,6 @@ impl<'a> Split<'a> {
         let mut changed = false;
         let mut i = 0;
         while i < self.guests.len() {
-            // A profile deleted on the picker: its folder (its options), unless it plays now. The
-            // picker takes only valid names, so it's always one folder under `profiles`.
-            let deleted = self.guests[i]
-                .game
-                .title
-                .as_mut()
-                .and_then(|t| t.take_deleted_profile());
-            if let Some(name) = deleted.filter(|n| {
-                horizon_client::title::valid_profile_name(n) && !self.taken().contains(n)
-            }) && let Ok(folder) = Self::folder()
-            {
-                let path = folder.join("profiles").join(&name);
-                if path.exists()
-                    && let Err(e) = std::fs::remove_dir_all(&path)
-                {
-                    log::warn!("Horizon: splitscreen: deleting profile {name}: {e}");
-                }
-                // The launcher forgets it too, its skin with it.
-                if let Some(list) = &mut self.launcher
-                    && list.iter().any(|p| p.name.eq_ignore_ascii_case(&name))
-                {
-                    list.retain(|p| !p.name.eq_ignore_ascii_case(&name));
-                    launcher::run(&["forget-offline", &name]);
-                }
-            }
-            // A profile renamed on the picker: its folder moves (not one playing now, not onto
-            // another profile's).
-            let renamed = self.guests[i]
-                .game
-                .title
-                .as_mut()
-                .and_then(|t| t.take_renamed_profile());
-            if let Some((before, after)) = renamed.filter(|(b, a)| {
-                let valid = horizon_client::title::valid_profile_name;
-                valid(b) && valid(a) && !self.taken().contains(b)
-            }) && let Ok(folder) = Self::folder()
-            {
-                let profiles = folder.join("profiles");
-                // A case change only is the same folder on some systems: no "already there".
-                let clash = !after.eq_ignore_ascii_case(&before) && profiles.join(&after).exists();
-                // A launcher name may have no folder yet (it never played here).
-                let moved = match (clash, profiles.join(&before).exists()) {
-                    (true, _) => Err(std::io::Error::other("a profile has that name")),
-                    (false, true) => std::fs::rename(profiles.join(&before), profiles.join(&after)),
-                    (false, false) => Ok(()),
-                };
-                if let Err(e) = moved {
-                    log::warn!("Horizon: splitscreen: renaming profile {before} to {after}: {e}");
-                }
-                if let Some(list) = &mut self.launcher
-                    && let Some(p) = list
-                        .iter_mut()
-                        .find(|p| p.name.eq_ignore_ascii_case(&before))
-                {
-                    p.name.clone_from(&after);
-                    launcher::run(&["rename-offline", &before, &after]);
-                }
-            }
             let choice = match self.guests[i].name {
                 None => self.guests[i]
                     .game
