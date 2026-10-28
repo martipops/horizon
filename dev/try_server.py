@@ -8,8 +8,8 @@ Ctrl-C, or closing the game, ends it all. Uses throwaway folders, never your rea
 
     --players N    players in all (default 2; the others stop at the picker too)
     --server HOST  join this server (yours, already running) instead of starting one
-    --launcher     the picker lists your launcher's offline names and other accounts
-                   (as dev/launch.py's "Splitscreen profiles: launcher")
+    --launcher     P1 signs in as your launcher's account (online-mode servers need it), and
+                   the picker lists its offline names and other accounts (as dev/launch.py)
 """
 import argparse
 import contextlib
@@ -53,11 +53,22 @@ def main():
         print(f'Server on {address}', flush=True)
         if args.server:
             wait_for(address)
+        extra = ['--server', address]
         if args.launcher:
             import launch
-            env, sessions = launch.profiles_env(Path(e.tempfile.mkdtemp(prefix='hz-try-')), None)
+            home = Path(e.tempfile.mkdtemp(prefix='hz-try-'))
+            # P1: the launcher's account that plays first; the other accounts are the picker's.
+            p1 = next(iter(launch.accounts()), None)
+            if p1:
+                session, why = launch.session_file(home, *p1)
+                if session:
+                    extra += ['--session-file', str(session)]
+                    print(f'P1 signs in as {p1[0]}', flush=True)
+                else:
+                    print(f'P1 plays offline: {why}', flush=True)
+            env, sessions = launch.profiles_env(home, p1 and p1[0])
             os.environ.update(env)
-        g = e.Game(args.players, pick=True, args=('--server', address))
+        g = e.Game(args.players, pick=True, args=tuple(extra))
         try:
             g.wait(lambda: (g.ctl(2, 'state').get('menu') or {}).get('mode') == 'splitscreen-profiles',
                    "P2's profile picker", seconds=60)
