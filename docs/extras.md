@@ -131,8 +131,10 @@ and the container screen tests are unchanged).
 
 ### Splitscreen (`splitscreen`, default off; `splitscreenTwo`, `splitscreenThree`, default 0)
 Up to 8 players on one computer, each with a controller, as on a console
-(`game/split.rs`, `game/split/`, `split_ui.rs`, `split_layout.rs`). Horizon
-Settings → Splitscreen... opens the Setup screen, which holds the switch.
+(`game/split.rs`, `game/split/`, `split_ui.rs`, `split_profiles.rs`,
+`split_layout.rs`). Horizon Settings → Splitscreen... opens the Setup screen,
+which holds the switch. While splitscreen is on, every player's pause menu has
+**Splitscreen Settings**: P1's Setup screen, another player's profiles.
 
 - **Joining:** in a world, another controller pressing a button is offered to
   join; A adds a player, who picks a profile while its bumpers choose where its
@@ -152,18 +154,23 @@ Settings → Splitscreen... opens the Setup screen, which holds the switch.
   players with the mouse (drag, or click then a destination) or the controller
   (A picks up, left/right or LB/RB cycle, A drops, B puts back), swap two players; a square
   button for how two (or three) share a window shows while a window has that
-  many. Nothing changes until Apply. Other players open it too and move only
-  themselves, through the same places as their bumpers (dropped on another
-  player's tile, they take that place).
-- **Leaving:** a player's pause menu (Leave). Holding Select 2 s opens the
-  splitscreen menu: A or B close, X switch profile, Y Setup, LB/RB move;
-  P1's X gives its controller away. A controller that disconnects leaves its player waiting:
+  many. Nothing changes until Apply. It is P1's: the others move themselves
+  with their bumpers on their profile page.
+- **Switching profile:** another player's Splitscreen Settings lists the
+  profiles again; it plays on beneath until it picks one (Cancel changes
+  nothing), and its bumpers move its view meanwhile. Before it goes, the page
+  says when the pick can't play: an offline profile on an online-mode server,
+  or a Microsoft account whose sign-in has expired (sign in again in the
+  launcher, then restart the game).
+- **Leaving:** a player's pause menu (Leave). A controller that disconnects leaves its player waiting:
   the same controller back takes it again, A on another takes over, B on
   another lets it leave.
 - **Servers:** the others join wherever P1 plays: its own world (through
-  memory) or a server, LAN world or friend's invite, each as its own profile
-  without an account. Online-mode servers refuse them (no Microsoft account of
-  their own), and P1 is told why. A server's resource packs follow P1's answer.
+  memory) or a server, LAN world or friend's invite, each as its own profile.
+  On an online-mode server only Microsoft accounts can join (the profile page
+  says so first); a player the server still turns away (whitelist, a sign-in
+  Mojang refused) is back on its profile page, told why. A server's resource
+  packs follow P1's answer.
 - **Sound:** one output; each sound is heard from the nearest player's camera,
   once.
 - **Limits:** one keyboard and mouse (they drive the player whose view was

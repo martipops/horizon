@@ -1,11 +1,13 @@
 //! What splitscreen draws over a player's view: its badge, questions answered with the pad and
-//! notices; opening the Setup screen.
+//! notices; the pause menu's Splitscreen Settings.
 use super::*;
 
 /// What splitscreen draws over a player's view (`Game::split_hud`): its corner badge (who, and a
-/// moment where), a question its controller answers, and notices nobody has to answer.
+/// moment where), a question its controller answers, and notices nobody has to answer; and
+/// whether its pause menu has Splitscreen Settings (splitscreen is on).
 #[derive(Default)]
 pub(in crate::game) struct Hud {
+    pub(in crate::game) menu: bool,
     pub(super) badge: Option<String>,
     pub(super) place: Option<(String, Instant)>,
     pub(super) prompt: Option<Prompt>,
@@ -33,28 +35,6 @@ impl Notice {
     }
 }
 
-/// `text` in lines no wider than `max` (by `width`), broken between words.
-fn wrap(text: &str, max: f32, width: impl Fn(&str) -> f32) -> Vec<String> {
-    let mut lines = Vec::new();
-    let mut line = String::new();
-    for word in text.split_whitespace() {
-        let longer = if line.is_empty() {
-            word.to_owned()
-        } else {
-            format!("{line} {word}")
-        };
-        if width(&longer) > max && !line.is_empty() {
-            lines.push(std::mem::replace(&mut line, word.to_owned()));
-        } else {
-            line = longer;
-        }
-    }
-    if !line.is_empty() {
-        lines.push(line);
-    }
-    lines
-}
-
 /// The prompts' and notices' box: dark, a faint edge.
 fn panel(batch: &mut HudBatch, atlas: &horizon_client::hud::HudAtlas, [px, py, pw, ph]: [f32; 4]) {
     batch.fill(atlas, px, py, pw, ph, rgba(0, 0, 0, 210));
@@ -78,13 +58,11 @@ pub(super) struct Prompt {
 }
 
 /// What a prompt asks: a controller may join (every view, a strip at the top: nobody stops
-/// playing for it), this player leaving, P1's controller going (the view dimmed beneath).
+/// playing for it), or its controller disconnected (the view dimmed beneath: any controller
+/// answers).
 #[derive(Clone, Copy, PartialEq)]
 pub(super) enum Ask {
     Join,
-    Leave,
-    Controller,
-    /// Its controller disconnected: any controller answers.
     Lost,
 }
 
@@ -98,12 +76,15 @@ pub(super) fn lost_prompt(name: &str) -> Prompt {
 }
 
 impl Game<'_> {
-    /// The Splitscreen Setup screen, from the controller: Done goes back to playing.
-    pub(super) fn open_split_setup(&mut self) {
-        if self.screen == crate::game::Screen::Playing && self.title.is_none() {
-            self.capture(false);
-        }
-        self.open_options_at(false, horizon_client::options_ui::Page::SplitSetup);
+    /// The pause menu's Splitscreen Settings: P1's Setup screen; another player's profile page,
+    /// to switch (it plays on until the new profile can join).
+    pub(in crate::game) fn open_split_settings(&mut self) {
+        use horizon_client::options_ui::Page;
+        let page = match self.options.split_guest {
+            true => Page::SplitProfiles,
+            false => Page::SplitSetup,
+        };
+        self.open_options_at(false, page);
     }
 
     /// An error stops the event loop, as ever, but not in another splitscreen player's game:
@@ -189,7 +170,7 @@ impl Game<'_> {
             return;
         }
         let max = (w - 24.0).min(260.0);
-        let lines = wrap(&notice.body, max, width);
+        let lines = horizon_client::split_profiles::wrap(&notice.body, max, width);
         let inner = lines
             .iter()
             .map(|l| width(l))
@@ -246,28 +227,5 @@ impl<'a> Split<'a> {
         if let Some(game) = self.game_mut(i) {
             game.split_hud.place = place;
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::wrap;
-
-    #[test]
-    fn a_notice_wraps_to_the_view_between_words() {
-        // Each character 6 wide: no line over 60.
-        let width = |s: &str| 6.0 * s.len() as f32;
-        let lines = wrap("This server needs each player's own account", 60.0, width);
-        assert!(lines.iter().all(|l| width(l) <= 60.0));
-        assert_eq!(
-            lines.join(" "),
-            "This server needs each player's own account"
-        );
-        // A word longer than the line keeps a line of its own.
-        assert_eq!(
-            wrap("a verylongwordindeed b", 30.0, width),
-            ["a", "verylongwordindeed", "b"]
-        );
-        assert!(wrap("", 60.0, width).is_empty());
     }
 }

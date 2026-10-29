@@ -3172,6 +3172,10 @@ impl Game<'_> {
             .collect();
         Some((players, r.online_mode, upside_down))
     }
+    /// Connected to a server in online mode (its Login): each player needs its own account.
+    pub(super) fn online_server(&self) -> bool {
+        self.remote.as_ref().is_some_and(|r| r.online_mode)
+    }
     /// This player's account: a splitscreen player's own, else the game's (P1's).
     pub(super) fn auth(&self) -> Option<std::sync::Arc<horizon_client::auth::AuthSession>> {
         match self.options.split_guest {

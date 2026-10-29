@@ -1,4 +1,4 @@
-//! The Setup screen's side in the game: the arrangement as a draft, and Apply.
+//! P1's Setup screen's side in the game: the arrangement as a draft, and Apply.
 use super::*;
 
 impl<'a> Split<'a> {
@@ -111,12 +111,11 @@ impl<'a> Split<'a> {
         }
     }
 
-    /// The Setup screen on any player's options: the arrangement now, the monitors and the
-    /// players' names; Apply arranges them. True when it did.
+    /// P1's Setup screen: the arrangement now, the monitors and the players' names; Apply
+    /// arranges them. True when it did.
     pub(super) fn sync_setup(&mut self) -> bool {
         use horizon_client::options_ui::Page;
-        let open = |g: &Game<'_>| g.ui.options.page() == Page::SplitSetup;
-        if !(open(&self.host) || self.guests.iter().any(|g| open(&g.game))) {
+        if self.host.ui.options.page() != Page::SplitSetup {
             return false;
         }
         let live = self.draft();
@@ -133,45 +132,20 @@ impl<'a> Split<'a> {
             .collect();
         let seats: Vec<usize> = (0..self.players()).map(|i| self.who(i).0).collect();
         let moved = std::mem::replace(&mut self.setup_seats, seats) != self.setup_seats;
-        let (mut applied, mut identify) = (Vec::new(), false);
-        let games =
-            std::iter::once(&mut self.host).chain(self.guests.iter_mut().map(|g| &mut *g.game));
-        for (i, game) in games.enumerate() {
-            let setup = &mut game.ui.options.split_setup;
-            // Someone joined or left: every draft would put the players in the wrong places.
-            if moved {
-                setup.reset();
-            }
-            if let Some(draft) = setup.apply.take().filter(|_| i == 0) {
-                applied.push((i, Ok(draft)));
-            }
-            if let Some(spot) = setup.apply_move.take().filter(|_| i > 0) {
-                applied.push((i, Err(spot)));
-            }
-            identify |= std::mem::take(&mut setup.identify);
-            // P1 arranges everyone; the others, themselves.
-            setup.me = i;
-            setup.host = i == 0;
-            setup.live = Some(live.clone());
-            setup.monitors = monitors.clone();
-            setup.main = main.clone();
-            setup.names = names.clone();
+        let setup = &mut self.host.ui.options.split_setup;
+        // Someone joined or left: the draft would put the players in the wrong places.
+        if moved {
+            setup.reset();
         }
-        let changed = !applied.is_empty();
-        for (i, change) in applied {
-            match change {
-                Ok(draft) => self.apply(draft),
-                // Another player's move: a window it named may have closed since.
-                Err((Spot::Window(n), _)) if self.placement(n).is_none() => {
-                    self.choose(i, Spot::Window(1))
-                }
-                Err((spot, place)) => {
-                    self.choose(i, spot);
-                    if let Some(k) = place {
-                        self.put_at(i, k);
-                    }
-                }
-            }
+        let applied = setup.apply.take();
+        let identify = std::mem::take(&mut setup.identify);
+        setup.live = Some(live);
+        setup.monitors = monitors;
+        setup.main = main;
+        setup.names = names;
+        let changed = applied.is_some();
+        if let Some(draft) = applied {
+            self.apply(draft);
         }
         // Every view says where it is: after a change, or asked.
         if changed || identify {

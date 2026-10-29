@@ -1,6 +1,15 @@
 //! Players coming and going: joining (P1's world through memory, or P1's server), picking a
-//! profile, dropping out.
+//! profile or switching to another (`split_profiles`), dropping out.
 use super::*;
+use horizon_client::options_ui::Page;
+
+/// An offline profile on an online-mode server: the session service knows no such player.
+const ONLINE_ONLY: &str = "This server is in online mode: offline profiles can't join it. Pick a Microsoft account, or sign in to another in the launcher.";
+
+/// Whether `game` shows its profile page now.
+fn on_profiles(game: &Game<'_>) -> bool {
+    game.screen == crate::game::Screen::Options && game.ui.options.page() == Page::SplitProfiles
+}
 
 /// Why a player's game left its server, when the server said (its Disconnected or error screen).
 pub(super) fn turned_away(game: &Game<'_>) -> Option<String> {
@@ -64,30 +73,8 @@ impl<'a> Split<'a> {
         if let Some(pad) = pad {
             self.fresh.push(pad);
         }
-        // The launcher's offline names, and profiles made before (or without) it.
-        let profiles = Self::folder()?.join("profiles");
-        let mut names: Vec<String> = std::fs::read_dir(&profiles)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .filter(|e| e.path().is_dir())
-            .filter_map(|e| e.file_name().into_string().ok())
-            .filter(|n| horizon_client::title::valid_profile_name(n))
-            .collect();
-        for p in self.launcher.iter().flatten() {
-            if !names.iter().any(|n| n.eq_ignore_ascii_case(&p.name)) {
-                names.push(p.name.clone());
-            }
-        }
-        // The other Microsoft accounts: a player signs in with one as itself.
-        let accounts: Vec<String> = self.accounts.iter().map(|a| a.name.clone()).collect();
-        names.retain(|n| !accounts.iter().any(|a| a.eq_ignore_ascii_case(n)));
-        names.sort_by_key(|n| n.to_lowercase());
-        names.extend(accounts.iter().cloned());
-        let taken = self.taken();
-        if let Some(title) = game.title.as_mut() {
-            title.profile_picker(names, taken, accounts);
-        }
+        // Over its title screen: Cancel leaves (`pick_profiles`).
+        game.open_options_at(true, Page::SplitProfiles);
         self.guests.push(Guest {
             game,
             name: None,
@@ -97,12 +84,101 @@ impl<'a> Split<'a> {
             options,
             widgets: Default::default(),
             bumpers: [false; 2],
-            hold: HoldSelect::default(),
         });
         if let Some(name) = name {
             self.enter(self.guests.len() - 1, name)?;
         }
         Ok(())
+    }
+
+    /// The profiles to pick from: the launcher's offline names and profiles made before (or
+    /// without) it, then the other Microsoft accounts (a player signs in with one as itself).
+    fn profile_names(&self) -> Result<(Vec<String>, Vec<String>)> {
+        let profiles = Self::folder()?.join("profiles");
+        let mut names: Vec<String> = std::fs::read_dir(&profiles)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|e| e.path().is_dir())
+            .filter_map(|e| e.file_name().into_string().ok())
+            .filter(|n| horizon_client::split_profiles::valid_name(n))
+            .collect();
+        for p in self.launcher.iter().flatten() {
+            if !names.iter().any(|n| n.eq_ignore_ascii_case(&p.name)) {
+                names.push(p.name.clone());
+            }
+        }
+        let accounts: Vec<String> = self.accounts.iter().map(|a| a.name.clone()).collect();
+        names.retain(|n| !accounts.iter().any(|a| a.eq_ignore_ascii_case(n)));
+        names.sort_by_key(|n| n.to_lowercase());
+        names.extend(accounts.iter().cloned());
+        Ok((names, accounts))
+    }
+
+    /// The profile pages just opened, filled: the list, who plays now, and the player's own
+    /// profile when it switches. The Setup screen is P1's: another player opening it (Horizon
+    /// Settings) gets its profiles instead.
+    pub(super) fn sync_profiles(&mut self) {
+        for g in &mut self.guests {
+            if g.game.screen == crate::game::Screen::Options
+                && g.game.ui.options.page() == Page::SplitSetup
+            {
+                g.game.open_split_settings();
+            }
+        }
+        let open = |g: &Guest<'_>| on_profiles(&g.game) && !g.game.ui.options.split_profiles.filled;
+        if !self.guests.iter().any(open) {
+            return;
+        }
+        let (names, accounts) = match self.profile_names() {
+            Ok(list) => list,
+            Err(e) => {
+                log::warn!("Horizon: splitscreen: the profiles: {e}");
+                Default::default()
+            }
+        };
+        let taken = self.taken();
+        for g in self.guests.iter_mut().filter(|g| open(g)) {
+            let page = &mut g.game.ui.options.split_profiles;
+            page.filled = true;
+            page.names = names.clone();
+            page.taken = taken.clone();
+            page.accounts = accounts.clone();
+            page.current = g.name.clone();
+        }
+    }
+
+    /// Whether `name` can play in P1's world, said on the profile page before it tries: P1's
+    /// own world takes anyone, an online-mode server only a Microsoft account whose sign-in
+    /// still holds (the launcher renews it, and hands the game a session at start).
+    fn can_join(&self, name: &str) -> std::result::Result<(), String> {
+        if self.taken().iter().any(|n| n == name) {
+            return Err(format!("{name} is already playing."));
+        }
+        if self.p1_server().is_none() || !self.host.online_server() {
+            return Ok(());
+        }
+        match self.accounts.iter().find(|a| a.name == name) {
+            None => Err(ONLINE_ONLY.to_owned()),
+            Some(a) if a.expired() => Err(format!(
+                "{name}'s Microsoft sign-in has expired. Sign in again in the launcher, then restart the game."
+            )),
+            Some(_) => Ok(()),
+        }
+    }
+
+    /// Guest `i`, playing, switches to profile `name` where it plays: out of the world as its
+    /// old profile, in as the new one.
+    fn switch(&mut self, i: usize, name: String) -> Result<()> {
+        self.turn(i + 1);
+        let left = self.guests[i].game.leave_server(None);
+        self.turn(0);
+        let old = self.guests[i].name.take();
+        if let (Some(server), Some(old)) = (&self.host.integrated, &old) {
+            server.leave_split(old);
+        }
+        left?;
+        self.enter(i, name)
     }
 
     /// The names playing now: P1's and the joined players'.
@@ -152,14 +228,16 @@ impl<'a> Split<'a> {
         self.guests[i].options = options;
         self.turn(i + 1);
         let guest = &mut self.guests[i];
+        // Its profile page closes as it goes in.
+        guest.game.screen = crate::game::Screen::Playing;
         settings.extras.agent_control &= guest.game.options.control.is_some();
         guest.game.settings = settings;
         guest.game.options.player_name = Some(name.clone());
         guest.game.apply_settings();
         let joined = match via {
             Ok(pipe) => guest.game.connect_local(pipe, &name),
-            // A server that refuses it (online mode, the name taken) disconnects it: it drops
-            // out and P1 hears why (`drop_out`).
+            // A server that refuses it (whitelist, a sign-in Mojang refused) disconnects it: it
+            // picks again, told why (`drop_out`).
             Err(address) => guest.game.connect_server(&address, &name),
         };
         self.turn(0);
@@ -174,41 +252,45 @@ impl<'a> Split<'a> {
         Ok(())
     }
 
-    /// Players picking a profile: into the world with it, or gone when they leave.
+    /// Players' profile pages: a pick that can play goes in (or switches), one that can't says
+    /// why there; a joining player who cancels (or closes the page) leaves.
     pub(super) fn pick_profiles(&mut self) -> bool {
         let mut changed = false;
         let mut i = 0;
         while i < self.guests.len() {
-            let choice = match self.guests[i].name {
-                None => self.guests[i]
-                    .game
-                    .title
-                    .as_mut()
-                    .and_then(|t| t.take_profile_choice()),
-                Some(_) => None,
-            };
-            let leave = match choice {
-                Some(Some(name)) => match self.enter(i, name) {
-                    Ok(()) => {
-                        changed = true;
-                        false
+            let joining = self.guests[i].name.is_none();
+            let choice = self.guests[i].game.ui.options.split_profiles.take_choice();
+            if let Some(Some(name)) = choice {
+                let went = self.can_join(&name).and_then(|()| {
+                    match joining {
+                        true => self.enter(i, name),
+                        false => self.switch(i, name),
                     }
-                    Err(e) => {
-                        log::warn!("Horizon: splitscreen: {e}");
-                        true
-                    }
-                },
-                Some(None) => true,
-                None => false,
-            };
-            if leave {
+                    .map_err(|e| e.to_string())
+                });
+                match went {
+                    Ok(()) => changed = true,
+                    Err(why) => self.refuse(i, why),
+                }
+            } else if joining && !on_profiles(&self.guests[i].game) {
                 self.remove_guest(i);
                 changed = true;
-            } else {
-                i += 1;
+                continue;
             }
+            i += 1;
         }
         changed
+    }
+
+    /// Guest `i`'s pick can't play: its profile page says why (opened again if it had left the
+    /// world for it).
+    fn refuse(&mut self, i: usize, why: String) {
+        log::warn!("Horizon: splitscreen: P{}: {why}", self.guests[i].seat);
+        let game = &mut self.guests[i].game;
+        if !on_profiles(game) {
+            game.open_options_at(true, Page::SplitProfiles);
+        }
+        game.ui.options.split_profiles.refused = Some(why);
     }
 
     /// A new player's game in its seat, on its title screen until it has a profile. Boxed as it
@@ -281,7 +363,8 @@ impl<'a> Split<'a> {
         Ok(guest)
     }
 
-    /// Players who disconnected drop out; all of them once P1 has left the world.
+    /// Players who disconnected drop out; all of them once P1 has left the world. One the server
+    /// turned away (whitelist, a sign-in Mojang refused) picks again, told why.
     pub(super) fn drop_out(&mut self) -> bool {
         // Out of its world: on the title screen, or neither on its server thread nor a server's.
         let p1_left = self.host.title.is_some()
@@ -296,12 +379,19 @@ impl<'a> Split<'a> {
             let g = &self.guests[k];
             // A player picking a profile has no connection yet.
             let playing = g.name.is_none() || g.game.remote.is_some();
-            if p1_left || !playing || g.game.error.is_some() {
-                // A server that turned it away (online mode, its name taken, full): P1 hears why.
-                if let (false, Some(name), Some(why)) = (p1_left, &g.name, turned_away(&g.game)) {
-                    self.host.split_hud.notice =
-                        Some(Notice::new(format!("{name} could not stay"), why));
+            if !p1_left
+                && g.game.error.is_none()
+                && !playing
+                && let Some(why) = turned_away(&g.game)
+            {
+                let old = self.guests[k].name.take();
+                if let (Some(server), Some(old)) = (&self.host.integrated, &old) {
+                    server.leave_split(old);
                 }
+                self.refuse(k, why);
+                continue;
+            }
+            if p1_left || !playing || g.game.error.is_some() {
                 self.remove_guest(k);
             }
         }

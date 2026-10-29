@@ -383,7 +383,7 @@ impl<'a> Split<'a> {
         self.order = order;
     }
 
-    /// A bumper while joining or in the hold-Select menu: player `i`'s view moves to the next
+    /// A bumper on the profile page (joining or switching): player `i`'s view moves to the next
     /// place it could play (`back`: the one before), at once, so it sees where it will be.
     pub(super) fn move_with_bumpers(&mut self, i: usize, back: bool) {
         let stops = self.joining_stops(i);

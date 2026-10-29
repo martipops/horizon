@@ -101,6 +101,22 @@ impl AuthSession {
         let _ = std::fs::remove_file(path);
         Self::parse(&text.map_err(|e| format!("{}: {e}", path.display()))?)
     }
+    /// The access token's expiry (its JWT `exp`) has passed, or is a minute away: the session
+    /// service would refuse it. A token that doesn't read as a JWT counts as good: the server
+    /// says.
+    pub fn expired(&self) -> bool {
+        let exp = self
+            .access_token
+            .split('.')
+            .nth(1)
+            .and_then(|p| crate::skins::base64_decode(&p.replace('-', "+").replace('_', "/")))
+            .and_then(|json| serde_json::from_slice::<serde_json::Value>(&json).ok())
+            .and_then(|v| v.get("exp")?.as_u64());
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        exp.is_some_and(|exp| exp <= now + 60)
+    }
 }
 
 static CURRENT: OnceLock<Arc<AuthSession>> = OnceLock::new();
@@ -318,6 +334,30 @@ mod tests {
     use super::*;
 
     const UUID: u128 = 0x069a79f444e94726a5befca90e38aaf5;
+
+    #[test]
+    fn a_token_past_its_exp_is_expired() {
+        // header.payload.signature, the payload base64url without padding.
+        let token = |exp: u64| {
+            let json = format!(r#"{{"exp":{exp}}}"#);
+            let payload = crate::lan::base64(json.as_bytes())
+                .trim_end_matches('=')
+                .replace('+', "-")
+                .replace('/', "_");
+            AuthSession::new("Ann", UUID, &format!("e30.{payload}.sig"))
+        };
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        assert!(token(now - 10).expired());
+        assert!(
+            token(now + 30).expired(),
+            "a minute from its end: as good as gone"
+        );
+        assert!(!token(now + 3600).expired());
+        assert!(!AuthSession::new("Ann", UUID, "not-a-jwt").expired());
+    }
 
     fn write(dir: &Path, text: &str, mode: u32) -> std::path::PathBuf {
         let path = dir.join("session.json");

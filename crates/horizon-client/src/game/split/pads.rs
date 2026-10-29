@@ -1,5 +1,5 @@
-//! Controllers: which player each drives, joining with one, holding Select, and one
-//! disconnecting (its player waits for another).
+//! Controllers: which player each drives, joining with one, and one disconnecting (its player
+//! waits for another).
 use super::*;
 
 /// A player whose controller disconnected, waiting for one: its seat (1 = P1), and the
@@ -42,164 +42,7 @@ pub(super) fn claim<Id>(lost: &[Lost<Id>], uuid: [u8; 16], button: Button) -> Cl
     }
 }
 
-/// Holding Select 2 s asks a question the controller then answers; meanwhile its buttons answer
-/// that, not the game.
-#[derive(Default)]
-pub(super) struct HoldSelect {
-    pub(super) since: Option<Instant>,
-    pub(super) last: PadState,
-    pub(super) asking: bool,
-}
-
-/// What holding Select did this frame.
-pub(super) enum Hold {
-    Nothing,
-    /// Held 2 s: ask now.
-    Ask,
-    /// One of the answers, pressed while asked.
-    Answer(Button),
-    /// A bumper while asked (`true`: LB, back): the player's view moves, the question stays.
-    Move(bool),
-}
-
-impl HoldSelect {
-    fn update(&mut self, pad: PadState, answers: &[Button]) -> Hold {
-        let last = std::mem::replace(&mut self.last, pad);
-        if self.asking {
-            for (bumper, back) in [(Button::LeftBumper, true), (Button::RightBumper, false)] {
-                if pad.held(bumper) && !last.held(bumper) {
-                    return Hold::Move(back);
-                }
-            }
-            return match answers.iter().find(|&&b| pad.held(b) && !last.held(b)) {
-                Some(&b) => {
-                    self.asking = false;
-                    Hold::Answer(b)
-                }
-                None => Hold::Nothing,
-            };
-        }
-        if !pad.held(Button::Select) {
-            self.since = None;
-            return Hold::Nothing;
-        }
-        if self.since.get_or_insert_with(Instant::now).elapsed() < Duration::from_secs(2) {
-            return Hold::Nothing;
-        }
-        self.since = None;
-        self.asking = true;
-        Hold::Ask
-    }
-}
-
 impl<'a> Split<'a> {
-    /// Player `i`'s pad as its game read it (the controller or `horizon-ctl pad`), with the
-    /// controller itself while its buttons are kept from the game.
-    pub(super) fn pad_now(&self, i: usize) -> PadState {
-        let (state, pad) = match i {
-            0 => (self.host.pad.state, self.p1_pad),
-            _ => (self.guests[i - 1].game.pad.state, self.guests[i - 1].pad),
-        };
-        pad.map_or(state, |p| state.merge(&self.pads.state(p)))
-    }
-
-    /// Player `i` (not P1) holding Select 2 s opens its splitscreen menu: A or B close it, X
-    /// switches profile (leaves, then chooses again where it was), Y opens the Setup screen; the
-    /// bumpers move its view meanwhile, as when it joined. Leaving is the pause menu's.
-    pub(super) fn leave_by_controller(&mut self, i: usize) {
-        let pad = self.pad_now(i);
-        let answers = [Button::South, Button::East, Button::West, Button::North];
-        let hold = self.guests[i - 1].hold.update(pad, &answers);
-        if let Hold::Move(back) = hold {
-            return self.move_with_bumpers(i, back);
-        }
-        let g = &mut self.guests[i - 1];
-        match hold {
-            Hold::Ask => {
-                g.game.split_hud.prompt = Some(Prompt {
-                    ask: Ask::Leave,
-                    title: "Splitscreen menu".to_owned(),
-                    choices: vec![
-                        // "A B Close": either closes it.
-                        (Button::South, ""),
-                        (Button::East, "Close"),
-                        (Button::West, "Switch profile"),
-                        (Button::North, "Setup"),
-                        // LB and RB both move (back and forth): "LB RB Move".
-                        (Button::LeftBumper, ""),
-                        (Button::RightBumper, "Move"),
-                    ],
-                });
-            }
-            Hold::Answer(answer) => {
-                g.game.split_hud.prompt = None;
-                if answer == Button::North {
-                    g.game.open_split_setup();
-                }
-                if answer != Button::West {
-                    return;
-                }
-                if answer == Button::West {
-                    let number = g.window;
-                    let window = self.windows.iter().find(|w| w.number == number).cloned();
-                    self.rejoin.push((
-                        g.pad,
-                        window.unwrap_or(layout::Window {
-                            number: 1,
-                            placement: Placement::Free(None),
-                        }),
-                    ));
-                }
-                if let Err(e) = g.game.leave_server(None) {
-                    log::warn!("Horizon: splitscreen: {e}");
-                }
-            }
-            Hold::Move(_) | Hold::Nothing => {}
-        }
-    }
-
-    /// P1 holding Select 2 s opens its splitscreen menu, as the others' do: A or B close it, X
-    /// takes its controller from P1 (keyboard and mouse stay; in a world a button on it then
-    /// offers to join as a new player), Y opens the Setup screen; the bumpers move P1's view
-    /// meanwhile. P1 hosts the world: it ends splitscreen from the pause menu.
-    pub(super) fn p1_holds_select(&mut self) {
-        let pad = self.pad_now(0);
-        let answers = [Button::South, Button::East, Button::West, Button::North];
-        match self.p1_hold.update(pad, &answers) {
-            Hold::Move(back) => self.move_with_bumpers(0, back),
-            Hold::Ask => {
-                self.host.split_hud.prompt = Some(Prompt {
-                    ask: Ask::Controller,
-                    title: "Splitscreen menu".to_owned(),
-                    choices: vec![
-                        (Button::South, ""),
-                        (Button::East, "Close"),
-                        (Button::West, "Hand it to a new player"),
-                        (Button::North, "Setup"),
-                        (Button::LeftBumper, ""),
-                        (Button::RightBumper, "Move"),
-                    ],
-                });
-            }
-            Hold::Answer(answer) => {
-                self.host.split_hud.prompt = None;
-                if answer == Button::North {
-                    self.host.open_split_setup();
-                }
-                if answer == Button::West
-                    && let Some(id) = self.p1_pad.take()
-                {
-                    self.fresh.retain(|&p| p != id);
-                    self.host.split_hud.notice = Some(Notice::new(
-                        "Controller removed",
-                        "Press a button on it to join as a new player",
-                    ));
-                }
-            }
-            Hold::Nothing => {}
-        }
-    }
-
     /// The pad's state for its player: nothing while the press that joined it is still held.
     pub(super) fn pad_state(&mut self, pad: Option<PadId>) -> PadState {
         let Some(id) = pad else {
@@ -296,31 +139,18 @@ impl<'a> Split<'a> {
             }
         }
         self.host.pad.release_hardware();
-        let p1 = self.pad_state(self.p1_pad);
-        // Asked about its controller, P1's buttons answer that, not the game.
-        self.host.pad.feed = Some(if self.p1_hold.asking {
-            PadState::default()
-        } else {
-            p1
-        });
+        self.host.pad.feed = Some(self.pad_state(self.p1_pad));
         for i in 0..self.guests.len() {
             let state = self.pad_state(self.guests[i].pad);
-            // Asked whether to leave, its buttons answer that, not the game.
-            let state = if self.guests[i].hold.asking {
-                PadState::default()
-            } else {
-                state
-            };
             self.guests[i].game.pad.feed = Some(state);
         }
         joins
     }
 
-    /// A controller disconnected: its offer, rejoin and fresh press go; its player waits for one
+    /// A controller disconnected: its offer and fresh press go; its player waits for one
     /// (P1 keeps the keyboard and mouse; a player picking a profile leaves).
     pub(super) fn pad_gone(&mut self, id: PadId) {
         self.fresh.retain(|&p| p != id);
-        self.rejoin.retain(|(p, _)| *p != Some(id));
         let offered = self.offers.len();
         self.offers.retain(|(p, _)| *p != id);
         if self.offers.len() != offered && !self.offers.is_empty() {
@@ -329,16 +159,6 @@ impl<'a> Split<'a> {
         let uuid = self.pads.uuid(id);
         if self.p1_pad == Some(id) {
             self.p1_pad = None;
-            self.p1_hold = HoldSelect::default();
-            if self
-                .host
-                .split_hud
-                .prompt
-                .as_ref()
-                .is_some_and(|p| p.ask == Ask::Controller)
-            {
-                self.host.split_hud.prompt = None;
-            }
             if self.in_world() {
                 self.lost.push(Lost { seat: 1, id, uuid });
                 self.host.split_hud.notice = Some(Notice::new(
@@ -352,12 +172,9 @@ impl<'a> Split<'a> {
             return;
         };
         g.pad = None;
-        g.hold = HoldSelect::default();
         if g.name.is_none() {
-            // Still picking a profile: as if it pressed Cancel.
-            if let Some(title) = g.game.title.as_mut() {
-                title.escape();
-            }
+            // Still picking a profile: as if it pressed Cancel (`pick_profiles`).
+            g.game.screen = crate::game::Screen::Playing;
             return;
         }
         self.lost.push(Lost {
@@ -486,58 +303,5 @@ mod tests {
             claim(&[lost(2, unknown)], unknown, Button::West),
             Claim::Wait
         );
-    }
-
-    fn pressed(button: Button) -> PadState {
-        let mut pad = PadState::default();
-        pad.set(button, true);
-        pad
-    }
-
-    #[test]
-    fn while_asked_the_bumpers_move_and_an_answer_closes_the_question() {
-        let mut hold = HoldSelect {
-            asking: true,
-            ..Default::default()
-        };
-        let answers = [Button::South, Button::East];
-        assert!(matches!(
-            hold.update(pressed(Button::RightBumper), &answers),
-            Hold::Move(false)
-        ));
-        // Held down: not pressed again.
-        assert!(matches!(
-            hold.update(pressed(Button::RightBumper), &answers),
-            Hold::Nothing
-        ));
-        assert!(matches!(
-            hold.update(pressed(Button::LeftBumper), &answers),
-            Hold::Move(true)
-        ));
-        assert!(hold.asking, "a bumper keeps the question open");
-        // A button that isn't an answer does nothing; an answer closes it.
-        assert!(matches!(
-            hold.update(pressed(Button::North), &answers),
-            Hold::Nothing
-        ));
-        assert!(matches!(
-            hold.update(pressed(Button::East), &answers),
-            Hold::Answer(Button::East)
-        ));
-        assert!(!hold.asking);
-    }
-
-    #[test]
-    fn select_held_less_than_two_seconds_asks_nothing() {
-        let mut hold = HoldSelect::default();
-        assert!(matches!(
-            hold.update(pressed(Button::Select), &[]),
-            Hold::Nothing
-        ));
-        assert!(matches!(
-            hold.update(PadState::default(), &[]),
-            Hold::Nothing
-        ));
-        assert!(!hold.asking && hold.since.is_none());
     }
 }

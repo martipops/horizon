@@ -12,10 +12,11 @@ Scenarios:
   three    three in a window: one wide on top, one tall on the left, side by side
   live     splitscreen off and on again from the Splitscreen page, in a world
   picker   a joining player opens a new window (RB), makes a profile, and joins in it
-  setup    the Setup screen: a draft moves nobody, Apply moves, Revert undoes, Done closes
+  setup    the Setup screen (P1's): a draft moves nobody, Apply moves, Revert undoes, Done closes
   monitor  a player fills another monitor and another joins it (skipped with one monitor)
   signedin P1 signed into an account: another player still joins, under its own profile
-  leave    a player holds Select, then A leaves, or X switches profile in the same place
+  leave    a player leaves from its pause menu, or switches profile from its Splitscreen Settings
+           (playing on until it picks; the bumpers move its view there); P1's opens Setup
   bumpers  a joining player moves its view with LB and RB before picking its profile
   eight    eight players in one window: rows of three, three and two, every view drawing
   fullscreen  a player whose options say fullscreen joins: the window stays as P1 has it; its F11
@@ -394,51 +395,51 @@ def scenario_bumpers():
 
 
 def scenario_leave():
-    print('leave: from the pause menu, or hold Select then X to switch profile')
+    print("leave: from the pause menu, or switch profile from Splitscreen Settings")
     g = Game(3)
     try:
-        def hold_select(n):
-            g.ctl(n, 'pad', 'select', 'down')
-            time.sleep(2.5)
-            g.ctl(n, 'pad', 'select', 'up')
-            time.sleep(0.3)
-        # Its splitscreen menu doesn't leave (A closes it); its pause menu does.
-        hold_select(3)
-        g.ctl(3, 'pad', 'south', 'tap')
-        time.sleep(1)
-        check('A in the splitscreen menu: P3 still plays', g.alive(3), True)
+        def settings(n):
+            """Player n's pause menu, then its Splitscreen Settings."""
+            g.ctl(n, 'key', 'esc', 'tap')
+            g.wait(lambda: 'Splitscreen Settings' in g.labels(n), f"P{n}'s pause menu", seconds=5)
+            g.press(n, 'Splitscreen Settings')
+
+        def menu(n):
+            return (g.ctl(n, 'state').get('menu') or {}).get('mode')
         g.ctl(3, 'key', 'esc', 'tap')
-        time.sleep(0.6)
+        g.wait(lambda: 'Leave' in g.labels(3), "P3's pause menu", seconds=5)
         g.press(3, 'Leave')
         g.wait(lambda: not g.alive(3), 'P3 gone', seconds=10)
         w, h = g.size(1)
         check('Leave: P3 left, P1 and P2 share the window', g.settle([1, 2], [(w, h), (w, h)]), [(w, h), (w, h)])
-        hold_select(2)
-        g.ctl(2, 'pad', 'west', 'tap')
-        g.wait(lambda: g.alive(2) and (g.ctl(2, 'state').get('menu') or {}).get('mode') == 'splitscreen-profiles',
-               'P2 choosing again', seconds=15)
-        check('X: P2 chooses a profile again, in the same window', g.size(2), (w, h))
-        # P1 holding Select is asked about its controller; B keeps it, and P1 plays on.
-        hold_select(1)
-        g.ctl(1, 'pad', 'east', 'tap')
-        time.sleep(0.5)
-        check('P1 plays on after keeping its controller', g.ctl(1, 'status')['fps'] > 10, True)
-    finally:
-        g.quit()
-    print('leave: in the hold-Select menu, the bumpers move the view; B keeps it there')
-    g = Game(2)
-    try:
-        half = g.size(1)
-        g.ctl(2, 'pad', 'select', 'down')
-        time.sleep(2.5)
-        g.ctl(2, 'pad', 'select', 'up')
-        time.sleep(0.3)
-        g.ctl(2, 'pad', 'rb', 'tap')  # from "Window 1 (2 of 2)" to a new window
-        whole = (2 * half[0], half[1])
-        check('RB: P2 to a new window, P1 alone', g.settle([1], [whole]), [whole])
-        g.ctl(2, 'pad', 'east', 'tap')  # Close
+        # P2's Splitscreen Settings: its profiles, still playing beneath.
+        settings(2)
+        g.wait(lambda: menu(2) == 'splitscreen-profiles', "P2's profiles", seconds=10)
+        check('P2 still plays while it picks', g.ctl(2, 'state').get('player') is not None, True)
+        check('its own profile marked, not pickable',
+              [x.get('enabled') for x in g.ctl(2, 'ui')['widgets'] if x.get('label') == 'P2 - you'], [False])
+        # Cancel: nothing changed.
+        g.press(2, 'Cancel')
         time.sleep(1)
-        check('B: P2 stays in its new window, still playing', (g.alive(2), g.size(2) != half), (True, True))
+        check('Cancel: P2 plays on as P2', (g.alive(2), menu(2), g.size(2)), (True, None, (w, h)))
+        g.close_page(2)
+        # Again, RB to a new window, then a new profile: P2 comes back as Cam, there.
+        settings(2)
+        g.wait(lambda: menu(2) == 'splitscreen-profiles', "P2's profiles", seconds=10)
+        g.ctl(2, 'pad', 'rb', 'tap')
+        whole = (2 * w, h)
+        check('RB on the page: P2 to a new window, P1 alone', g.settle([1], [whole]), [whole])
+        g.press(2, 'New Profile...')
+        g.ctl(2, 'type', 'Cam')
+        g.press(2, 'Create')
+        g.wait(lambda: g.ctl(2, 'state').get('player') is not None and menu(2) is None, 'Cam in the world',
+               seconds=20)
+        check('Cam plays in the new window', (g.size(1), g.size(2) != (w, h)), (whole, True))
+        # P1's Splitscreen Settings is the Setup screen.
+        settings(1)
+        g.wait(lambda: 'Apply' in g.labels(1), "P1's Setup screen", seconds=5)
+        g.press(1, 'Done')
+        g.close_page(1)
     finally:
         g.quit()
 
@@ -514,35 +515,18 @@ def scenario_setup():
         g.close_page(1)
     finally:
         g.quit()
-    print('setup: from the controller (hold Select, Y); another player moves only itself')
-    g = Game(3)
+    print("setup: another player's Splitscreen... (Horizon Settings) is its profiles, not Setup")
+    g = Game(2)
     try:
-        g.ctl(2, 'pad', 'select', 'down')
-        time.sleep(2.5)
-        g.ctl(2, 'pad', 'select', 'up')
-        time.sleep(0.3)
-        g.ctl(2, 'pad', 'north', 'tap')
-        g.wait(lambda: 'Apply' in g.labels(2), "P2's Setup screen", seconds=10)
-        tiles = {w['label']: w for w in g.ctl(2, 'ui')['widgets'] if w.get('label', '').startswith('P')}
-        check("P2's screen: P2 can be moved, P3 and P1 not",
-              [tiles[k].get('enabled', True) for k in sorted(tiles)], [False, True, False])
-        check('no switch for P2', 'Splitscreen: On' in g.labels(2), False)
-        g.press(2, 'P2')
-        g.press(2, 'New window')
-        # Meanwhile P1 sends P3 to a window of its own: P2's draft, older, must not undo it.
-        g.setup(1)
-        g.press(1, 'P3')
-        g.press(1, 'New window')
-        g.press(1, 'Apply')
-        g.wait(lambda: g.size(3) == (1708, 960), 'P3 in a new window', seconds=15)
-        g.press(2, 'Apply')
-        g.wait(lambda: g.size(2) == (1708, 960), 'P2 in a new window', seconds=15)
-        check("P2's Apply moved only P2: P3 still in its window", g.size(3), (1708, 960))
-        g.press(1, 'Done')
-        check('P2 moved itself to a window of its own', g.size(2), (1708, 960))
-        check('P1 alone in Window 1', g.size(1), (2000, 1200))
-        g.press(2, 'Done')
-        check('Done: P2 plays again', 'Apply' in g.labels(2), False)
+        g.ctl(2, 'options', 'horizon')
+        g.wait(lambda: 'Splitscreen...' in g.labels(2), "P2's Horizon Settings", seconds=15)
+        g.ctl(2, 'click-button', 'Splitscreen...')
+        g.wait(lambda: (g.ctl(2, 'state').get('menu') or {}).get('mode') == 'splitscreen-profiles',
+               "P2's profiles", seconds=10)
+        check('no Setup screen for P2', 'Apply' in g.labels(2), False)
+        g.press(2, 'Cancel')
+        g.close_page(2)
+        check('P2 plays on', g.ctl(2, 'state').get('player') is not None, True)
     finally:
         g.quit()
     print('setup: with the controller, A picks a player up, the stick moves it, A drops it')

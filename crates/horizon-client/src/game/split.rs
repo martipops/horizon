@@ -3,8 +3,9 @@
 //! the first controller used in a menu. In a world, another controller pressing a button is
 //! offered to join (several at once: each its own offer); pressing A adds a player, another `Game` in this process that joins P1's
 //! server thread through memory, after it picks a profile and where to play in its view
-//! (`title/profiles.rs`). A player who disconnects (pause menu) drops out; when P1 leaves the
-//! world, all do.
+//! (`split_profiles.rs`). Each player's pause menu has Splitscreen Settings: P1's Setup screen,
+//! the others' profiles to switch to. A player who disconnects (pause menu) drops out; when P1
+//! leaves the world, all do.
 //!
 //! Each player plays in a window: Window 1 (the game's), Window 2, 3... (opened when someone picks
 //! New window, closed with its last player), or a monitor's (borderless over it). Players in one
@@ -100,8 +101,6 @@ struct Guest<'a> {
     widgets: widgets::Saved,
     /// The bumpers it held at the last frame (LB, RB), while it chooses where to play.
     bumpers: [bool; 2],
-    /// Leaving from the controller (hold Select).
-    hold: HoldSelect,
 }
 
 pub(super) struct Split<'a> {
@@ -120,12 +119,6 @@ pub(super) struct Split<'a> {
     windows: Vec<layout::Window>,
     /// Controllers offered to join, each since when: several may join at once.
     offers: Vec<(PadId, Instant)>,
-    /// Players switching profile from the controller: its pad and where it played, to choose
-    /// again there once it has left.
-    rejoin: Vec<(Option<PadId>, layout::Window)>,
-    /// P1's controller: holding Select asks whether it goes (P1 hosts: it leaves from the pause
-    /// menu, but its controller can go).
-    p1_hold: HoldSelect,
     /// Pads whose buttons still count as the press that joined them: released first.
     fresh: Vec<PadId>,
     /// Players whose controller disconnected, longest waiting first.
@@ -217,8 +210,6 @@ impl<'a> Split<'a> {
                 placement: Placement::Free(None),
             }],
             offers: Vec::new(),
-            rejoin: Vec::new(),
-            p1_hold: HoldSelect::default(),
             fresh: Vec::new(),
             lost: Vec::new(),
             stats: std::env::var_os("HORIZON_SPLIT_STATS").map(|_| Instant::now()),
@@ -406,6 +397,7 @@ impl<'a> Split<'a> {
             self.remove_guest(k);
         }
         self.host.pad.feed = None;
+        self.host.split_hud.menu = false;
         self.surfaces.truncate(1);
         let Some(main) = self.surfaces.pop() else {
             self.enabled = false;
@@ -649,34 +641,13 @@ impl ApplicationHandler for Split<'_> {
         self.turn(0);
         self.host.about_to_wait(event_loop);
         let mut changed = self.drop_out();
-        // Switching profile: choosing again, where it played.
-        for (pad, window) in std::mem::take(&mut self.rejoin) {
-            if self.guests.iter().any(|g| g.pad.is_some() && g.pad == pad) {
-                // Not gone yet: next frame.
-                self.rejoin.push((pad, window));
-                continue;
-            }
-            match self.join(pad, None) {
-                Ok(()) => {
-                    // Its window again: still open, or opened again as it was.
-                    let number = window.number;
-                    if self.placement(number).is_none() {
-                        self.windows.push(window);
-                    }
-                    if let Some(g) = self.guests.last_mut() {
-                        g.window = number;
-                    }
-                    changed = true;
-                }
-                Err(e) => log::warn!("Horizon: splitscreen: a player could not come back: {e}"),
-            }
-        }
         for pad in pad_joins {
             match self.join(Some(pad), None) {
                 Ok(()) => changed = true,
                 Err(e) => log::warn!("Horizon: splitscreen: a player could not join: {e}"),
             }
         }
+        self.sync_profiles();
         changed |= self.pick_profiles();
         self.follow_pack_answer();
         // Testing: players without controllers, one per frame, once.
@@ -710,6 +681,7 @@ impl ApplicationHandler for Split<'_> {
             g.game.split_hud.badge = Some(g.name.clone().unwrap_or_else(|| "New player".into()));
         }
         let master = self.host.audio.master;
+        self.host.split_hud.menu = true;
         for i in 0..self.guests.len() {
             self.turn(i + 1);
             // One set of speakers: P1's volume.
@@ -721,8 +693,12 @@ impl ApplicationHandler for Split<'_> {
             }
             // Choosing its profile, the bumpers move its view (its pad as its game read it: the
             // controller, or `horizon-ctl pad`).
-            if self.guests[i].name.is_none() {
-                let state = self.guests[i].game.pad.state;
+            let game = &mut self.guests[i].game;
+            game.split_hud.menu = true;
+            if game.ui.options.page() == horizon_client::options_ui::Page::SplitProfiles
+                && game.screen == super::Screen::Options
+            {
+                let state = game.pad.state;
                 let held = [
                     state.held(Button::LeftBumper),
                     state.held(Button::RightBumper),
@@ -733,12 +709,9 @@ impl ApplicationHandler for Split<'_> {
                 } else if held[1] && !before[1] {
                     self.move_with_bumpers(i + 1, false);
                 }
-            } else {
-                self.leave_by_controller(i + 1);
             }
         }
         self.turn(0);
-        self.p1_holds_select();
         let rendered = Instant::now();
         // Each window shows its players' frames. Only the game's waits for the display (vsync):
         // windows each waiting would divide the rate.
