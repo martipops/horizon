@@ -400,7 +400,20 @@ impl<'a> Split<'a> {
             self.remove_guest(k);
         }
         self.host.pad.feed = None;
-        self.host.split_hud.menu = false;
+        // Everything splitscreen kept, as when the game started: on again starts clean. P1's
+        // controller stays P1's.
+        self.host.split_hud = Default::default();
+        self.offers.clear();
+        self.fresh.clear();
+        self.lost.clear();
+        self.p1_window = 1;
+        self.windows = vec![layout::Window {
+            number: 1,
+            placement: Placement::Free(None),
+        }];
+        self.applied.clear();
+        self.setup_seats.clear();
+        self.order.clear();
         self.surfaces.truncate(1);
         let Some(main) = self.surfaces.pop() else {
             self.enabled = false;

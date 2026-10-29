@@ -493,23 +493,33 @@ impl<'a> Split<'a> {
             let attributes = Window::default_attributes()
                 .with_window_icon(horizon_client::window::icon())
                 .with_active(false);
-            // A monitor's window covers it, borderless; not the system's fullscreen, which on
-            // macOS is a Space of its own that hides the other windows as it slides in.
+            // A monitor's window covers it, borderless. On macOS not the system's fullscreen, a
+            // Space of its own that hides the other windows as it slides in.
             let placement = self.placement(*key).cloned();
-            let cover = match &placement {
+            let fill = match &placement {
                 Some(Placement::Fill(name)) => monitors
                     .iter()
                     .find(|(n, _)| n == name)
-                    .map(|(_, m)| cover(m)),
+                    .map(|(_, m)| m.clone()),
                 _ => None,
             };
+            let cover = fill.as_ref().map(cover);
             let attributes = match cover {
                 // Its own title for a moment: `above_menu_bar` finds it by it.
-                Some((at, size)) => attributes
-                    .with_title(format!("Horizon {key}"))
-                    .with_decorations(false)
-                    .with_position(at)
-                    .with_inner_size(size),
+                Some((at, size)) => {
+                    let attributes = attributes
+                        .with_title(format!("Horizon {key}"))
+                        .with_decorations(false)
+                        .with_position(at)
+                        .with_inner_size(size);
+                    // Elsewhere the system's borderless fullscreen (F11's): over the taskbar too.
+                    #[cfg(not(target_os = "macos"))]
+                    let attributes = attributes.with_fullscreen(
+                        fill.clone()
+                            .map(|m| winit::window::Fullscreen::Borderless(Some(m))),
+                    );
+                    attributes
+                }
                 // A numbered window where it was last, else 854 x 480.
                 None => {
                     let last = self.window_rects.get(key).copied();

@@ -304,10 +304,17 @@ def scenario_live():
     g = Game(2)
     try:
         half = g.size(1)
+        # With another player in, the switch is greyed: it turns off once P1 plays alone.
+        enabled = [w.get('enabled') for w in g.page() if w.get('label') == 'Splitscreen: On']
+        check('others in: the switch is greyed', enabled, [False])
+        g.close_page()
+        g.ctl(2, 'key', 'esc', 'tap')
+        g.wait(lambda: 'Leave' in g.labels(2), "P2's pause menu", seconds=5)
+        g.press(2, 'Leave')
+        g.wait(lambda: not g.alive(2), 'P2 gone', seconds=10)
         g.page()
         g.ctl(1, 'click-button', 'Splitscreen: On')
         g.close_page()
-        g.wait(lambda: not g.alive(2), 'P2 gone')
         full = g.settle([1], [(2 * half[0], half[1])])
         check('off: P1 has the whole window', full, [(2 * half[0], half[1])])
         g.page()
