@@ -707,7 +707,9 @@ fn serve_login(
         // logs in with its own profile, other players with no properties.
         None => {
             let properties = match &shared.config.owner_profile {
-                Some(owner) if c.is_memory() => owner.properties().to_vec(),
+                Some(owner) if c.is_memory() && owner.is_owner(&hello.name) => {
+                    owner.properties().to_vec()
+                }
                 _ => Vec::new(),
             };
             (offline_uuid(&hello.name), properties)
@@ -1246,9 +1248,10 @@ mod tests {
         let fetched = textures.clone();
         let config = crate::lan::NetConfig {
             announce: false,
-            owner_profile: Some(Arc::new(crate::lan::OwnerProfile::new(move || {
-                vec![fetched]
-            }))),
+            owner_profile: Some(Arc::new(crate::lan::OwnerProfile::new(
+                "Owner",
+                move || vec![fetched],
+            ))),
             ..crate::lan::NetConfig::lan(0, "Owner - World".into(), 8)
         };
         let lan =
@@ -1257,6 +1260,15 @@ mod tests {
         let owner = login_profile(Connection::local(lan.connect_local().unwrap()), "Owner");
         assert_eq!(owner.uuid, offline_uuid("Owner"));
         assert_eq!(owner.properties, vec![textures]);
+        let local_guest = login_profile(
+            Connection::local(lan.connect_local().unwrap()),
+            "LocalGuest",
+        );
+        assert_eq!(local_guest.uuid, offline_uuid("LocalGuest"));
+        assert!(
+            local_guest.properties.is_empty(),
+            "a second memory client must not inherit the owner's textures"
+        );
         let guest = Connection::connect("127.0.0.1", lan.port, Duration::from_secs(5)).unwrap();
         guest
             .reader
@@ -1274,7 +1286,7 @@ mod tests {
         let config = crate::lan::NetConfig {
             announce: false,
             listen: false,
-            owner_profile: Some(Arc::new(crate::lan::OwnerProfile::new(Vec::new))),
+            owner_profile: Some(Arc::new(crate::lan::OwnerProfile::new("Owner", Vec::new))),
             ..crate::lan::NetConfig::lan(0, "Owner - World".into(), 8)
         };
         let lan =

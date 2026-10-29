@@ -80,7 +80,7 @@ def check(name, got, want):
 class Game:
     """One splitscreen session: P1 launched with `players` (HORIZON_SPLIT), each on its socket."""
 
-    def __init__(self, players, pick=False, seed=None, args=(), ready=True, home=None):
+    def __init__(self, players, pick=False, seed=None, args=(), ready=True, home=None, env=None):
         """`ready=False`: return once P1's game answers, before it is in a world (it may be asked
         something first); the caller waits for the players."""
         self.home = Path(home) if home is not None else Path(tempfile.mkdtemp(prefix='horizon-split-e2e-'))
@@ -88,7 +88,7 @@ class Game:
         if seed:
             seed(self.home)
         self.sockets = Path(tempfile.mkdtemp(prefix='hzse-'))  # short: Unix socket paths
-        extra = {'HORIZON_SPLIT': str(players)}
+        extra = {'HORIZON_SPLIT': str(players), **(env or {})}
         if pick:
             extra['HORIZON_SPLIT_PICK'] = '1'
         self.env = lab.game_env(HORIZON_HOME=self.home, **extra)
@@ -383,6 +383,40 @@ def scenario_profile_availability():
         g.press(3, 'Ivy')
         g.wait(lambda: g.ctl(3, 'state').get('player') is not None, 'Ivy joining again')
         check('the open picker can select the freed profile', True, True)
+    finally:
+        g.quit()
+
+
+def scenario_launcher_cosmetics():
+    print('launcher_cosmetics: only P1 uses the launcher-selected offline skin and cape')
+    # Tiny original-color PNG fixtures: no account, network skin service or real player data.
+    import struct
+    import zlib
+    home = Path(tempfile.mkdtemp(prefix='horizon-split-cosmetics-'))
+    def png(path, width, height, pixel):
+        def chunk(kind, data):
+            return (struct.pack('>I', len(data)) + kind + data +
+                    struct.pack('>I', zlib.crc32(kind + data) & 0xffffffff))
+        header = struct.pack('>IIBBBBB', width, height, 8, 6, 0, 0, 0)
+        rows = (b'\0' + bytes(pixel) * width) * height
+        path.write_bytes(b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', header) +
+                         chunk(b'IDAT', zlib.compress(rows)) + chunk(b'IEND', b''))
+    skin, cape = home / 'skin.png', home / 'cape.png'
+    png(skin, 64, 64, (255, 0, 0, 255))
+    png(cape, 64, 32, (0, 0, 255, 255))
+    g = Game(2, home=home, env={
+        'HORIZON_OFFLINE_SKIN': str(skin), 'HORIZON_OFFLINE_SKIN_MODEL': 'slim',
+        'HORIZON_OFFLINE_CAPE': str(cape),
+    })
+    try:
+        def appearance(n):
+            return ((g.ctl(n, 'state').get('player') or {}).get('appearance') or {})
+        g.wait(lambda: appearance(1).get('skin') == 'horizon/offline_skin', 'P1 launcher skin')
+        g.wait(lambda: bool(appearance(2).get('skin')), 'P2 model ready')
+        check('P1 uses launcher-selected slim skin', appearance(1).get('slim'), True)
+        g.wait(lambda: appearance(1).get('cape') == 'capes/offline', 'P1 launcher cape')
+        check('P2 keeps its own default skin', appearance(2).get('skin') != 'horizon/offline_skin', True)
+        check('P2 has no inherited launcher cape', appearance(2).get('cape'), None)
     finally:
         g.quit()
 
@@ -988,6 +1022,7 @@ SCENARIOS = {
     'pausemenu': scenario_pausemenu,
     'profile_availability': scenario_profile_availability,
     'gui_scales': scenario_gui_scales,
+    'launcher_cosmetics': scenario_launcher_cosmetics,
     'sixteen': scenario_sixteen,
     'dedicated_profiles': scenario_dedicated_profiles,
     'integrated_profiles': scenario_integrated_profiles,
@@ -999,7 +1034,7 @@ GROUPS = {
     'joining': ['join', 'picker', 'fullscreen', 'bumpers', 'leave', 'pausemenu'],
     'menus': ['leave', 'setup', 'pausemenu'],
     'controller': ['bumpers', 'setup', 'pointer'],
-    'accounts': ['signedin', 'launcher'],
+    'accounts': ['signedin', 'launcher', 'launcher_cosmetics'],
     'server': ['server', 'packs', 'dedicated_profiles', 'integrated_profiles'],
 }
 

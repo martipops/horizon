@@ -468,6 +468,9 @@ impl Game<'_> {
     fn state_value(&self) -> Value {
         let player = self.player.as_ref().map(|p| {
             json!({
+                "appearance": self.player_model.as_ref().map(|m| json!({
+                    "skin": m.skin, "slim": m.slim, "cape": m.cape,
+                })),
                 "position": [p.position.x, p.position.y, p.position.z],
                 "block_pos": [p.position.x.floor() as i32, p.position.y.floor() as i32, p.position.z.floor() as i32],
                 "eye": self.eye_position(),

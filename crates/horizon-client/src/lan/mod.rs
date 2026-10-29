@@ -189,6 +189,7 @@ impl NetConfig {
 /// `Minecraft.profileFuture` is, but never longer than `OWNER_PROFILE_WAIT`:
 /// past that the owner plays without properties (the default skin to others).
 pub struct OwnerProfile {
+    pub name: String,
     properties: std::sync::OnceLock<Vec<horizon_protocol::packets::login::Property>>,
     fetch: Mutex<Option<Receiver<Vec<horizon_protocol::packets::login::Property>>>>,
 }
@@ -197,6 +198,7 @@ const OWNER_PROFILE_WAIT: std::time::Duration = std::time::Duration::from_secs(1
 
 impl OwnerProfile {
     pub fn new(
+        name: impl Into<String>,
         fetch: impl FnOnce() -> Vec<horizon_protocol::packets::login::Property> + Send + 'static,
     ) -> Self {
         let (send, receive) = channel();
@@ -206,9 +208,14 @@ impl OwnerProfile {
                 let _ = send.send(fetch());
             });
         Self {
+            name: name.into(),
             properties: std::sync::OnceLock::new(),
             fetch: Mutex::new(Some(receive)),
         }
+    }
+    /// Whether this profile belongs to the singleplayer owner.
+    pub fn is_owner(&self, name: &str) -> bool {
+        self.name.eq_ignore_ascii_case(name)
     }
     /// The owner's properties (none when the services couldn't be reached
     /// in time).

@@ -272,7 +272,7 @@ impl Game<'_> {
             player: player.clone(),
             owner_profile: auth.as_ref().map(|a| {
                 let id = a.uuid;
-                Arc::new(OwnerProfile::new(move || {
+                Arc::new(OwnerProfile::new(player.clone(), move || {
                     horizon_client::skins::fetch_own_properties(id)
                         .into_iter()
                         .map(|(name, value, signature)| {
