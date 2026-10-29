@@ -745,6 +745,24 @@ fn offline_names_switch_with_accounts() {
     );
 }
 
+/// One keychain shared by several `Vault`s: several launcher processes.
+#[derive(Clone, Default)]
+struct Shared(std::sync::Arc<MemoryStore>);
+impl SecretStore for Shared {
+    fn get(&self, key: &str) -> Result<Option<String>, String> {
+        self.0.get(key)
+    }
+    fn set(&self, key: &str, secret: &str) -> Result<(), String> {
+        self.0.set(key, secret)
+    }
+    fn delete(&self, key: &str) -> Result<(), String> {
+        self.0.delete(key)
+    }
+    fn persistent(&self) -> bool {
+        true
+    }
+}
+
 #[test]
 fn a_splitscreen_player_keeps_an_offline_name() {
     let store = MemoryStore::default();
@@ -777,28 +795,62 @@ fn a_splitscreen_player_keeps_an_offline_name() {
 
 #[test]
 fn every_account_in_one_keychain_item() {
-    let vault = Vault::new(MemoryStore::default());
+    let keychain = Shared::default();
+    let vault = Vault::new(keychain.clone(), None);
     vault.set("abc", "one").unwrap();
     vault.set("def", "two").unwrap();
     assert_eq!(vault.get("abc").unwrap().as_deref(), Some("one"));
     // One item holds both.
     let inner: std::collections::BTreeMap<String, String> =
-        serde_json::from_str(&vault.inner.get("vault").unwrap().unwrap()).unwrap();
+        serde_json::from_str(&keychain.get("vault").unwrap().unwrap()).unwrap();
     assert_eq!(inner.len(), 2);
-    assert!(vault.inner.get("abc").unwrap().is_none());
-    // An account kept the older way moves in as it is read.
-    vault.inner.set("old", "three").unwrap();
+    assert!(keychain.get("abc").unwrap().is_none());
+    // An account kept the older way is copied in as it is read, its item left for older
+    // launchers; signing out removes both.
+    keychain.set("old", "three").unwrap();
     assert_eq!(vault.get("old").unwrap().as_deref(), Some("three"));
-    assert!(vault.inner.get("old").unwrap().is_none());
-    vault.delete("abc").unwrap();
-    assert!(vault.get("abc").unwrap().is_none());
-    // Read again from the keychain (a new run): the same.
-    let again = Vault::new(MemoryStore::default());
-    again
-        .inner
-        .set("vault", &vault.inner.get("vault").unwrap().unwrap())
-        .unwrap();
-    assert_eq!(again.get("def").unwrap().as_deref(), Some("two"));
+    assert_eq!(keychain.get("old").unwrap().as_deref(), Some("three"));
+    vault.delete("old").unwrap();
+    assert!(vault.get("old").unwrap().is_none());
+    assert!(keychain.get("old").unwrap().is_none());
+}
+
+#[test]
+fn two_launchers_never_write_over_each_other() {
+    let keychain = Shared::default();
+    let window = Vault::new(keychain.clone(), None);
+    let cli = Vault::new(keychain.clone(), None);
+    window.set("a", "1").unwrap();
+    assert_eq!(window.get("a").unwrap().as_deref(), Some("1"));
+    // The command line signs B in and A out, while the window has A in memory.
+    cli.set("b", "2").unwrap();
+    cli.delete("a").unwrap();
+    // The window renews C: B stays, A stays signed out.
+    window.set("c", "3").unwrap();
+    let kept: std::collections::BTreeMap<String, String> =
+        serde_json::from_str(&keychain.get("vault").unwrap().unwrap()).unwrap();
+    assert_eq!(kept.keys().collect::<Vec<_>>(), ["b", "c"]);
+}
+
+#[test]
+fn a_vault_that_doesnt_read_is_never_written_over() {
+    let keychain = Shared::default();
+    keychain.set("vault", "{not json").unwrap();
+    let vault = Vault::new(keychain.clone(), None);
+    assert!(vault.get("a").is_err());
+    assert!(vault.set("a", "1").is_err());
+    assert_eq!(keychain.get("vault").unwrap().as_deref(), Some("{not json"));
+}
+
+#[test]
+fn a_launchers_processes_share_the_lock_file() {
+    let dir = std::env::temp_dir().join(format!("horizon-vault-lock-{}", std::process::id()));
+    let keychain = Shared::default();
+    let vault = Vault::new(keychain.clone(), Some(dir.join("vault.lock")));
+    vault.set("a", "1").unwrap();
+    assert!(dir.join("vault.lock").is_file());
+    assert_eq!(vault.get("a").unwrap().as_deref(), Some("1"));
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

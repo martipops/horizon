@@ -518,7 +518,7 @@ enum Check {
 }
 
 /// Asks whether `account` owns the game, with a Minecraft token renewed through the refresh token
-/// first when it has less than an hour left. The secrets come back renewed whatever the answer.
+/// first when due (`RENEW_BEFORE`, once a run). The secrets come back renewed whatever the answer.
 fn check(ep: &Endpoints, client_id: Option<&str>, account: &Account, secrets: Secrets) -> Check {
     let mut secrets = secrets;
     // Refused before: only a new sign-in mends it.
@@ -553,8 +553,9 @@ fn check(ep: &Endpoints, client_id: Option<&str>, account: &Account, secrets: Se
                 secrets.sign_in_again = true;
                 return Check::NoAnswer(e, secrets);
             }
-            // Still valid for a while: renewing can wait (no network, the run's renewal).
-            Err(_) if secrets.minecraft_expires_at > now() + 60 => {}
+            // Still good for hours: renewing can wait (no network, the run's renewal). Closer to
+            // its end, a game would start with a session that dies in it: offline, said why.
+            Err(_) if secrets.minecraft_expires_at > now() + 2 * 3600 => {}
             Err(e) => return Check::NoAnswer(e, secrets),
         }
     }
@@ -767,71 +768,128 @@ impl SecretStore for SystemStore {
     }
 }
 
-/// Every account's secrets in one keychain item (`VAULT`, JSON by key), read once per run: one
-/// prompt where the system asks before each item a changed launcher reads (macOS), not one per
-/// account and piece. Secrets kept the older way, an item per account, move into it as they are
-/// read.
+/// Every account's secrets in one keychain item (`VAULT`, JSON by key): one prompt where the
+/// system asks before each item a changed launcher reads (macOS), not one per account and piece.
+///
+/// Reads come from memory, loaded once per run (a failed or refused read is remembered too, so it
+/// isn't asked again). Each change re-reads the item, applies only itself and writes it back,
+/// under this process's lock and a lock file every launcher process shares (`lock`): the window,
+/// the command line and the MCP server never write over each other's sign-ins. An item that
+/// doesn't read as the vault is an error, never written over. Secrets kept the older way, an item
+/// per account, are copied in as they are read and left where they are, for older launchers.
 pub struct Vault<S: SecretStore> {
     inner: S,
-    cache: std::sync::Mutex<Option<std::collections::BTreeMap<String, String>>>,
+    lock: Option<PathBuf>,
+    state: Mutex<VaultState>,
+}
+
+#[derive(Default)]
+struct VaultState {
+    /// The vault as last read or written; an error if it couldn't be read.
+    read: Option<Result<std::collections::BTreeMap<String, String>, String>>,
+    /// Keys looked for the older way this run (found or not): looked for once.
+    legacy_checked: std::collections::BTreeSet<String>,
 }
 
 const VAULT: &str = "vault";
 
 impl<S: SecretStore> Vault<S> {
-    pub fn new(inner: S) -> Self {
+    /// `lock`: the file every launcher process locks around the vault (none in tests).
+    pub fn new(inner: S, lock: Option<PathBuf>) -> Self {
         Self {
             inner,
-            cache: std::sync::Mutex::new(None),
+            lock,
+            state: Mutex::new(VaultState::default()),
         }
     }
-    /// The vault, read from the keychain the first time.
-    fn with<T>(
+
+    /// The vault as the keychain has it now: an error if it doesn't read as one.
+    fn read_now(&self) -> Result<std::collections::BTreeMap<String, String>, String> {
+        match self.inner.get(VAULT)? {
+            None => Ok(Default::default()),
+            Some(text) => serde_json::from_str(&text).map_err(|e| {
+                format!("The keychain's Horizon item doesn't read ({e}): left as it is.")
+            }),
+        }
+    }
+
+    /// The other launcher processes kept out while held.
+    fn lock_file(&self) -> Option<std::fs::File> {
+        let path = self.lock.as_ref()?;
+        let _ = std::fs::create_dir_all(path.parent()?);
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(path)
+            .ok()?;
+        file.lock().ok()?;
+        Some(file)
+    }
+
+    /// `f` on the vault as the keychain has it now, written back: one change, nothing else's
+    /// undone.
+    fn change<T>(
         &self,
         f: impl FnOnce(&mut std::collections::BTreeMap<String, String>) -> T,
     ) -> Result<T, String> {
-        let mut cache = self
-            .cache
+        let mut state = self
+            .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if cache.is_none() {
-            let text = self.inner.get(VAULT)?;
-            *cache = Some(
-                text.and_then(|t| serde_json::from_str(&t).ok())
-                    .unwrap_or_default(),
-            );
-        }
-        Ok(f(cache.as_mut().expect("read above")))
-    }
-    fn save(&self) -> Result<(), String> {
-        let text = self.with(|v| serde_json::to_string(v).unwrap_or_default())?;
-        self.inner.set(VAULT, &text)
+        let _held = self.lock_file();
+        let mut vault = self.read_now()?;
+        let out = f(&mut vault);
+        self.inner.set(
+            VAULT,
+            &serde_json::to_string(&vault).map_err(|e| e.to_string())?,
+        )?;
+        state.read = Some(Ok(vault));
+        Ok(out)
     }
 }
 
 impl<S: SecretStore> SecretStore for Vault<S> {
     fn get(&self, key: &str) -> Result<Option<String>, String> {
-        if let Some(secret) = self.with(|v| v.get(key).cloned())? {
-            return Ok(Some(secret));
-        }
-        // Kept the older way: into the vault, the old item gone.
-        let Some(old) = self.inner.get(key)? else {
+        let legacy = {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if state.read.is_none() {
+                let _held = self.lock_file();
+                state.read = Some(self.read_now());
+            }
+            let vault = state
+                .read
+                .as_ref()
+                .expect("read above")
+                .as_ref()
+                .map_err(Clone::clone)?;
+            if let Some(secret) = vault.get(key) {
+                return Ok(Some(secret.clone()));
+            }
+            // Not in the vault: kept the older way? Asked once a run.
+            if !state.legacy_checked.insert(key.to_owned()) {
+                return Ok(None);
+            }
+            self.inner.get(key)?
+        };
+        let Some(old) = legacy else {
             return Ok(None);
         };
-        self.with(|v| v.insert(key.to_owned(), old.clone()))?;
-        if self.save().is_ok() {
-            let _ = self.inner.delete(key);
-        }
-        Ok(Some(old))
+        // Copied in, the older item left for older launchers. Another process may have put a
+        // newer one in meanwhile: that one stands.
+        let secret = self.change(|v| v.entry(key.to_owned()).or_insert(old.clone()).clone());
+        Ok(Some(secret.unwrap_or(old)))
     }
     fn set(&self, key: &str, secret: &str) -> Result<(), String> {
-        self.with(|v| v.insert(key.to_owned(), secret.to_owned()))?;
-        self.save()
+        self.change(|v| v.insert(key.to_owned(), secret.to_owned()))?;
+        Ok(())
     }
     fn delete(&self, key: &str) -> Result<(), String> {
-        self.with(|v| v.remove(key))?;
-        self.save()?;
-        // An item of the older way, never read since.
+        self.change(|v| v.remove(key))?;
+        // Signed out everywhere: the older launchers' item too.
         self.inner.delete(key)
     }
     fn persistent(&self) -> bool {
@@ -858,7 +916,8 @@ pub fn store() -> &'static dyn SecretStore {
             ))]
             if std::env::var_os("HORIZON_NO_KEYCHAIN").is_none() && SystemStore.get("probe").is_ok()
             {
-                return Box::new(Vault::new(SystemStore));
+                let lock = crate::backend::data_dir().join("vault.lock");
+                return Box::new(Vault::new(SystemStore, Some(lock)));
             }
             Box::<MemoryStore>::default()
         })
@@ -899,7 +958,6 @@ pub enum Player {
 const OFFLINE_NEEDS_OWNER: &str =
     "Offline names need a Microsoft account that owns Minecraft: Java Edition in the launcher.";
 
-/// The secrets an account keeps in `store`, if it still has them there.
 /// Renews an account's sign-in now, whatever is left on its token (Prism Launcher's Refresh): a
 /// new Microsoft and Minecraft token, kept. A refused refresh token marks it "sign in again".
 pub fn renew(
@@ -934,11 +992,22 @@ pub fn renew(
     result
 }
 
+/// The accounts of `accounts` Microsoft refused to renew, by UUID: they need signing in again.
+pub fn sign_in_again(store: &dyn SecretStore, accounts: &Accounts) -> Vec<String> {
+    accounts
+        .accounts
+        .iter()
+        .filter(|a| needs_sign_in(store, &a.uuid))
+        .map(|a| a.uuid.clone())
+        .collect()
+}
+
 /// Whether Microsoft refused to renew this account's sign-in: it needs signing in again.
 pub fn needs_sign_in(store: &dyn SecretStore, uuid: &str) -> bool {
     secrets_in(store, uuid).is_some_and(|s| s.sign_in_again)
 }
 
+/// The secrets an account keeps in `store`, if it still has them there.
 fn secrets_in(store: &dyn SecretStore, uuid: &str) -> Option<Secrets> {
     store
         .get(uuid)

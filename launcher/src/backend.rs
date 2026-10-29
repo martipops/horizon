@@ -2578,6 +2578,9 @@ pub enum Msg {
     Keychain(bool),
     /// Whether an account in the launcher owned the game at its last check (the owner gate).
     Owner(bool),
+    /// The accounts Microsoft refused to renew: they need signing in again (asked off the UI
+    /// thread: the keychain can block).
+    SignInAgain(Vec<String>),
     /// The owner gate's answer for the game about to start: the selected account's session
     /// file (none = offline) and why it plays offline, if it does.
     Session(Result<crate::account::GameSession, crate::account::NoOwner>),

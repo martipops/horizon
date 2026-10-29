@@ -211,6 +211,8 @@ struct Launcher {
     /// Whether an account here owns the game, by the keychain's last answers (the owner gate);
     /// none until the keychain has been read.
     owner: Option<bool>,
+    /// The accounts that need signing in again (`account::sign_in_again`, asked off this thread).
+    sign_in_again: Vec<String>,
     /// Play was refused (or Home's Sign in pressed): the owner gate's screen is open.
     owner_screen_open: bool,
     /// Clicks on the sidebar's launcher version, and whether they revealed the developer options
@@ -424,6 +426,7 @@ impl Launcher {
             sign_in_state: None,
             keychain: true,
             owner: None,
+            sign_in_again: Vec::new(),
             owner_screen_open: false,
             dev_clicks: 0,
             dev_options: false,
@@ -485,6 +488,8 @@ impl Launcher {
             let store = account::store();
             let _ = keychain_tx.send(Msg::Keychain(store.persistent()));
             let _ = keychain_tx.send(Msg::Owner(accounts.has_owner(store)));
+            let again = account::sign_in_again(store, &accounts);
+            let _ = keychain_tx.send(Msg::SignInAgain(again));
         });
         std::thread::spawn(move || {
             let reused = backend::reuse_prepared_everywhere();
@@ -670,6 +675,7 @@ impl Launcher {
                 Msg::Reused(_) => self.installed = backend::installed(),
                 Msg::Keychain(persistent) => self.keychain = persistent,
                 Msg::Owner(owns) => self.owner = Some(owns),
+                Msg::SignInAgain(again) => self.sign_in_again = again,
                 Msg::Playing(playing) => self.playing = playing,
                 Msg::Session(session) => {
                     if let Some(tag) = self.starting_client.take() {
@@ -942,7 +948,9 @@ impl Launcher {
             let state = sign_in.state();
             let changed_state = format!("{state:?}") != format!("{:?}", self.sign_in_state);
             if changed_state {
-                if let SignInState::Done(Ok(_)) = state {
+                if let SignInState::Done(Ok(a)) = &state {
+                    // Signed in again: mended.
+                    self.sign_in_again.retain(|u| *u != a.uuid);
                     self.accounts = Accounts::load();
                     // Sign-in refuses accounts that don't own the game.
                     self.owner = Some(true);
@@ -1122,6 +1130,9 @@ impl Launcher {
         std::thread::spawn(move || {
             backend::complete_assets(&tag);
             let session = account::session_for_game(&backend::game_home(), offline_without_owner);
+            // Play may have found a sign-in Microsoft won't renew any more.
+            let again = account::sign_in_again(account::store(), &account::Accounts::load());
+            let _ = tx.send(Msg::SignInAgain(again));
             let _ = tx.send(Msg::Session(session));
         });
     }
@@ -3396,7 +3407,7 @@ impl Launcher {
                 );
             }
             // Microsoft refused to renew it: a new sign-in mends it.
-            if account::needs_sign_in(account::store(), &uuid) {
+            if self.sign_in_again.contains(&uuid) {
                 actions = actions.child(
                     button(
                         format!("sign-in-again-{i}"),

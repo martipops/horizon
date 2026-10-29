@@ -111,7 +111,8 @@ Refresh: the Minecraft token is renewed from the Microsoft refresh token (steps 
 `grant_type=refresh_token`) the first time each run of the launcher uses the account, and whenever
 it has less than 12 hours left (a fresh one lasts 24), as Prism Launcher and the official launcher
 renew; steps 6-7 run at every launch (the owner gate). A renewal that fails while the token still
-has time left waits for the next launch. A refused refresh token (`invalid_grant`: expired,
+has two hours or more waits for the next launch; closer to its end the game starts offline, saying
+why. A refused refresh token (`invalid_grant`: expired,
 revoked, the password changed) is kept with the account ("sign in again"): the launcher doesn't
 ask Microsoft again, `account list` and the account's row say so (Sign in again), and a new
 sign-in clears it. Several accounts can be signed in; one is selected. "Sign out" deletes the
@@ -124,9 +125,13 @@ account's secrets from the keychain.
   Credential Manager on Windows, the Secret Service (GNOME Keyring, KWallet) on Linux. Service name
   `dev.playhorizon.launcher`. Every account's secrets are one item, `vault`
   (JSON by Minecraft UUID), read once per run: macOS asks before each item a changed launcher reads,
-  so one prompt, not one per account. Credential Manager takes at most 2560 bytes per item: there
-  the vault is split over `vault`, `vault.1`, `vault.2`... Accounts kept the older way, an item per
-  account (`<uuid>`, `<uuid>.1`...), move into the vault as they are read.
+  so one prompt, not one per account. Each change re-reads it and writes back only itself, under a
+  lock file every launcher process shares (`vault.lock` in the data folder): the window, the
+  command line and the MCP server never undo each other's sign-ins. An item that doesn't read is
+  an error, never written over. Credential Manager takes at most 2560 bytes per item: there the
+  vault is split over `vault`, `vault.1`, `vault.2`... Accounts kept the older way, an item per
+  account (`<uuid>`, `<uuid>.1`...), are copied into the vault as they are read and left where
+  they are, for older launchers; signing out removes both.
 - `accounts.json` in the launcher's data folder keeps only public data: UUID, name, skin URL, which
   account is selected. Never a token.
 - No keychain available (a Linux box without a Secret Service, a locked keychain): sign-in still
