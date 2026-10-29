@@ -1554,6 +1554,22 @@ impl Game<'_> {
                 self.synth_click(event_loop, x, y, button)?;
                 ok(json!({ "ok": true, "screen": self.screen_label() }))
             }
+            // Splitscreen's profile page, over a joining player's title screen or in a world.
+            "type" if self.split_profiles_open() => {
+                let text = line
+                    .trim_start()
+                    .strip_prefix("type")
+                    .unwrap_or("")
+                    .strip_prefix(' ')
+                    .unwrap_or("");
+                let page = &mut self.ui.options.split_profiles;
+                if text == "\\b" {
+                    page.key(winit::keyboard::KeyCode::Backspace, None);
+                } else {
+                    page.type_text(text);
+                }
+                ok(json!({ "ok": true, "menu": self.title_value() }))
+            }
             "type" if self.title.is_some() => {
                 // type [--field name|seed] [--replace] TEXT on the title screens.
                 let mut text = line

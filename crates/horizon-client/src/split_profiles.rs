@@ -295,13 +295,15 @@ impl SplitProfiles {
         }
     }
 
-    /// For the control socket: the list, or the new name being typed.
+    /// For the control socket: the list (once filled), or the new name being typed.
     pub fn state(&self) -> serde_json::Value {
         match &self.new {
             Some(field) => serde_json::json!({
                 "mode": "splitscreen-new-profile",
                 "fields": { "name": field.value },
             }),
+            // Until the game fills the list: the page is not ready to pick from.
+            None if !self.filled => serde_json::json!({ "mode": "splitscreen-profiles-loading" }),
             None => serde_json::json!({
                 "mode": "splitscreen-profiles",
                 "profiles": self.names,

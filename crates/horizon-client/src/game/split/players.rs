@@ -84,6 +84,7 @@ impl<'a> Split<'a> {
             options,
             widgets: Default::default(),
             bumpers: [false; 2],
+            entered: false,
         });
         if let Some(name) = name {
             self.enter(self.guests.len() - 1, name)?;
@@ -249,6 +250,7 @@ impl<'a> Split<'a> {
             return Err(e);
         }
         self.guests[i].name = Some(name);
+        self.guests[i].entered = false;
         Ok(())
     }
 
@@ -364,7 +366,8 @@ impl<'a> Split<'a> {
     }
 
     /// Players who disconnected drop out; all of them once P1 has left the world. One the server
-    /// turned away (whitelist, a sign-in Mojang refused) picks again, told why.
+    /// turned away as it came in (whitelist, a sign-in Mojang refused) picks again, told why; one
+    /// it sent away later (a kick) leaves, and P1 hears why.
     pub(super) fn drop_out(&mut self) -> bool {
         // Out of its world: on the title screen, or neither on its server thread nor a server's.
         let p1_left = self.host.title.is_some()
@@ -376,14 +379,18 @@ impl<'a> Split<'a> {
             self.host.split_hud.notice = None;
         }
         for k in (0..self.guests.len()).rev() {
+            let g = &mut self.guests[k];
+            g.entered |= g.game.remote.is_some() && g.game.player.is_some();
             let g = &self.guests[k];
             // A player picking a profile has no connection yet.
             let playing = g.name.is_none() || g.game.remote.is_some();
-            if !p1_left
-                && g.game.error.is_none()
-                && !playing
-                && let Some(why) = turned_away(&g.game)
-            {
+            let why = (!p1_left && g.game.error.is_none() && !playing)
+                .then(|| turned_away(&g.game))
+                .flatten();
+            if let (true, Some(name), Some(why)) = (g.entered, &g.name, &why) {
+                self.host.split_hud.notice =
+                    Some(Notice::new(format!("{name} could not stay"), why.clone()));
+            } else if let Some(why) = why {
                 let old = self.guests[k].name.take();
                 if let (Some(server), Some(old)) = (&self.host.integrated, &old) {
                     server.leave_split(old);

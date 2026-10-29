@@ -101,6 +101,9 @@ struct Guest<'a> {
     widgets: widgets::Saved,
     /// The bumpers it held at the last frame (LB, RB), while it chooses where to play.
     bumpers: [bool; 2],
+    /// Its profile got into the world: turned away after that (a kick), it leaves; before, it
+    /// picks again.
+    entered: bool,
 }
 
 pub(super) struct Split<'a> {
