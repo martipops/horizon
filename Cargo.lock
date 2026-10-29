@@ -1433,6 +1433,7 @@ name = "horizon-client-input"
 version = "0.1.0"
 dependencies = [
  "arboard",
+ "gilrs",
  "horizon-client-core",
  "horizon-dualsense",
  "horizon-theme",

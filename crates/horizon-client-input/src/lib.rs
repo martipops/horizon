@@ -4,6 +4,8 @@
 //! (`horizon_client::keybinds`, ...).
 #![forbid(unsafe_code)]
 pub mod clipboard;
+#[cfg(feature = "controllers")]
+pub mod controller_router;
 pub mod gamepad;
 pub mod input;
 pub mod interaction_input;

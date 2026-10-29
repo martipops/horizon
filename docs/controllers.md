@@ -498,3 +498,11 @@ PRs #120, #129, #145 and #149. The second round, each shippable alone:
 Each is tested with unit tests (focus steps, prompt contexts, report bytes),
 the injected pad and vscreen screenshots; each PR says what still needs a
 real controller.
+
+## Local-player routing API
+
+The `horizon-client-input/controllers` feature exposes `controller_router::PadRouter` for the
+splitscreen series (#3541). Poll its events once per frame, keep a separate pad assignment for
+each player, then use `state(id)` and `style(id)` to feed that player. Disconnected pads return
+a released state. IDs belong to that reader: clear assignments when replacing it.
+This part exposes the reader; normal single-player input and controller output are unchanged.
