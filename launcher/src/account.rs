@@ -1020,6 +1020,18 @@ impl Accounts {
     /// Plays as `who`: an account, an offline name (kept, only beside an account that owns the
     /// game), or the game's own name.
     pub fn play_as(&mut self, store: &dyn SecretStore, who: Player) -> Result<(), String> {
+        self.play_as_with(store, who, false)
+    }
+
+    /// [`Self::play_as`], where `offline_without_owner` (the window's hidden developer option,
+    /// `backend::Settings::dev_offline`) lets an offline name play without an account that owns
+    /// the game.
+    pub fn play_as_with(
+        &mut self,
+        store: &dyn SecretStore,
+        who: Player,
+        offline_without_owner: bool,
+    ) -> Result<(), String> {
         match who {
             Player::Microsoft(uuid) => {
                 if !self.accounts.iter().any(|a| a.uuid == uuid) {
@@ -1028,7 +1040,7 @@ impl Accounts {
                 self.selected = Some(uuid);
             }
             Player::Offline(name) => {
-                if !self.has_owner(store) {
+                if !offline_without_owner && !self.has_owner(store) {
                     return Err(OFFLINE_NEEDS_OWNER.into());
                 }
                 let name = self.add_offline(&name)?;
@@ -1241,6 +1253,23 @@ pub fn launch(
     }
 }
 
+/// The owner gate before the game starts. With the window's hidden developer option
+/// (`backend::Settings::dev_offline`, `offline_without_owner`) no owner is no refusal: the game
+/// starts offline, without a session and without an `owner`. Downloads never come through here:
+/// `backend::download_for_owner` asks [`launch`] itself, so the option never downloads the game.
+pub fn launch_for_game(
+    ep: &Endpoints,
+    client_id: Option<&str>,
+    store: &dyn SecretStore,
+    accounts: &mut Accounts,
+    offline_without_owner: bool,
+) -> Result<Launch, NoOwner> {
+    match launch(ep, client_id, store, accounts) {
+        Err(NoOwner) if offline_without_owner => Ok(Launch::default()),
+        pass => pass,
+    }
+}
+
 /// Write the session for the game, readable by this user only, in a fresh file it deletes
 /// when it reads it.
 pub fn write_session_file(
@@ -1345,14 +1374,19 @@ pub struct GameSession {
 }
 
 /// The owner gate for the game about to start, then the selected account's session in a file
-/// for it, and the other accounts' for its splitscreen players.
-pub fn session_for_game(game_home: &Path) -> Result<GameSession, NoOwner> {
+/// for it, and the other accounts' for its splitscreen players. `offline_without_owner`: see
+/// [`launch_for_game`].
+pub fn session_for_game(
+    game_home: &Path,
+    offline_without_owner: bool,
+) -> Result<GameSession, NoOwner> {
     let mut accounts = Accounts::load();
-    let pass = launch(
+    let pass = launch_for_game(
         &Endpoints::live(),
         client_id().as_deref(),
         store(),
         &mut accounts,
+        offline_without_owner,
     )?;
     let dir = game_home.join("sessions");
     let env = account_sessions(&dir, &mut accounts);

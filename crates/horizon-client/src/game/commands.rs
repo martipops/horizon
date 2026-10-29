@@ -91,7 +91,7 @@ fn format_double(v: f64) -> String {
 impl Game<'_> {
     /// Commands.performCommand for a line without its slash.
     pub(super) fn run_command(&mut self, command: &str) -> bool {
-        if self.mod_command(command) {
+        if self.client_mod_command(command) {
             return true;
         }
         let d = vanilla::game_dispatcher();
@@ -2573,6 +2573,9 @@ impl Game<'_> {
             )));
         }
         self.ui.difficulty = i;
+        // The level data holds the world's difficulty: it survives the
+        // reopen, so it follows the command.
+        self.level.set_difficulty(i);
         self.sync_rules();
         if i == 0 {
             // Peaceful removes hostile mobs.
