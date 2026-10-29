@@ -143,6 +143,10 @@ impl<'a> Split<'a> {
             let page = &mut g.game.ui.options.split_profiles;
             page.filled = true;
             page.names = names.clone();
+            // A player always sees who it is, kept as a profile or not (a test's "P2").
+            if let Some(me) = g.name.as_ref().filter(|me| !names.contains(me)) {
+                page.names.insert(0, me.clone());
+            }
             page.taken = taken.clone();
             page.accounts = accounts.clone();
             page.current = g.name.clone();
