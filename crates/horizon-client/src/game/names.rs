@@ -12,6 +12,9 @@ use horizon_client::{
     scoreboard as sb, text::Text,
 };
 
+/// The world size of one text pixel in a name tag: `Matrix4f.scale(0.025F, -0.025F, 0.025F)`.
+pub(super) const NAME_TAG_UNIT: f32 = 0.025;
+
 impl Game<'_> {
     /// A named name tag names the mob under the crosshair.
     pub(super) fn name_mob(&mut self, index: usize) -> bool {
@@ -106,11 +109,16 @@ impl Game<'_> {
         let mut tags = Vec::new();
         let players = self.other_players();
         let named = self.mobs.iter().filter_map(|m| {
-            let name = m.custom_name.as_ref()?;
+            // A mannequin with no name still shows its description.
+            let name = match &m.custom_name {
+                Some(name) => name.clone(),
+                None if m.species() == horizon_client::mobs::Species::Mannequin => String::new(),
+                None => return None,
+            };
             // The tag's 64 block distance is measured to the entity: copy the
             // name only for a mob the frame can show it on.
             let at = glam::DVec3::new(m.position.x, m.position.y, m.position.z);
-            (at.distance_squared(camera) < 64.0 * 64.0).then(|| (m, name.clone(), false))
+            (at.distance_squared(camera) < 64.0 * 64.0).then_some((m, name, false))
         });
         let players = players
             .into_iter()
@@ -141,7 +149,7 @@ impl Game<'_> {
             let team = if player {
                 self.score.board.players_team(&name)
             } else {
-                self.mob_team(m.id)
+                self.mob_team_of(m)
             };
             // LivingEntityRenderer.shouldShowName (team rules included), then
             // MobRenderer: a visible name, or the mob under the crosshair.
@@ -163,9 +171,30 @@ impl Game<'_> {
             };
             // MobRenderer.shouldShowName: a visible name, or the mob under the
             // crosshair; players (LivingEntityRenderer) need neither.
-            if !sb::name_shown(team, viewer, view)
-                || !(player || m.name_visible || Some(m.id) == target)
-            {
+            // `ClientMannequin.belowNameDisplay`: the description is `scoreText`, drawn
+            // within the below-name distance (10) whether the name shows or not.
+            let description = (m.species() == horizon_client::mobs::Species::Mannequin
+                && distance_sqr < 10.0 * 10.0)
+                .then(|| m.extra.description.component())
+                .flatten()
+                .map(|tag| horizon_client::entity_nbt::name_text(&tag).resolve_legacy());
+            let name_shown = sb::name_shown(team, viewer, view)
+                && (player || m.name_visible || Some(m.id) == target)
+                && (player || m.custom_name.is_some());
+            if !name_shown {
+                if let Some(text) = description {
+                    let l = self.world.light(
+                        m.position.x.floor() as i32,
+                        (m.position.y + f64::from(m.height())).floor() as i32,
+                        m.position.z.floor() as i32,
+                    );
+                    tags.push(NameTag {
+                        at: p,
+                        lines: vec![(text, 0.0)],
+                        light: l,
+                        discrete,
+                    });
+                }
                 continue;
             }
             // getDisplayName: the name in the team's prefix, suffix and colour.
@@ -187,7 +216,12 @@ impl Game<'_> {
             // EntityRenderer.extractNameTags: the score shows within the
             // below-name distance (10), under the name.
             let mut lift = 0.0;
-            if distance_sqr < 10.0 * 10.0
+            if m.species() == horizon_client::mobs::Species::Mannequin {
+                if let Some(text) = description {
+                    lines.push((text, 0.0));
+                    lift = f64::from(9.0f32 * 1.15 * 0.025);
+                }
+            } else if distance_sqr < 10.0 * 10.0
                 && let Some(score) = holder.and_then(|h| self.below_name_text(&h))
             {
                 lines.push((score.resolve_legacy(), 0.0));
@@ -253,13 +287,15 @@ impl Game<'_> {
                 lift = f64::from(9.0f32 * 1.15 * 0.025);
             }
             lines.push((shown, lift));
+            // The tag rides with the body, between last tick's position and this one's.
+            let at = a.render_position(alpha);
             let l = self.world.light(
-                a.position.x.floor() as i32,
-                (a.position.y + height).floor() as i32,
-                a.position.z.floor() as i32,
+                at.x.floor() as i32,
+                (at.y + height).floor() as i32,
+                at.z.floor() as i32,
             );
             tags.push(NameTag {
-                at: glam::DVec3::new(a.position.x, a.position.y + height + 0.5, a.position.z),
+                at: glam::DVec3::new(at.x, at.y + height + 0.5, at.z),
                 lines,
                 light: l,
                 discrete: false,
@@ -324,16 +360,43 @@ impl Game<'_> {
             if tag.discrete {
                 self.mark_translucent_entity(out.len(), "minecraft:name_tag");
                 let light = vertex_light(tag.light);
-                patches.extend(self.name_tag_quads(o, &tag.lines, FADED, true, 0, light, out));
+                patches.extend(self.name_tag_quads(
+                    o,
+                    &tag.lines,
+                    FADED,
+                    true,
+                    0,
+                    light,
+                    NAME_TAG_UNIT,
+                    out,
+                ));
                 continue;
             }
             // LightCoordsUtil.lightCoordsWithEmission(lightCoords, 2).
             let lit = (tag.light >> 4).max(2) << 4 | (tag.light & 15).max(2);
             self.mark_entity(out.len(), "minecraft:name_tag");
             let light = vertex_light(lit);
-            patches.extend(self.name_tag_quads(o, &tag.lines, 0xFF, false, 0, light, out));
+            patches.extend(self.name_tag_quads(
+                o,
+                &tag.lines,
+                0xFF,
+                false,
+                0,
+                light,
+                NAME_TAG_UNIT,
+                out,
+            ));
             // RenderPipelines.TEXT_SEE_THROUGH: no depth test, no lightmap.
-            patches.extend(self.name_tag_quads(o, &tag.lines, FADED, true, 2, 0, see_through));
+            patches.extend(self.name_tag_quads(
+                o,
+                &tag.lines,
+                FADED,
+                true,
+                2,
+                0,
+                NAME_TAG_UNIT,
+                see_through,
+            ));
         }
         self.map_patches.extend(patches);
     }
@@ -342,7 +405,7 @@ impl Game<'_> {
     /// (in `text_layer` like the glyphs, a hair behind) when `background`.
     /// Returns the glyph pixels the atlas still needs.
     #[allow(clippy::too_many_arguments)]
-    fn name_tag_quads(
+    pub(super) fn name_tag_quads(
         &self,
         o: glam::DVec3,
         lines: &[(Text, f64)],
@@ -350,6 +413,7 @@ impl Game<'_> {
         background: bool,
         text_layer: u32,
         light: u32,
+        unit: f32,
         out: &mut Vec<Vertex>,
     ) -> Vec<horizon_client::font::Patch> {
         // Options.getBackgroundOpacity(0.25) black, as ARGB.color.
@@ -369,7 +433,7 @@ impl Game<'_> {
         let mut batch = HudBatch::new([1, 1]);
         for (text, lift) in lines {
             let o = (o + glam::DVec3::new(0.0, *lift, 0.0)).as_vec3();
-            let (r, u) = (right.as_vec3() * 0.025, up.as_vec3() * 0.025);
+            let (r, u) = (right.as_vec3() * unit, up.as_vec3() * unit);
             // Text space: x right, y down (scale 0.025, -0.025).
             let at = |x: f32, y: f32| o + r * x - u * y;
             let y0 = if text.plain() == "deadmau5" {

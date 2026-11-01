@@ -13,7 +13,7 @@ use horizon_client::{
 };
 use horizon_client::{
     hud_overlays,
-    screen_effects::{ScreenInputs, ScreenQuad, lightmap_brightness},
+    screen_effects::{ScreenInputs, ScreenQuad, lightmap_brightness, nausea_has_effect},
 };
 use horizon_core::random::{LegacyRandom, RandomSource};
 use horizon_world::{heightmap::HeightmapType, worldgen::terrain::TerrainBlockStates};
@@ -191,7 +191,8 @@ impl Game<'_> {
             ) != FogType::Water
     }
     /// `ScreenEffectRenderer` + `Hud` camera overlays for this frame.
-    pub(super) fn screen_quads(&self, partial: f32, size: [u32; 2]) -> Vec<ScreenQuad> {
+    /// `scale` is the player's `LivingEntity.getScale`.
+    pub(super) fn screen_quads(&self, partial: f32, size: [u32; 2], scale: f32) -> Vec<ScreenQuad> {
         let Some(p) = self.player.as_ref() else {
             return Vec::new();
         };
@@ -231,13 +232,15 @@ impl Game<'_> {
                 ),
             );
             // The test points use float maths: `(i % 2 - 0.5F) * width * 0.8F`.
+            // The height spread is `0.1F * getScale()`: a tiny player's eye is
+            // closer to the ground than 0.05.
             let width = p.dimensions.width;
             for i in 0..8 {
                 let t = [
                     p.position.x + f64::from(((i & 1) as f32 - 0.5) * width * 0.8),
                     p.position.y
                         + f64::from(p.dimensions.eye_height)
-                        + f64::from((((i >> 1) & 1) as f32 - 0.5) * 0.1),
+                        + f64::from((((i >> 1) & 1) as f32 - 0.5) * 0.1 * scale),
                     p.position.z + f64::from((((i >> 2) & 1) as f32 - 0.5) * width * 0.8),
                 ];
                 let pos = [
@@ -324,11 +327,7 @@ impl Game<'_> {
             if self.remote.is_some() && self.portals.player.cooldown > 0 {
                 self.portals.player.cooldown -= 1;
             }
-            let nausea = self
-                .potions
-                .effects
-                .get("nausea")
-                .map(|e| !e.ends_within(60));
+            let nausea = self.potions.effects.get("nausea").map(nausea_has_effect);
             self.screen_fx.tick_spinning(nausea);
             // LocalPlayer water vision and AtmosphericFogEnvironment rain fog.
             let in_water =
@@ -349,7 +348,7 @@ impl Game<'_> {
                 .chunks
                 .get(&(b[0] >> 4, b[2] >> 4))
                 .map_or(0, |c| c.biome(b[0], b[1], b[2]));
-            let rains = self.res.biomes().get(biome).precipitation;
+            let rains = world_biomes!(self).get(biome).precipitation;
             update_rain_fog(
                 &mut self.fog,
                 rain,
@@ -379,7 +378,7 @@ impl Game<'_> {
         };
         let world = &self.world;
         let facts = self.res.facts();
-        let biomes = self.res.biomes();
+        let biomes = world_biomes!(self);
         let properties = &self.pack.assets.properties;
         let raining = rain > 0.2;
         let raining_at = |p: [i32; 3]| {
@@ -544,8 +543,14 @@ impl Game<'_> {
         };
         self.particles.tick(&level);
         self.tick_pickups();
-        for (name, at, volume, pitch) in std::mem::take(&mut self.particles.sounds) {
-            self.audio.play(name, Some(at), volume, pitch);
+        let camera = self.particles.camera;
+        for (name, at, volume, pitch, delayed) in std::mem::take(&mut self.particles.sounds) {
+            if delayed {
+                self.audio
+                    .play_distance_delayed(name, at, volume, pitch, camera);
+            } else {
+                self.audio.play(name, Some(at), volume, pitch);
+            }
         }
     }
 }

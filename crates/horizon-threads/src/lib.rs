@@ -1,6 +1,10 @@
 //! Scheduling hints for the game's threads and its allocator: the few OS calls
 //! that the other crates, which forbid unsafe code, can't make themselves.
 
+/// The game window's boot screen, before wgpu's first frame paints over it.
+#[cfg(target_os = "windows")]
+pub mod boot_paint;
+
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Ask the OS to run the calling thread ahead of the process's other
@@ -252,8 +256,130 @@ fn release() {
 #[cfg(not(any(all(target_os = "linux", target_env = "gnu"), target_vendor = "apple")))]
 fn release() {}
 
+/// The REPARSE_DATA_BUFFER of a mount point naming `name` (UTF-16, `\??\` prefixed). The length
+/// fields are 16 bits: a name too long for them is an error, so the caller copies instead.
+#[cfg(windows)]
+fn mount_point_buffer(name: &[u16]) -> std::io::Result<Vec<u8>> {
+    const IO_REPARSE_TAG_MOUNT_POINT: u32 = 0xA000_0003;
+    let too_long = || std::io::Error::from(std::io::ErrorKind::InvalidInput);
+    let name_bytes = u16::try_from(name.len() * 2).map_err(|_| too_long())?;
+    // Substitute name, its NUL, then an empty print name and its NUL.
+    let print_offset = name_bytes.checked_add(2).ok_or_else(too_long)?;
+    let data_len = name_bytes.checked_add(12).ok_or_else(too_long)?;
+    let mut buffer = Vec::with_capacity(16 + name.len() * 2 + 4);
+    buffer.extend(IO_REPARSE_TAG_MOUNT_POINT.to_le_bytes());
+    buffer.extend(data_len.to_le_bytes());
+    buffer.extend(0u16.to_le_bytes());
+    buffer.extend(0u16.to_le_bytes());
+    buffer.extend(name_bytes.to_le_bytes());
+    buffer.extend(print_offset.to_le_bytes());
+    buffer.extend(0u16.to_le_bytes());
+    buffer.extend(name.iter().flat_map(|c| c.to_le_bytes()));
+    buffer.extend([0; 4]);
+    Ok(buffer)
+}
+
+/// A directory junction, which Windows creates without privileges (a directory symlink needs
+/// developer mode): the resource pack overlay links its untouched directories with them.
+#[cfg(windows)]
+pub fn junction(target: &std::path::Path, at: &std::path::Path) -> std::io::Result<()> {
+    // What `mklink /J` does, without its ~100 ms `cmd` process per directory: an empty
+    // directory given a mount point reparse point (REPARSE_DATA_BUFFER) naming the target.
+    use std::os::windows::{ffi::OsStrExt, fs::OpenOptionsExt, io::AsRawHandle};
+    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+    const FSCTL_SET_REPARSE_POINT: u32 = 0x0009_00A4;
+    let target = std::path::absolute(target)?;
+    let target = target.as_os_str().to_string_lossy();
+    let target = target.strip_prefix(r"\\?\").unwrap_or(&target);
+    let name: Vec<u16> = std::ffi::OsStr::new(&format!(r"\??\{target}"))
+        .encode_wide()
+        .collect();
+    let buffer = mount_point_buffer(&name)?;
+    std::fs::create_dir(at)?;
+    let set = std::fs::OpenOptions::new()
+        .write(true)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
+        .open(at)
+        .and_then(|dir| {
+            let mut returned = 0;
+            // SAFETY: a live directory handle, and `buffer` outlives the call.
+            let ok = unsafe {
+                windows_sys::Win32::System::IO::DeviceIoControl(
+                    dir.as_raw_handle(),
+                    FSCTL_SET_REPARSE_POINT,
+                    buffer.as_ptr().cast(),
+                    buffer.len() as u32,
+                    std::ptr::null_mut(),
+                    0,
+                    &mut returned,
+                    std::ptr::null_mut(),
+                )
+            };
+            if ok == 0 {
+                Err(std::io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
+        });
+    if set.is_err() {
+        let _ = std::fs::remove_dir(at);
+    }
+    set
+}
+
+/// Keep this process's standard handles out of the processes it starts. Windows hands a child
+/// every inheritable handle of its parent, not only the three standard handles it is given
+/// (CreateProcessW with bInheritHandles, as `std::process::Command` starts it). horizon-ctl's own
+/// standard handles are inheritable when its caller gave it pipes (a script that reads its output,
+/// an MCP client), so the game it launches would hold the caller's pipe open for its whole life and
+/// the caller, waiting for the end of horizon-ctl's output, would wait until the game quits. A
+/// child given `Stdio::inherit()` still gets them: `Command` duplicates the handles it passes.
+/// Unix needs none of this: a child's 0-2 are replaced and the rest are close-on-exec.
+#[cfg(windows)]
+pub fn keep_stdio_from_children() {
+    use windows_sys::Win32::Foundation::{
+        HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, SetHandleInformation,
+    };
+    use windows_sys::Win32::System::Console::{
+        GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+    };
+    for which in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+        // SAFETY: GetStdHandle has no preconditions; SetHandleInformation only gets a handle this
+        // process holds, and when it fails (no console, a pseudo-handle) the handle stays as it was.
+        unsafe {
+            let handle = GetStdHandle(which);
+            if !handle.is_null() && handle != INVALID_HANDLE_VALUE {
+                SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    /// After it, this process's standard output is no longer handed to the processes it starts.
+    #[cfg(windows)]
+    #[test]
+    fn standard_handles_stay_out_of_children() {
+        use windows_sys::Win32::Foundation::{
+            GetHandleInformation, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE,
+        };
+        use windows_sys::Win32::System::Console::{GetStdHandle, STD_OUTPUT_HANDLE};
+        super::keep_stdio_from_children();
+        // SAFETY: reads the flags of this process's own standard output handle.
+        unsafe {
+            let handle = GetStdHandle(STD_OUTPUT_HANDLE);
+            let mut flags = 0;
+            if !handle.is_null()
+                && handle != INVALID_HANDLE_VALUE
+                && GetHandleInformation(handle, &mut flags) != 0
+            {
+                assert_eq!(flags & HANDLE_FLAG_INHERIT, 0);
+            }
+        }
+    }
+
     /// The hint holds on the platforms that take it.
     #[test]
     fn favouring_a_thread_takes_where_the_os_allows_it() {
@@ -337,5 +463,32 @@ mod tests {
         }
         super::configure_allocator();
         assert_eq!(get(), 0);
+    }
+}
+
+#[cfg(all(test, windows))]
+mod junction_tests {
+    #[test]
+    fn mount_point_buffer_layout() {
+        let name: Vec<u16> = r"\??\C:\a".encode_utf16().collect();
+        let bytes = u16::try_from(name.len() * 2).unwrap();
+        let buffer = super::mount_point_buffer(&name).unwrap();
+        assert_eq!(buffer[..4], 0xA000_0003u32.to_le_bytes());
+        assert_eq!(buffer[4..6], (bytes + 12).to_le_bytes());
+        assert_eq!(buffer[8..10], 0u16.to_le_bytes());
+        assert_eq!(buffer[10..12], bytes.to_le_bytes());
+        assert_eq!(buffer[12..14], (bytes + 2).to_le_bytes());
+        assert_eq!(buffer.len(), 16 + usize::from(bytes) + 4);
+        // Past the 8-byte header, the length field counts the rest of the buffer.
+        assert_eq!(usize::from(bytes) + 12, buffer.len() - 8);
+    }
+
+    #[test]
+    fn names_too_long_for_the_length_fields_are_errors() {
+        // 32764 units is 65528 bytes: the name fits, its length field sums do not.
+        let name = vec![b'a' as u16; 32_764];
+        assert!(super::mount_point_buffer(&name).is_err());
+        assert!(super::mount_point_buffer(&vec![0; 32_768]).is_err());
+        assert!(super::mount_point_buffer(&[0; 100]).is_ok());
     }
 }

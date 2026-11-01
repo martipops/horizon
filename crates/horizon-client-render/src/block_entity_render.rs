@@ -789,6 +789,8 @@ pub struct Scene<'a> {
     pub glyphs: u64,
 }
 
+/// Empty by default (a dedicated server): no state has a block entity model.
+#[derive(Default)]
 pub struct BlockEntityRenderer {
     models: HashMap<&'static str, ModelPart>,
     kinds: Vec<Kind>,
@@ -1116,9 +1118,10 @@ impl BlockEntityRenderer {
     }
     /// `submitCrumblingOverlay` of ChestRenderer.submit, BannerRenderer.submit,
     /// SkullBlockRenderer.submitSkull, ShulkerBoxRenderer.submit,
-    /// BellRenderer.submit, LecternRenderer.submit (the book) and
-    /// CopperGolemStatueBlockRenderer.submit: the model drawn again under the
-    /// destroy stage.
+    /// BellRenderer.submit, LecternRenderer.submit (the book),
+    /// CopperGolemStatueBlockRenderer.submit, ConduitRenderer.submit (the shell
+    /// or cage) and EnchantTableRenderer.submit (the book): the model drawn
+    /// again under the destroy stage.
     pub fn render_breaking(
         &self,
         scene: &Scene,
@@ -1136,6 +1139,8 @@ impl BlockEntityRenderer {
                 | Kind::Bell
                 | Kind::Lectern { .. }
                 | Kind::CopperGolem { .. }
+                | Kind::Conduit
+                | Kind::EnchantingTable
         ) {
             return;
         }
@@ -1490,6 +1495,7 @@ impl BlockEntityRenderer {
                 } else {
                     None
                 };
+                let has_profile = skin.is_some();
                 let texture = skin.as_deref().unwrap_or(texture);
                 let (Some(model), Some(paint)) =
                     (self.models.get(model), paint(texture, 0xFFFFFF, packed))
@@ -1524,7 +1530,13 @@ impl BlockEntityRenderer {
                     "right_ear" => p[5] = (f64::from(t * PI * 0.2).cos() + 2.5) as f32 * 0.2,
                     _ => {}
                 };
+                let start = out.len();
                 draw_part(model, "root", m, &anim, paint, out);
+                // `SkullBlockRenderer.resolveSkullRenderType`: a head with a profile takes
+                // the player skin's `entityTranslucent` render type.
+                if has_profile {
+                    crate::gfx::mark_oit(&mut out[start..]);
+                }
             }
             Kind::Bell => {
                 let (Some(model), Some(paint)) = (
@@ -1673,6 +1685,10 @@ impl BlockEntityRenderer {
                         * Mat4::from_translation(lift)
                         * Mat4::from_quat(Quat::from_axis_angle(axis, degrees * (PI / 180.0)));
                     draw_part(model, "root", m, &none, paint, out);
+                }
+                // The crumbling overlay covers the shell and the cage only.
+                if crumbling {
+                    return;
                 }
                 let wind = if phase == 1 {
                     "entity/conduit/wind_vertical"

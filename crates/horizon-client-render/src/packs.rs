@@ -414,6 +414,13 @@ fn overlays_of(meta: &serde_json::Value) -> Vec<String> {
         .flatten()
         .filter(|e| overlay_applies(e))
         .filter_map(|e| e["directory"].as_str().map(str::to_owned))
+        // OverlayMetadataSection's DIR_VALIDATOR: one folder of the pack, `[-_a-zA-Z0-9.]+`.
+        .filter(|d| {
+            stays_inside(d)
+                && !d.contains('/')
+                && d.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
+        })
         .collect()
 }
 fn filter_of(meta: &serde_json::Value) -> Vec<Filter> {
@@ -441,8 +448,16 @@ fn read_meta(source: &Source) -> Option<serde_json::Value> {
         Source::Dir(d) => fs::read(d.join("pack.mcmeta")).ok()?,
         Source::Zip(z) => Zip::open(z).ok()?.read("pack.mcmeta").ok()?,
     };
-    // Gson reads past a UTF-8 byte order mark; serde_json rejects it.
-    serde_json::from_slice(bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&bytes)).ok()
+    parse_meta(&bytes)
+}
+/// The first JSON value of a `pack.mcmeta`: what follows it is ignored, as some packs sign the
+/// file with a comment after the closing brace. Gson reads past a UTF-8 byte order mark;
+/// serde_json rejects it.
+fn parse_meta(bytes: &[u8]) -> Option<serde_json::Value> {
+    serde_json::Deserializer::from_slice(bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes))
+        .into_iter()
+        .next()?
+        .ok()
 }
 fn pack(id: String, title: Text, source: Source) -> Option<Pack> {
     pack_for(id, title, source, RESOURCE_FORMAT)
@@ -539,7 +554,7 @@ fn pack_files(pack: &Pack) -> io::Result<BTreeMap<String, Provided>> {
             let zip = Zip::open(z)?;
             for root in &roots {
                 let prefix = format!("{root}assets/");
-                for name in zip.names() {
+                for name in zip.names().filter(|name| stays_inside(name)) {
                     if let Some(rest) = name.strip_prefix(&prefix) {
                         out.insert(format!("assets/{rest}"), (None, name.to_owned()));
                     }
@@ -548,6 +563,15 @@ fn pack_files(pack: &Pack) -> io::Result<BTreeMap<String, Provided>> {
         }
     }
     Ok(out)
+}
+/// Whether a zip entry's name, joined to the overlay folder, stays in it: `/`-separated parts
+/// (zip.rs turns `\` into `/`), none empty, `.` or `..`, and no `:` (a drive or a stream on
+/// Windows). A pack, a server's too, may name entries anything.
+fn stays_inside(name: &str) -> bool {
+    !name.contains([':', '\0'])
+        && name
+            .split('/')
+            .all(|part| !part.is_empty() && part != "." && part != "..")
 }
 #[cfg(unix)]
 fn link(target: &Path, at: &Path) -> io::Result<()> {
@@ -566,31 +590,11 @@ fn link(target: &Path, at: &Path) -> io::Result<()> {
         fs::hard_link(target, at).or_else(|_| fs::copy(target, at).map(|_| ()))
     }
 }
-/// A directory junction, which Windows creates without privileges (a directory symlink needs
-/// developer mode). The mirror falls back to copying the tree when it fails.
+/// A directory junction (`horizon_threads::junction`); the mirror falls back to copying the
+/// tree when it fails.
 #[cfg(windows)]
 fn junction(target: &Path, at: &Path) -> io::Result<()> {
-    use std::os::windows::process::CommandExt;
-    // cmd parses its own line: Rust quotes only paths with spaces, so `&` or `^` in an
-    // unquoted path would split or change the command. A Windows path cannot hold `"`.
-    let quoted = |path: &Path| -> io::Result<std::ffi::OsString> {
-        let mut quoted = std::ffi::OsString::from("\"");
-        quoted.push(std::path::absolute(path)?);
-        quoted.push("\"");
-        Ok(quoted)
-    };
-    let status = std::process::Command::new("cmd")
-        .args(["/C", "mklink", "/J"])
-        .raw_arg(quoted(at)?)
-        .raw_arg(quoted(target)?)
-        .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()?;
-    status
-        .success()
-        .then_some(())
-        .ok_or_else(|| io::Error::other("mklink /J failed"))
+    horizon_threads::junction(target, at)
 }
 #[cfg(not(windows))]
 fn junction(_: &Path, _: &Path) -> io::Result<()> {
@@ -964,6 +968,30 @@ impl Selectable {
             compatible: true,
         }
     }
+    /// A server's downloaded pack (`DownloadedPackSource.DOWNLOADED_PACK_SELECTION`):
+    /// required, fixed at the top, so the pack screen cannot remove or reorder it.
+    pub fn downloaded(id: &str, compatible: bool) -> Self {
+        Self {
+            id: id.to_owned(),
+            required: true,
+            position: Position::Top,
+            fixed: true,
+            compatible,
+        }
+    }
+}
+
+/// Ids from `DownloadedPackSource` (`server/…`); they must not go into
+/// `options.txt` `resourcePacks`.
+pub fn is_downloaded_pack_id(id: &str) -> bool {
+    id.starts_with("server/")
+}
+
+/// The player's own selection: drop every downloaded server/world pack id.
+pub fn player_pack_ids(ids: impl IntoIterator<Item = String>) -> Vec<String> {
+    ids.into_iter()
+        .filter(|id| !is_downloaded_pack_id(id))
+        .collect()
 }
 
 /// `Pack.Position.insert`: below or above the packs fixed at that end.
@@ -1097,16 +1125,55 @@ impl SelectionModel {
         ok
     }
     /// `commit`: the repository's selection, bottom first, as options.txt
-    /// stores it.
+    /// stores it (downloaded `server/…` packs stay out of that file).
     pub fn commit(&self) -> Vec<String> {
         let ids: Vec<String> = self.selected.iter().rev().map(|p| p.id.clone()).collect();
-        self.rebuild(&ids).into_iter().map(|p| p.id).collect()
+        player_pack_ids(self.rebuild(&ids).into_iter().map(|p| p.id))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `DownloadedPackSource.DOWNLOADED_PACK_SELECTION`: the pack is selected,
+    /// fixed at the top, cannot be removed, and stays out of options.txt.
+    #[test]
+    fn a_downloaded_server_pack_is_fixed_selected_and_not_committed() {
+        let server = "server/00000000000000000000000000000001/hash.zip";
+        let available = vec![
+            Selectable::optional("file/Mine", true),
+            Selectable::downloaded(server, true),
+            Selectable::vanilla(),
+        ];
+        let model = SelectionModel::new(available, &["file/Mine".into()]);
+        assert_eq!(
+            model
+                .selected
+                .iter()
+                .map(|p| p.id.as_str())
+                .collect::<Vec<_>>(),
+            [server, "file/Mine", "vanilla"]
+        );
+        assert!(!model.can_unselect(true, 0));
+        // A neighbour cannot move up past the fixed server pack.
+        assert!(!model.can_move_up(true, 1));
+        assert_eq!(
+            model.commit(),
+            vec!["vanilla".to_owned(), "file/Mine".to_owned()]
+        );
+        assert!(is_downloaded_pack_id(server));
+        assert!(!is_downloaded_pack_id("file/Mine"));
+    }
+
+    #[test]
+    fn a_comment_after_the_metadata_does_not_hide_a_pack() {
+        let meta = br#"{"pack":{"description":"d","pack_format":97}}
+// Signed by the pack's author"#;
+        assert!(parse_meta(meta).is_some());
+        assert!(parse_meta(b"not json").is_none());
+    }
+
     #[test]
     fn mcmeta_with_utf8_bom_is_read() {
         let dir = std::env::temp_dir().join(format!("horizon-bom-{}", std::process::id()));
@@ -1422,6 +1489,56 @@ mod tests {
         let _ = fs::remove_dir_all(base);
     }
     #[test]
+    fn zip_entries_never_leave_the_overlay() {
+        use std::io::Write as _;
+        let base = std::env::temp_dir().join(format!("horizon-pack-escape-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let vanilla = base.join("vanilla");
+        fs::create_dir_all(vanilla.join("assets/minecraft/textures/block")).unwrap();
+        fs::write(
+            vanilla.join("assets/minecraft/textures/block/stone.png"),
+            b"vanilla",
+        )
+        .unwrap();
+        fs::create_dir_all(base.join("packs")).unwrap();
+        let mut zip = zip::ZipWriter::new(fs::File::create(base.join("packs/evil.zip")).unwrap());
+        for (name, data) in [
+            (
+                "pack.mcmeta",
+                &br#"{"pack":{"description":"d","pack_format":97}}"#[..],
+            ),
+            ("assets/minecraft/textures/block/stone.png", b"pack"),
+            ("assets/../../escaped.txt", b"out"),
+            ("assets/minecraft/../../../escaped_lang.json", b"{}"),
+            ("assets\\..\\..\\escaped_backslash.txt", b"out"),
+            ("assets/./minecraft/dot.txt", b"in"),
+        ] {
+            zip.start_file(name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(data).unwrap();
+        }
+        zip.finish().unwrap();
+        let packs = discover(&vanilla, &base.join("packs"));
+        assert_eq!(packs.len(), 1);
+        let out = base.join("work/overlay");
+        build_overlay(&vanilla, &packs, &out).unwrap();
+        assert_eq!(
+            fs::read(out.join("assets/minecraft/textures/block/stone.png")).unwrap(),
+            b"pack"
+        );
+        for escaped in [
+            "escaped.txt",
+            "escaped_lang.json",
+            "escaped_backslash.txt",
+            "work/escaped.txt",
+            "work/escaped_lang.json",
+            "work/escaped_backslash.txt",
+        ] {
+            assert!(!base.join(escaped).exists(), "{escaped} was written");
+        }
+        let _ = fs::remove_dir_all(base);
+    }
+    #[test]
     fn built_in_and_folder_packs_give_their_pack_png() {
         use std::io::Write as _;
         let base = std::env::temp_dir().join(format!("horizon-pack-icons-{}", std::process::id()));
@@ -1469,6 +1586,15 @@ mod tests {
             {"min_format":97,"max_format":[97,5],"directory":"also"},
             {"formats":50,"directory":"no"}]}}"#);
         assert_eq!(overlays_of(&meta), ["new", "also"]);
+        // Only one plain folder of the pack, as vanilla's DIR_VALIDATOR has it.
+        let meta = v(r#"{"overlays":{"entries":[
+            {"formats":97,"directory":".."},
+            {"formats":97,"directory":"../outside"},
+            {"formats":97,"directory":"/etc"},
+            {"formats":97,"directory":"a/b"},
+            {"formats":97,"directory":"C:"},
+            {"formats":97,"directory":"ok_1.21-x"}]}}"#);
+        assert_eq!(overlays_of(&meta), ["ok_1.21-x"]);
         let base = std::env::temp_dir().join(format!("horizon-packs-ov-{}", std::process::id()));
         let _ = fs::remove_dir_all(&base);
         let vanilla = base.join("vanilla");

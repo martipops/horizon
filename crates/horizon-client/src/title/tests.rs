@@ -67,6 +67,23 @@ impl Fixture {
         self.title.enter_singleplayer();
         self.title.click(240.0, 60.0, (480.0, 262.0));
     }
+    /// Create New World, past the preparing read: the screen the pack
+    /// screens hand their selection to.
+    fn enter_create_world_for_packs(&mut self) {
+        // A world, so Singleplayer opens the list and its Create New World
+        // goes through preparing (an empty list opens Create directly).
+        self.world("World", "World");
+        self.title.enter_singleplayer();
+        // The Select screen's Create button reads the worldgen data first
+        // (`openCreateWorldScreen` behind `createWorld.preparing`).
+        assert_eq!(self.click_with_sound("Create New World").0, Action::None);
+        assert!(
+            self.title.preparing(),
+            "Create New World goes through preparing"
+        );
+        self.title.finish_preparing();
+        assert!(matches!(self.title.creation_packs(), Some((_, _))));
+    }
     fn finish_backup(&mut self) {
         self.title.backup_shown.set(true);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -112,6 +129,7 @@ fn direct_connection_remembers_the_address_on_cancel_escape_and_join() {
         f.click("Join Server"),
         Action::Connect {
             address: "localhost:25569".into(),
+            lan: false,
         }
     );
     assert_eq!(f.title.last_server, "localhost:25569");
@@ -206,7 +224,7 @@ fn selector_controls_require_selection_and_search_uses_filtered_indices() {
 }
 
 #[test]
-fn edit_layout_disables_unsupported_optimization_and_missing_icon() {
+fn edit_layout_disables_missing_icon_and_opens_the_optimize_question() {
     let mut f = Fixture::new();
     f.world("World", "New World");
     f.select();
@@ -221,13 +239,15 @@ fn edit_layout_disables_unsupported_optimization_and_missing_icon() {
     // vanilla rounds up to 262 GUI pixels before positioning the layout.
     assert_eq!(f.title.buttons(480.0, 261.5)[0].y, 78.0);
     assert!(
-        !buttons
+        buttons
             .iter()
             .find(|b| b.label == "Optimize World")
             .unwrap()
             .enabled
     );
     f.click("Optimize World");
+    assert!(matches!(f.title.mode, Mode::OptimizeConfirm { .. }));
+    f.title.escape();
     assert!(matches!(f.title.mode, Mode::Edit { .. }));
     fs::write(f.title.saves.join("World/icon.png"), b"icon").unwrap();
     assert!(
@@ -567,10 +587,15 @@ fn classic_navigation_buttons_sound_even_without_a_game_action() {
         (Action::None, false)
     );
     assert_eq!(f.click_with_sound("Create New World"), (Action::None, true));
-    assert_eq!(
-        f.title.click(240.0, 55.0, (480.0, 262.0)),
-        (Action::None, false)
+    // Create New World prepares the world generation first
+    // (`CreateWorldScreen.openCreateWorldScreen`); the game opens the
+    // screen once that is done.
+    assert!(f.title.click(240.0, 55.0, (480.0, 262.0)).0 == Action::None);
+    assert!(
+        f.title.preparing(),
+        "Create New World goes through preparing"
     );
+    f.title.finish_preparing();
     // The Game tab's game mode cycle button.
     let mode = f
         .title
@@ -585,6 +610,93 @@ fn classic_navigation_buttons_sound_even_without_a_game_action() {
     assert_eq!(f.click_with_sound("Cancel"), (Action::None, true));
     assert_eq!(f.click_with_sound("Back"), (Action::None, true));
     assert_eq!(f.click_with_sound("Options..."), (Action::Options, true));
+}
+
+/// A feature pack the resources root ships (`PackSource.FEATURE`).
+fn feature_pack(root: &Path) {
+    let pack = root.join("data/minecraft/datapacks/test_feature");
+    fs::create_dir_all(&pack).unwrap();
+    fs::write(pack.join("pack.mcmeta"), r#"{"pack":{"description":"t"}}"#).unwrap();
+}
+
+#[test]
+fn offer_data_packs_without_a_feature_applies_at_once() {
+    let mut f = Fixture::new();
+    f.enter_create_world_for_packs();
+    f.title
+        .offer_data_packs(&f.root, vec!["vanilla".into(), "file/t.zip".into()]);
+    // `tryApplyNewDataPacks`: no confirm screen, the selection applies and
+    // the data is read again.
+    assert!(f.title.confirm_experiments.borrow().is_none());
+    assert!(f.title.preparing());
+    assert_eq!(
+        f.title.creation_packs().map(|(_, ids)| ids),
+        Some(vec!["vanilla".to_owned(), "file/t.zip".to_owned()])
+    );
+}
+
+#[test]
+fn offer_data_packs_with_a_feature_asks_and_the_confirm_screen_decides() {
+    let mut f = Fixture::new();
+    feature_pack(&f.root);
+    f.enter_create_world_for_packs();
+    f.title
+        .offer_data_packs(&f.root, vec!["vanilla".into(), "test_feature".into()]);
+    // The confirm screen is up, the selection waits.
+    assert!(f.title.confirm_experiments.borrow().is_some());
+    assert!(!f.title.preparing());
+    assert_eq!(
+        f.title.creation_packs().map(|(_, ids)| ids),
+        Some(vec!["vanilla".to_owned()])
+    );
+    // Back (`onAbort`): the Data Packs screen reopens with the selection
+    // it had, the confirm screen is gone.
+    let atlas = crate::hud::HudAtlas::build(Path::new("/nonexistent/horizon-test-assets")).unwrap();
+    // confirm_experiments::footer_pair's Back, for a 480-wide screen
+    // (COLUMN_SPACING is 10).
+    let back_x = ((480.0_f32 - (150.0 * 2.0 + 10.0)) / 2.0).trunc() + 150.0 + 10.0 + 1.0;
+    f.title
+        .press_rules(&atlas, (back_x, 262.0 - 45.0 + 1.0), (480.0, 262.0));
+    assert!(f.title.confirm_experiments.borrow().is_none());
+    assert!(f.title.take_reopen_data_packs());
+    assert_eq!(
+        f.title.creation_packs().map(|(_, ids)| ids),
+        Some(vec!["vanilla".to_owned()])
+    );
+    // The screen is offered again, and Proceed applies the selection and
+    // asks for the read.
+    f.title
+        .offer_data_packs(&f.root, vec!["vanilla".into(), "test_feature".into()]);
+    // The Proceed button, left of the pair.
+    let proceed_x = ((480.0_f32 - (150.0 * 2.0 + 10.0)) / 2.0).trunc() + 1.0;
+    f.title
+        .press_rules(&atlas, (proceed_x, 262.0 - 45.0 + 1.0), (480.0, 262.0));
+    assert!(f.title.confirm_experiments.borrow().is_none());
+    assert!(f.title.preparing());
+    assert_eq!(
+        f.title.creation_packs().map(|(_, ids)| ids),
+        Some(vec!["vanilla".to_owned(), "test_feature".to_owned()])
+    );
+}
+
+#[test]
+fn preparing_takes_no_input() {
+    let mut f = Fixture::new();
+    f.enter_create_world_for_packs();
+    f.title
+        .offer_data_packs(&f.root, vec!["vanilla".into(), "file/t.zip".into()]);
+    assert!(f.title.preparing());
+    // Escape during the read: nothing closes, the options survive
+    // (GenericMessageScreen.shouldCloseOnEsc is false).
+    f.title.escape();
+    assert!(f.title.preparing());
+    assert!(f.title.creation_packs().is_some());
+    // Typed text doesn't reach the focused field either.
+    let before = format!("{:?}", f.title.mode);
+    f.title.type_text("typed during the read");
+    assert_eq!(format!("{:?}", f.title.mode), before);
+    f.title.finish_preparing();
+    assert!(!f.title.preparing());
 }
 
 #[test]
@@ -666,7 +778,8 @@ fn world_management_buttons_sound_when_enabled() {
     f.select();
     assert_eq!(f.click_with_sound("Edit"), (Action::None, true));
     assert_eq!(f.click_with_sound("Reset Icon"), (Action::None, false));
-    assert_eq!(f.click_with_sound("Optimize World"), (Action::None, false));
+    assert_eq!(f.click_with_sound("Optimize World"), (Action::None, true));
+    f.title.escape();
     fs::write(f.title.saves.join("World/icon.png"), b"icon").unwrap();
     assert_eq!(f.click_with_sound("Reset Icon"), (Action::None, true));
     let Mode::Edit { name, .. } = &mut f.title.mode else {
@@ -903,13 +1016,13 @@ fn create_world_tabs_follow_vanilla_and_their_choices_reach_the_action() {
             bonus_chest: true
         }
     );
-    // The More tab: Experiments has no screen yet; Data
+    // The More tab: Game Rules, Experiments and Data Packs all open; Data
     // Packs opens on a new pack folder, and its selection reaches the action.
     f.title.click(54.0 + 248.0 + 10.0, 10.0, size);
     let more = labels(&f);
     assert_eq!(
         more[..3].iter().map(|b| b.3).collect::<Vec<_>>(),
-        [true, false, true]
+        [true, true, true]
     );
     let (action, sound) = f.title.click(more[2].1 + 10.0, more[2].2 + 10.0, size);
     let Action::DataPacks { dir, selected } = action else {
@@ -1189,8 +1302,11 @@ fn world_with_unreadable_level_dat_is_listed_and_recovers_from_level_dat_old() {
     assert_eq!(issues[1], None);
     assert_eq!(fs::read(dir.join("level.dat")).unwrap(), b"truncated");
 
-    // restoreLevelDataFromOld: level.dat_old back in place, the broken file kept aside.
+    // attemptRestore backs the world up first, then restoreLevelDataFromOld: level.dat_old
+    // back in place, the broken file kept aside.
     f.click("Attempt to Restore");
+    assert!(matches!(f.title.mode, Mode::Backup { .. }));
+    f.finish_backup();
     assert!(matches!(
         f.title.mode,
         Mode::Recovered { success: true, .. }
@@ -1251,6 +1367,88 @@ fn world_with_nothing_to_recover_from_is_listed_but_never_opened() {
     assert_eq!(fs::read(dir.join("level.dat")).unwrap(), b"garbage");
     f.click("Back");
     assert!(matches!(f.title.mode, Mode::Select { .. }));
+}
+
+#[test]
+fn title_screen_keyboard_navigation_and_activation() {
+    let mut f = Fixture::new();
+    f.world("w1", "World 1");
+    let size = (480.0, 262.0);
+    assert_eq!(f.title.focused_button, None);
+
+    // Tab forwards focuses the first button (Singleplayer, id 1)
+    f.title.tab_dir(false, size);
+    assert_eq!(f.title.focused_button, Some(1));
+
+    // Tab again focuses Multiplayer (id 4)
+    f.title.tab_dir(false, size);
+    assert_eq!(f.title.focused_button, Some(4));
+
+    // Shift+Tab reverses focus to Singleplayer
+    f.title.tab_dir(true, size);
+    assert_eq!(f.title.focused_button, Some(1));
+
+    // Enter confirms focused button (Singleplayer opens world select) and triggers sound
+    let (action, sound) = f.title.confirm_key_size(size);
+    assert_eq!(action, Action::None);
+    assert!(sound);
+    assert!(matches!(f.title.mode, Mode::Select { .. }));
+    assert_eq!(f.title.focused_button, None);
+
+    // Navigate to Create New World button (id 11) on the select screen: the
+    // "Preparing for world creation" screen comes first, then the create screen.
+    f.title.focused_button = Some(11);
+    let (action, sound) = f.title.confirm_key_size(size);
+    assert_eq!(action, Action::None);
+    assert!(sound);
+    assert!(f.title.preparing());
+    f.title.finish_preparing();
+    assert!(matches!(f.title.mode, Mode::Create { .. }));
+
+    // Focus and toggle Game Mode cycle button (id 20) from Survival to Hardcore
+    f.title.focused_button = Some(20);
+    let (action, sound) = f.title.confirm_key_size(size);
+    assert_eq!(action, Action::None);
+    assert!(sound);
+
+    // In Hardcore, Difficulty button (id 23) is disabled, so confirming it does not sound
+    f.title.focused_button = Some(23);
+    let (action, sound) = f.title.confirm_key_size(size);
+    assert_eq!(action, Action::None);
+    assert!(!sound);
+
+    // Toggle Game Mode cycle button again (Hardcore to Creative)
+    f.title.focused_button = Some(20);
+    let (action, sound) = f.title.confirm_key_size(size);
+    assert_eq!(action, Action::None);
+    assert!(sound);
+
+    // Now Difficulty button (id 23) is enabled in Creative, so confirming it sounds
+    f.title.focused_button = Some(23);
+    let (action, sound) = f.title.confirm_key_size(size);
+    assert_eq!(action, Action::None);
+    assert!(sound);
+}
+
+#[test]
+fn mouse_opening_singleplayer_does_not_steal_select_world_enter() {
+    let mut f = Fixture::new();
+    f.world("w1", "World 1");
+
+    assert_eq!(f.click("Singleplayer"), Action::None);
+    assert!(matches!(f.title.mode, Mode::Select { .. }));
+    assert_eq!(f.title.focused_button, None);
+
+    // Select the row, then press Enter as a keyboard user would.
+    f.title.click(240.0, 60.0, (480.0, 262.0));
+    let (action, sound) = f.title.confirm_key_size((480.0, 262.0));
+    assert_eq!(
+        action,
+        Action::Play {
+            folder: "w1".to_owned()
+        }
+    );
+    assert!(sound);
 }
 
 /// Rewrites a test world's `WorldGenSettings` (in level.dat, where `world_gen_settings` falls back).
@@ -1425,4 +1623,201 @@ fn a_world_opened_by_name_with_unreadable_level_data_shows_the_recovery_screen()
         Some(crate::save::DatIssue::Unreadable(_))
     ));
     assert_eq!(issues[1], None);
+}
+
+fn old_entity_chunk(f: &Fixture, folder: &str) -> PathBuf {
+    use horizon_world::{
+        compression::Compression,
+        nbt::{Limits, NamedTag},
+        region::{ChunkRecord, RegionFile},
+    };
+    let file = f
+        .title
+        .saves
+        .join(folder)
+        .join("dimensions/minecraft/overworld/entities/r.0.0.mca");
+    fs::create_dir_all(file.parent().unwrap()).unwrap();
+    let tag = Tag::compound([
+        ("DataVersion", Tag::Int(4000)),
+        ("Position", Tag::IntArray(vec![0, 0])),
+        ("Entities", Tag::List(vec![])),
+    ]);
+    let record = ChunkRecord::from_nbt(
+        &NamedTag {
+            name: "".into(),
+            tag,
+        },
+        Compression::Zlib,
+        1,
+        Limits::default(),
+    )
+    .unwrap();
+    RegionFile::open_writable(&file, true)
+        .unwrap()
+        .write(horizon_core::position::ChunkPos::new(0, 0), &record)
+        .unwrap();
+    file
+}
+
+fn chunk_version(file: &Path) -> i32 {
+    use horizon_world::{nbt::Limits, region::RegionFile};
+    let record = RegionFile::open(file)
+        .unwrap()
+        .read(horizon_core::position::ChunkPos::new(0, 0))
+        .unwrap()
+        .unwrap();
+    let root = record.nbt(Limits::default()).unwrap();
+    match root.tag.get("DataVersion") {
+        Some(Tag::Int(v)) => *v,
+        _ => -1,
+    }
+}
+
+fn wait_while_optimizing(f: &mut Fixture) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while matches!(f.title.mode, Mode::Optimize { .. }) {
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        f.title.poll_backup();
+    }
+}
+
+#[test]
+fn optimize_question_cancel_returns_to_the_edit_screen_with_its_name() {
+    let mut f = Fixture::new();
+    f.world("World", "World");
+    f.select();
+    f.click("Edit");
+    let Mode::Edit { name, .. } = &mut f.title.mode else {
+        panic!("edit screen")
+    };
+    *name = "Typed".into();
+    f.click("Optimize World");
+    let buttons = f.title.buttons(480.0, 262.0);
+    assert_eq!(
+        buttons.iter().map(|b| b.label.as_str()).collect::<Vec<_>>(),
+        [
+            "Create Backup and Optimize",
+            "I Know What I'm Doing!",
+            "Cancel"
+        ]
+    );
+    f.title.message_lines.set(3);
+    // BackupConfirmScreen.init: 100 + (3 + 1) * 9 under the text.
+    assert_eq!(f.title.buttons(480.0, 262.0)[0].y, 136.0);
+    f.click("Cancel");
+    let Mode::Edit { name, .. } = &f.title.mode else {
+        panic!("edit screen")
+    };
+    assert_eq!(name, "Typed");
+}
+
+#[test]
+fn optimizing_without_a_backup_upgrades_chunks_and_returns_to_the_list() {
+    let mut f = Fixture::new();
+    f.world("World", "World");
+    let file = old_entity_chunk(&f, "World");
+    f.select();
+    f.click("Edit");
+    f.click("Optimize World");
+    f.title.erase_check.set([100.0, 50.0, 100.0, 17.0]);
+    assert_eq!(
+        f.title.click(110.0, 55.0, (480.0, 262.0)),
+        (Action::None, true)
+    );
+    assert!(matches!(
+        f.title.mode,
+        Mode::OptimizeConfirm {
+            erase_cache: true,
+            ..
+        }
+    ));
+    f.click("I Know What I'm Doing!");
+    assert!(matches!(f.title.mode, Mode::Optimize { .. }));
+    // OptimizeWorldScreen ignores Escape.
+    f.title.escape();
+    wait_while_optimizing(&mut f);
+    assert!(matches!(
+        f.title.mode,
+        Mode::Select {
+            selected: Some(0),
+            ..
+        }
+    ));
+    assert!(f.title.optimize.is_none());
+    assert_eq!(chunk_version(&file), horizon_world::DATA_VERSION);
+}
+
+#[test]
+fn optimizing_after_a_backup_starts_when_the_backup_is_done() {
+    let mut f = Fixture::new();
+    f.world("World", "World");
+    let file = old_entity_chunk(&f, "World");
+    f.select();
+    f.click("Edit");
+    f.click("Optimize World");
+    f.click("Create Backup and Optimize");
+    assert!(matches!(f.title.mode, Mode::Backup { .. }));
+    f.finish_backup();
+    assert!(matches!(f.title.mode, Mode::Optimize { .. }));
+    assert!(f.title.toast.is_some());
+    wait_while_optimizing(&mut f);
+    assert_eq!(chunk_version(&file), horizon_world::DATA_VERSION);
+}
+
+#[test]
+fn cancel_stops_the_optimization() {
+    let mut f = Fixture::new();
+    f.world("World", "World");
+    f.select();
+    f.click("Edit");
+    f.click("Optimize World");
+    f.click("I Know What I'm Doing!");
+    assert!(matches!(f.title.mode, Mode::Optimize { .. }));
+    assert_eq!(f.title.buttons(480.0, 262.0)[0].y, 65.0 + 150.0);
+    f.click("Cancel");
+    assert!(matches!(f.title.mode, Mode::Select { .. }));
+    assert!(f.title.optimize.is_none());
+}
+
+#[test]
+fn a_world_that_needs_file_fixing_cannot_be_optimized() {
+    let mut f = Fixture::new();
+    f.world("World", "World");
+    let path = f.title.saves.join("World/level.dat");
+    f.select();
+    f.click("Edit");
+    // SelectWorldScreen only enables Edit for a world that needs no file
+    // fixing (`LevelSummary.canEdit`), so the data goes stale while the
+    // edit screen is open.
+    let mut root = crate::save::read_dat(&path).unwrap();
+    if let Some(Tag::Compound(data)) = root.get_mut("Data") {
+        data.insert("DataVersion".into(), Tag::Int(3000));
+    }
+    crate::save::write_dat(&path, root).unwrap();
+    f.click("Optimize World");
+    f.click("I Know What I'm Doing!");
+    // `OptimizeWorldScreen.create` returns null: `setScreen(null)`.
+    assert!(matches!(f.title.mode, Mode::Main));
+    assert!(f.title.optimize.is_none());
+}
+
+#[test]
+fn a_finished_optimization_stamps_the_level_data() {
+    let mut f = Fixture::new();
+    f.world("World", "World");
+    let path = f.title.saves.join("World/level.dat");
+    let mut root = crate::save::read_dat(&path).unwrap();
+    if let Some(Tag::Compound(data)) = root.get_mut("Data") {
+        data.insert("DataVersion".into(), Tag::Int(4950));
+    }
+    crate::save::write_dat(&path, root).unwrap();
+    f.select();
+    f.click("Edit");
+    f.click("Optimize World");
+    f.click("I Know What I'm Doing!");
+    wait_while_optimizing(&mut f);
+    let root = crate::save::read_dat(&path).unwrap();
+    let version = root.get("Data").and_then(|d| d.get("DataVersion"));
+    assert!(matches!(version, Some(Tag::Int(v)) if *v == horizon_world::DATA_VERSION));
 }

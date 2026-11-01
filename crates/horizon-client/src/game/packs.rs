@@ -86,6 +86,30 @@ fn info(p: &Pack) -> PackInfo {
         fixed: false,
     }
 }
+/// A pack from `DownloadedPackSource.loadRequestedPacks`: fixed at the top of
+/// the selected list (`DOWNLOADED_PACK_SELECTION`), labelled as a server pack
+/// (or a world's own pack when its id is the local-world uuid).
+fn downloaded_info(p: &Pack) -> PackInfo {
+    // `WorldOpenFlows.WORLD_PACK_ID` as hex in `server/{uuid}/…`.
+    const WORLD: &str = "server/640a6a92b6cb48a0b391831586500359/";
+    let world = p.id.starts_with(WORLD);
+    PackInfo {
+        id: p.id.clone(),
+        title: p.title.clone(),
+        description: p.raw_description.clone(),
+        description_style: p.description_style.clone(),
+        source: if world {
+            PackSource::World
+        } else {
+            PackSource::Server
+        },
+        compat: p.compatibility,
+        icon: p.icon_png().as_deref().and_then(pack_screen::load_icon),
+        required: true,
+        position: Position::Top,
+        fixed: true,
+    }
+}
 /// The vanilla pack: required, at the bottom (`BuiltInPackSource`), with the
 /// client JAR's `pack.png` that the prepared resources hold.
 fn vanilla_info(vanilla: &Path) -> PackInfo {
@@ -105,12 +129,14 @@ fn vanilla_info(vanilla: &Path) -> PackInfo {
         fixed: false,
     }
 }
-/// Shared by the startup menu, which has no world resources yet.
-pub(super) fn pack_infos(vanilla: &Path) -> Vec<PackInfo> {
+/// Packs the Resource Packs screen lists: folder and built-in packs, then any
+/// active downloaded server (or world) packs, then vanilla.
+pub(super) fn pack_infos(vanilla: &Path, server: &[Pack]) -> Vec<PackInfo> {
     let mut infos: Vec<PackInfo> = packs::discover(vanilla, &packs_dir())
         .iter()
         .map(info)
         .collect();
+    infos.extend(server.iter().map(downloaded_info));
     infos.push(vanilla_info(vanilla));
     infos
 }
@@ -125,7 +151,7 @@ impl Game<'_> {
     /// The packs the pack screen offers and the current selection
     /// (`PackSelectionScreen` makes its `PackSelectionModel` from them).
     pub(super) fn refresh_pack_lists(&mut self) {
-        let infos = pack_infos(&self.vanilla_root());
+        let infos = pack_infos(&self.vanilla_root(), &self.server_packs.active);
         let o = &mut self.ui.options;
         o.pack_infos = infos;
         o.pack_selection = self.settings.resource_packs.clone();
@@ -297,6 +323,11 @@ impl Game<'_> {
         let context = pack.context.clone();
         self.pack = pack;
         self.gui = gui;
+        // The new atlas's skin and map slots are blank: players and maps
+        // upload into it again instead of naming sprites it does not have.
+        self.skin_slots.forget();
+        self.maps.slots.forget();
+        self.map_patches.clear();
         // The atlas's sprites moved: the particle engine re-reads every rect
         // and the packs' sprite sets, or every particle draws a stale region.
         self.particles
@@ -319,10 +350,20 @@ impl Game<'_> {
         self.pending_uploads.clear();
         // New GPU textures: a renderer built from the reloaded resources; the
         // sections are uploaded again as they are meshed.
-        if let Some(renderer) = renderer {
+        if let Some(mut renderer) = renderer {
+            // The old one's size: a splitscreen player's view is smaller than the window the new
+            // one was sized from (it drew a window-sized frame into the view, cut off).
+            if let Some(old) = &self.renderer {
+                renderer.resize(old.config.width, old.config.height);
+            }
             self.renderer = Some(renderer);
             self.apply_ui_settings();
         }
+        // Horizon's own shader pack is built again: its sprite tags name the old atlas's
+        // layers, and a new renderer runs no pack.
+        self.native_shaders = super::native_shaders::NativeShaders::picking(&std::mem::take(
+            &mut self.native_shaders.picked,
+        ));
         self.ui.chat.rescale(&self.gui.atlas);
         // The creative screen survives the reload; item names may not.
         self.creative_screen.forget_items();
@@ -350,13 +391,21 @@ pub(super) fn stage_pack(
     let root = startup_root(vanilla_root, selected, server)?;
     let root = super::mods::content_root(&root, mods_enabled, dev_mods);
     progress.set(1);
-    let render = Arc::new(assets.reload(&root)?);
-    let mut atlas = HudAtlas::build_over(&root, vanilla_root)?;
+    // The world's models and sprites and the GUI atlas read the same root and nothing of
+    // each other: about a second each, side by side.
+    let (render, atlas, panorama) = std::thread::scope(|s| {
+        let atlas =
+            s.spawn(|| HudAtlas::build_over(&root, vanilla_root).map_err(|e| e.to_string()));
+        let panorama = s.spawn(|| horizon_client::gfx::panorama::Faces::load(&root));
+        (assets.reload(&root), atlas.join(), panorama.join())
+    });
+    let render = Arc::new(render?);
+    let mut atlas = atlas.unwrap_or_else(|p| std::panic::resume_unwind(p))?;
     atlas.font.uniform = force_unicode;
     atlas.font.japanese = japanese;
     let gui = UiResources {
         atlas,
-        panorama: Arc::new(horizon_client::gfx::panorama::Faces::load(&root)),
+        panorama: Arc::new(panorama.unwrap_or_else(|p| std::panic::resume_unwind(p))),
     };
     progress.set(2);
     let pack = PackResources::load(

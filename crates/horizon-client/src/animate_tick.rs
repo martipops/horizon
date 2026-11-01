@@ -301,7 +301,9 @@ fn candle_offsets(count: u8) -> &'static [[f64; 3]] {
     }
 }
 
-/// Per-state animate behaviour and the block tags it needs.
+/// Per-state animate behaviour and the block tags it needs. Empty by default
+/// (a dedicated server): every lookup finds nothing to animate.
+#[derive(Default)]
 pub struct AnimateTables {
     kinds: Vec<Animate>,
     impermeable: Vec<bool>,
@@ -536,7 +538,7 @@ fn add_visible(engine: &mut ParticleEngine, ty: T, p: [f64; 3], v: [f64; 3]) {
     engine.add_with(&ParticleOptions::simple(ty), p, v, false, true);
 }
 fn sound(engine: &mut ParticleEngine, name: &'static str, p: [f64; 3], volume: f32, pitch: f32) {
-    engine.sounds.push((name, p, volume, pitch));
+    engine.sounds.push((name, p, volume, pitch, false));
 }
 fn redstone(engine: &mut ParticleEngine, p: [f64; 3]) {
     engine.add(&ParticleOptions::dust([1.0, 0.0, 0.0], 1.0), p, [0.0; 3]);

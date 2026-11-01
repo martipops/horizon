@@ -127,7 +127,13 @@ impl Game<'_> {
             // not hit (`AbstractWindCharge.canHitEntity`).
             Who::Mob(id) if id >= super::dragon::SPECIAL => {
                 if id < super::dragon::SPECIAL + 8 {
-                    self.hit_special(id, 1.0, p.owner == Some(Who::Player), false);
+                    self.hit_special(
+                        id,
+                        1.0,
+                        p.owner == Some(Who::Player),
+                        horizon_client::mobs::DamageKind::WindCharge,
+                        Some(&p.kind),
+                    );
                 }
             }
             Who::Mob(id) => {
@@ -516,20 +522,13 @@ impl Game<'_> {
                 .and_then(|s| s.properties.get(key).cloned())
         };
         if name.ends_with("candle") || name.ends_with("candle_cake") {
-            if prop(self, "lit").as_deref() == Some("true") {
-                let at = [
-                    f64::from(pos[0]) + 0.5,
-                    f64::from(pos[1]) + 0.5,
-                    f64::from(pos[2]) + 0.5,
-                ];
-                self.audio.play(
-                    "minecraft:entity.generic.extinguish_fire",
-                    Some(at),
-                    1.0,
-                    1.0,
-                );
-                self.set_state_named(pos, &name, &["candles", "waterlogged"])?;
-            }
+            // AbstractCandleBlock.onExplosionHit: extinguish(null, ...), the
+            // candle's own sound and a block-change game event (the smoke is a
+            // client-level particle, which a server level never draws).
+            self.with_level(|b, level, ticks| {
+                b.extinguish_candle(level, ticks, BlockPos::new(pos[0], pos[1], pos[2]))
+            });
+            self.process_level_events()?;
             return Ok(());
         }
         if !triggers(&name) {
@@ -551,6 +550,15 @@ impl Game<'_> {
             return Ok(());
         }
         if prop(self, "powered").as_deref() == Some("true") && &*name != "minecraft:lever" {
+            return Ok(());
+        }
+        // FenceGateBlock.onExplosionHit toggles the gate without turning it
+        // towards anyone, as a click would.
+        if name.ends_with("_fence_gate") {
+            self.with_level(|b, level, ticks| {
+                b.fence_gate_exploded(level, ticks, BlockPos::new(pos[0], pos[1], pos[2]))
+            });
+            self.process_level_events()?;
             return Ok(());
         }
         let at = Vec3::new(
@@ -609,6 +617,7 @@ impl Game<'_> {
         poses.yrot("wind", age * 16.0_f32.to_radians());
         let base = glam::Mat4::from_translation(at)
             * glam::Mat4::from_scale(glam::Vec3::new(-1.0, -1.0, 1.0));
+        let start = out.len();
         horizon_client::mobs::render::draw_scrolled(
             model,
             base,
@@ -623,6 +632,10 @@ impl Game<'_> {
             0,
             out,
         );
+        // `RenderTypes.breezeWind` has an `OitPipelineSet`.
+        for vertex in &mut out[start..] {
+            vertex.layer |= horizon_client::gfx::OIT_ENTITY;
+        }
     }
 }
 #[cfg(test)]

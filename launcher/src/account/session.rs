@@ -190,18 +190,31 @@ fn read(store: &dyn SecretStore, uuid: &str) -> Result<Option<Secrets>, String> 
 
 /// Inspect local expiry and remembered failures without contacting authentication services.
 /// Call off the UI thread: unlocking the keychain can require user interaction.
+/// Waits at most `STATUS_WAIT` behind another account operation (`account list`, MCP).
 pub fn status(store: &dyn SecretStore, uuid: &str) -> Status {
-    status_with_progress(store, uuid, &|_| {})
+    status_within(store, uuid, &|_| {}, Some(STATUS_WAIT))
 }
 
+/// [`status`] for the launcher's own status workers: they run off the UI thread and show
+/// "Waiting for account access…" meanwhile, so they wait for the lock instead of answering
+/// [`BUSY`], which would show a false "Could not check sign-in" behind another account's renewal.
 pub fn status_with_progress(
     store: &dyn SecretStore,
     uuid: &str,
     progress: &dyn Fn(Phase),
 ) -> Status {
+    status_within(store, uuid, progress, None)
+}
+
+fn status_within(
+    store: &dyn SecretStore,
+    uuid: &str,
+    progress: &dyn Fn(Phase),
+    within: Option<Duration>,
+) -> Status {
     let result = (|| {
         progress(Phase::Queued);
-        let _operation = lock_within(store, Some(STATUS_WAIT))?;
+        let _operation = lock_within(store, within)?;
         progress(Phase::Keychain);
         Ok::<_, String>(Status::from_secrets(read(store, uuid)?.as_ref()))
     })();
@@ -225,6 +238,7 @@ pub fn refresh_with_progress(who: &str, progress: &dyn Fn(Phase)) -> Result<Stat
         client_id().as_deref(),
         store(),
         &account,
+        &Accounts::path(),
         progress,
     ))
 }
@@ -235,15 +249,18 @@ pub(super) fn refresh_with(
     client_id: Option<&str>,
     store: &dyn SecretStore,
     account: &Account,
+    accounts: &Path,
 ) -> Status {
-    refresh_account(ep, client_id, store, account, &|_| {})
+    refresh_account(ep, client_id, store, account, accounts, &|_| {})
 }
 
+/// `accounts`: the accounts.json a renewed name or skin is saved to (`Accounts::path()`).
 pub(super) fn refresh_account(
     ep: &Endpoints,
     client_id: Option<&str>,
     store: &dyn SecretStore,
     account: &Account,
+    accounts: &Path,
     progress: &dyn Fn(Phase),
 ) -> Status {
     let result = (|| {
@@ -257,7 +274,20 @@ pub(super) fn refresh_account(
             serde_json::to_string(&secrets).map_err(|_| "Could not read the saved sign-in.")?;
         let (mut status, secrets) =
             match check_with(ep, client_id, account, secrets, true, progress) {
-                Check::Owns(_, s) => (Status::from_secrets(Some(&s)), s),
+                Check::Owns(renewed, s) => {
+                    // A new name or skin goes to accounts.json, as launch() saves it, so the
+                    // row and its profile head follow the refresh, not the next Play.
+                    let mut saved = Accounts::load_from(accounts);
+                    if saved
+                        .accounts
+                        .iter()
+                        .any(|a| a.uuid == renewed.uuid && *a != renewed)
+                    {
+                        saved.update(renewed);
+                        let _ = saved.save_to(accounts);
+                    }
+                    (Status::from_secrets(Some(&s)), s)
+                }
                 Check::DoesNot(s) => (Status::from_secrets(Some(&s)), s),
                 Check::NoAnswer(e, s) => {
                     let mut status = Status::from_secrets(Some(&s));
@@ -297,6 +327,7 @@ pub fn renew_for_game(dir: &Path, who: &str) -> Result<PathBuf, Status> {
         client_id().as_deref(),
         store(),
         &account,
+        &Accounts::path(),
         dir,
     )
 }
@@ -306,9 +337,10 @@ pub(super) fn renew_for_game_with(
     client_id: Option<&str>,
     store: &dyn SecretStore,
     account: &Account,
+    accounts: &Path,
     dir: &Path,
 ) -> Result<PathBuf, Status> {
-    let status = refresh_account(ep, client_id, store, account, &|_| {});
+    let status = refresh_account(ep, client_id, store, account, accounts, &|_| {});
     if status.state != State::Ready {
         return Err(status);
     }

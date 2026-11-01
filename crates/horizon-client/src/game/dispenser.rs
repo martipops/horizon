@@ -90,6 +90,15 @@ fn shrink(mut stack: ItemStack) -> Option<ItemStack> {
 /// A dispenser's answer: the slot's new content and the level event played.
 type Dispensed = (Option<ItemStack>, i32);
 
+/// A dispenser hook's answer: the slot's remainder (None empties it) and the
+/// level event to play, `CLICK` (1000), `FAIL` (1001) or 0 for none.
+pub(super) type NativeDispensed = (Option<ItemStack>, i32);
+
+/// None keeps vanilla's behaviour; an explicit empty remainder consumes the stack.
+fn mod_dispensed(answer: Option<NativeDispensed>) -> Option<Dispensed> {
+    answer.map(|(left, event)| (left.filter(|stack| stack.count > 0), event))
+}
+
 thread_local! {
     /// `OptionalDispenseItemBehavior.success` of the registered behaviours
     /// that leave it unset on some paths (brush, TNT, honeycomb, chest).
@@ -495,6 +504,29 @@ impl Game<'_> {
         self.spawn_dispensed(pos, facing, one, 6);
         (stack.count > 0).then_some(stack)
     }
+    /// Drop one item as DefaultDispenseItemBehavior does. For a dispenser hook:
+    /// return this remainder in its answer with `CLICK`; the caller plays the
+    /// answer's event and smoke once. A client, another dimension or an unloaded
+    /// chunk keeps the input stack unchanged. API @API:dispenser_behaviour@.
+    #[allow(dead_code)]
+    pub(super) fn native_dispense_default(
+        &mut self,
+        dimension: &str,
+        pos: [i32; 3],
+        facing: Direction,
+        stack: ItemStack,
+    ) -> Option<ItemStack> {
+        if !(self.serving.is_some() || self.options.dedicated.is_some())
+            || dimension != self.dim.id()
+            || !self.world.chunks.contains_key(&(pos[0] >> 4, pos[2] >> 4))
+        {
+            return Some(stack);
+        }
+        if stack.count == 0 {
+            return None;
+        }
+        self.default_execute((pos[0], pos[1], pos[2]), facing, stack)
+    }
     /// `new DefaultDispenseItemBehavior().dispense(..)` including its events.
     pub(super) fn dispense_default(
         &mut self,
@@ -584,6 +616,25 @@ impl Game<'_> {
         facing: Direction,
         stack: ItemStack,
     ) -> Result<Option<ItemStack>> {
+        let mut answer = None;
+        if self.serving.is_some() || self.options.dedicated.is_some() {
+            self.native_dispense_item(
+                self.dim.id(),
+                [pos.0, pos.1, pos.2],
+                facing,
+                &stack,
+                &mut answer,
+            );
+        }
+        if let Some((left, event)) = mod_dispensed(answer) {
+            // DefaultDispenseItemBehavior.dispense: playSound, then playAnimation;
+            // a NOOP behaviour (event 0) plays neither.
+            if event != 0 {
+                self.dispenser_event(event, pos, 0);
+                self.dispenser_event(2000, pos, data_value(facing));
+            }
+            return Ok(left);
+        }
         let item = stack.item.to_string();
         let (left, event) = match item.as_str() {
             "minecraft:arrow"
@@ -908,12 +959,14 @@ impl Game<'_> {
         let Some(id) = self.spawn_mob_at(&kind, front, facing != Direction::Up) else {
             return Ok((Some(stack), CLICK));
         };
-        // Entity.applyImplicitComponents: a name from an anvil names the mob.
-        if let Some(name) = stack.custom_name()
-            && let Some(m) = self.mobs.iter_mut().find(|m| m.id == id)
-        {
-            m.custom_name = Some(name.to_owned());
+        // EntityType.create: `finalizeSpawn` first, the egg's components after.
+        if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
+            horizon_client::entity_nbt::apply_item_components(m, &stack);
         }
+        // EntityType.updateCustomEntityTag: a configured egg
+        // (`/give @s pig_spawn_egg[minecraft:entity_data={…}]`) spawns the mob
+        // it describes from a dispenser too, not only from a player's hand.
+        self.apply_spawn_egg_entity_data(id, &stack);
         self.mob_ambient(id)?;
         // SpawnEggItemBehavior: the entity was placed by the dispenser.
         self.post_block_game_event("minecraft:entity_place", [pos.0, pos.1, pos.2], None, None);
@@ -1221,7 +1274,7 @@ impl Game<'_> {
             // persistent) calls out, then ENTITY_PLACE.
             if let Some(id) = self.spawn_mob_at(kind, target, true) {
                 if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
-                    horizon_client::entity_nbt::load_bucket_data(m, &stack);
+                    horizon_client::entity_nbt::apply_item_components(m, &stack);
                 }
                 self.mob_placed(id)?;
             }
@@ -1755,6 +1808,7 @@ impl Game<'_> {
         let id = mob.id;
         self.mobs[index].removed = true;
         self.mobs.push(mob);
+        self.native_mobs_joined(self.mobs.len() - 1, false);
         Some(id)
     }
     /// `ShearsDispenseItemBehavior.tryShearEntity`: the first live, ready
@@ -1813,7 +1867,7 @@ impl Game<'_> {
                                 f64::from(r.next_float() * 0.05),
                                 f64::from((r.next_float() - r.next_float()) * 0.1),
                             ];
-                            if let Some(item) = self.dropped.last_mut() {
+                            if let Some(item) = self.just_spawned_item() {
                                 item.velocity = Vec3::new(
                                     item.velocity.x + push[0],
                                     item.velocity.y + push[1],
@@ -2144,4 +2198,28 @@ pub(super) fn tipped_effect(stack: &ItemStack) -> Option<(&'static str, i32)> {
                     )
                 })
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mod_dispenser_answers_preserve_fallback_and_own_consumption() {
+        assert!(
+            mod_dispensed(None).is_none(),
+            "no registered behaviour keeps vanilla"
+        );
+        assert_eq!(mod_dispensed(Some((None, CLICK))), Some((None, CLICK)));
+        let stack = ItemStack::new("minecraft:stone", 7);
+        let Some((Some(left), event)) = mod_dispensed(Some((Some(stack.clone()), FAIL))) else {
+            panic!("handled stack")
+        };
+        assert_eq!(left, stack, "the returned remainder is not consumed again");
+        assert_eq!(event, FAIL, "the answer chooses its sound");
+        assert_eq!(
+            mod_dispensed(Some((Some(ItemStack { count: 0, ..stack }), 0))),
+            Some((None, 0))
+        );
+    }
 }

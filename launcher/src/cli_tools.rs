@@ -11,6 +11,7 @@ use serde_json::{json, Map, Value};
 /// mcp.rs runs in the session; and the game's session handoff, a file holding a token.
 const NOT_TOOLS: &[&str] = &[
     "mcp",
+    "completions",
     "agent-config",
     "no-ai",
     "native-build",

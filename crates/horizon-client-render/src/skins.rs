@@ -97,6 +97,50 @@ pub fn profile_skin_url(profile: &serde_json::Value) -> Option<String> {
     let (value, signature) = parse_profile(profile).textures?;
     unpack(&value, signature, &TEXTURE_URIS).skin
 }
+
+/// The textures of a Minecraft services `/minecraft/profile` answer: the
+/// `ACTIVE` skin and cape (`MinecraftProfileResponse`). Unsigned, like the
+/// local player's own textures, and only URLs under the allowed domains count.
+pub fn services_profile_textures(profile: &serde_json::Value) -> Textures {
+    let active = |key: &str| {
+        profile
+            .get(key)?
+            .as_array()?
+            .iter()
+            .find(|t| t.get("state").and_then(|s| s.as_str()) == Some("ACTIVE"))
+    };
+    let skin_entry = active("skins");
+    let skin = skin_entry
+        .and_then(|t| t.get("url"))
+        .and_then(|u| u.as_str())
+        .filter(|url| {
+            TEXTURE_URIS
+                .iter()
+                .any(|u| url.starts_with(&u.replace("{textureId}", "")))
+        })
+        .map(str::to_owned);
+    let slim = skin_entry
+        .and_then(|t| t.get("variant"))
+        .and_then(|v| v.as_str())
+        .is_some_and(|v| v.eq_ignore_ascii_case("slim"));
+    let cape = active("capes")
+        .and_then(|t| t.get("url"))
+        .and_then(|u| u.as_str())
+        .filter(|url| {
+            TEXTURE_URIS
+                .iter()
+                .any(|u| url.starts_with(&u.replace("{textureId}", "")))
+        })
+        .map(str::to_owned);
+    Textures {
+        skin,
+        slim,
+        cape,
+        elytra: None,
+        signed: false,
+    }
+}
+
 /// `profile_skin_url` on a block entity's `profile` NBT (`SkullBlockEntity`):
 /// the same `properties` list, held as a compound. A name-only profile (a
 /// string tag) has no properties and no skin URL.
@@ -844,6 +888,12 @@ impl SkinSlots {
             kept: Default::default(),
         }
     }
+    /// The atlas was replaced (a resource pack reload): every slot is blank,
+    /// so no skin counts as stored and each uploads again.
+    pub fn forget(&mut self) {
+        self.slots.clear();
+        self.kept.clear();
+    }
     /// Whether `location` is in a slot.
     pub fn contains(&self, location: &str) -> bool {
         self.slots.iter().any(|(l, _)| l == location)
@@ -910,6 +960,23 @@ pub fn sha1(data: &[u8]) -> [u8; 20] {
 
 #[cfg(test)]
 mod tests {
+    /// A pack reload swaps the atlas: its skin slots are blank, so a forgotten
+    /// table holds nothing and hands out slots from the start again, even for
+    /// skins drawn in the last frame.
+    #[test]
+    fn a_new_atlas_forgets_every_skin_slot() {
+        use super::SkinSlots;
+        let mut slots = SkinSlots::new(2);
+        assert_eq!(slots.place("skins/a".into()), Some((0, None)));
+        assert_eq!(slots.place("skins/b".into()), Some((1, None)));
+        assert_eq!(slots.place("skins/c".into()), None);
+        slots.forget();
+        assert!(!slots.contains("skins/a"));
+        assert!(!slots.contains("skins/b"));
+        assert_eq!(slots.place("skins/c".into()), Some((0, None)));
+        assert_eq!(slots.place("skins/a".into()), Some((1, None)));
+    }
+
     /// The launcher's offline skin: a 64x64 or legacy 64x32 PNG laid out as
     /// a downloaded skin, slim only for the `slim` model; anything else is
     /// refused and the player keeps their default skin.
@@ -1008,6 +1075,36 @@ mod tests {
         // Empty properties leave it dynamic.
         let p = parse_profile(&serde_json::json!({"name": "Notch", "properties": []}));
         assert_eq!(p.dynamic, Some(NameOrId::Name("Notch".into())));
+    }
+
+    #[test]
+    fn services_profile_answers_give_the_active_skin_and_cape() {
+        let profile = serde_json::json!({
+            "skins": [
+                {"state": "INACTIVE", "url": "https://textures.minecraft.net/texture/old"},
+                {"state": "ACTIVE", "url": "https://textures.minecraft.net/texture/skin1", "variant": "CLASSIC"}
+            ],
+            "capes": [{"state": "ACTIVE", "url": "http://textures.minecraft.net/texture/cape1"}]
+        });
+        let t = super::services_profile_textures(&profile);
+        assert_eq!(
+            t.skin.as_deref(),
+            Some("https://textures.minecraft.net/texture/skin1")
+        );
+        assert_eq!(
+            t.cape.as_deref(),
+            Some("http://textures.minecraft.net/texture/cape1")
+        );
+        assert!(!t.signed);
+        let elsewhere = serde_json::json!({"skins": [{"state": "ACTIVE", "url": "https://evil.example/texture/x"}]});
+        assert_eq!(
+            super::services_profile_textures(&elsewhere),
+            super::Textures::default()
+        );
+        assert_eq!(
+            super::services_profile_textures(&serde_json::json!({})),
+            super::Textures::default()
+        );
     }
 
     /// `getByName` and `getProfileById` answer from the services the

@@ -198,7 +198,7 @@ fn arrival_from_tag(a: &Tag) -> Option<Arrival> {
 
 impl Game<'_> {
     /// The world border's extent.
-    fn border_bounds(&self) -> BorderBounds {
+    pub(super) fn border_bounds(&self) -> BorderBounds {
         let [min_x, min_z, max_x, max_z] = self.border.bounds();
         BorderBounds {
             min_x,
@@ -322,16 +322,18 @@ impl Game<'_> {
                 let saved;
                 let chunk = match self.world.chunks.get(&(x, z)) {
                     Some(c) => &**c,
-                    None => match self
-                        .save
-                        .load(x, z, self.pack.assets.registry, self.res.biomes())
-                    {
-                        Some(c) => {
-                            saved = c;
-                            &saved
+                    None => {
+                        match self
+                            .save
+                            .load(x, z, self.pack.assets.registry, world_biomes!(self))
+                        {
+                            Some(c) => {
+                                saved = c;
+                                &saved
+                            }
+                            None => continue,
                         }
-                        None => continue,
-                    },
+                    }
                 };
                 for (s, section) in chunk.sections.iter().enumerate() {
                     if !section.blocks.maybe_has(|v| {
@@ -373,6 +375,9 @@ impl Game<'_> {
             max_section,
         );
         if let Some(found) = found {
+            // NetherPortalBlock.getExitPortal: the ticket goes on the chunk
+            // of the portal found.
+            self.place_portal_ticket((found.x >> 4, found.z >> 4));
             let state = self.world.block(found.x, found.y, found.z);
             let x_axis = self.res.behaviours().portal_axis(state).unwrap_or(true);
             return Some(largest_rectangle_around(
@@ -390,7 +395,27 @@ impl Game<'_> {
             b.create_portal(level, ticks, approximate, x_axis, &border, logical)
         });
         let _ = self.process_level_events();
+        if let Some(exit) = created {
+            // A portal built for the entity: the ticket goes on the chunk it
+            // arrives in (`TeleportTransition.PLACE_PORTAL_TICKET`).
+            let (at, _) = self.arrival(plan, exit);
+            self.place_portal_ticket(Self::chunk_of(at));
+        }
         created
+    }
+    /// `ChunkPos.containing`: the chunk a position is in.
+    pub(super) fn chunk_of(at: Vec3) -> (i32, i32) {
+        ((at.x.floor() as i32) >> 4, (at.z.floor() as i32) >> 4)
+    }
+    /// `Entity.placePortalTicket`: a `TicketType.PORTAL` ticket of radius 3
+    /// on `chunk` in the level in place, which keeps the area running for 300
+    /// ticks with no player in it (the entity that just came through ticks
+    /// there, and goes back through the portal when its cooldown ends).
+    /// Only a server holds levels with tickets of their own.
+    pub(super) fn place_portal_ticket(&mut self, chunk: (i32, i32)) {
+        if !self.options.execution_role.is_client() {
+            self.tickets.add_portal(chunk);
+        }
     }
     /// `NetherPortalBlock.createDimensionTransition`: the arrival position
     /// and the yaw turned by.
@@ -929,7 +954,7 @@ impl Game<'_> {
                 uuid,
                 self.persist_raw(id),
             );
-            self.dropped.remove(i);
+            self.remove_dropped(i);
             self.forget_entity(id);
             self.portals.arrivals.push(Arrival { plan, tag });
             self.portals.dirty = true;
@@ -969,6 +994,7 @@ impl Game<'_> {
             if !self.may_enter(plan.dim) {
                 return;
             }
+            self.release_vehicle_container(id);
             let uuid = self.uuid_for(id);
             let b = &self.boats[i];
             let tag = horizon_client::entity_nbt::boat_to_nbt(
@@ -994,6 +1020,7 @@ impl Game<'_> {
             if !self.may_enter(plan.dim) {
                 return;
             }
+            self.release_vehicle_container(id);
             let uuid = self.uuid_for(id);
             let tag = self.carts[i].to_nbt(uuid, self.persist_raw(id));
             self.carts.remove(i);
@@ -1038,6 +1065,8 @@ impl Game<'_> {
             let (at, motion, [yaw, pitch]) = if plan.end {
                 // Relative.DELTA: the motion is kept.
                 let at = self.end_portal_exit(&plan);
+                // EndPortalBlock.getPortalDestination: PLACE_PORTAL_TICKET.
+                self.place_portal_ticket(Self::chunk_of(at));
                 let into_end = plan.dim == Dim::End;
                 let turn =
                     end_portal_rotation(into_end, [yaw, pitch], self.level.world_spawn_angle);
@@ -1059,6 +1088,8 @@ impl Game<'_> {
                 // setPortalCooldown before the teleport, copied by restoreFrom.
                 c.insert("PortalCooldown".into(), Tag::Int(ENTITY_DELAY));
             }
+            // ServerLevel.addDuringTeleport: a fresh add, not loaded from disk.
+            super::persist::mark_fresh(&mut tag);
             let key = ((at.x.floor() as i32) >> 4, (at.z.floor() as i32) >> 4);
             match self
                 .world

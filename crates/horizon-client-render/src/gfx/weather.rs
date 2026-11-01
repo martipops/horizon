@@ -53,13 +53,7 @@ impl Weather {
                 topology: wgpu::PrimitiveTopology::TriangleList,
                 ..Default::default()
             },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: Some(true),
-                depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
-                stencil: Default::default(),
-                bias: Default::default(),
-            }),
+            depth_stencil: Some(depth_stencil()),
             multisample: Default::default(),
             fragment: Some(wgpu::FragmentState {
                 module: shader,
@@ -124,6 +118,26 @@ impl Weather {
         uploads.buffer(encoder, &self.vertices, 0, bytemuck::cast_slice(vertices));
         uploads.buffer(encoder, &self.uniform, 0, bytemuck::bytes_of(&time));
     }
+    /// The classic pipeline, for its layouts.
+    pub fn pipeline(&self) -> &wgpu::RenderPipeline {
+        &self.pipeline
+    }
+    /// `draw` with another pipeline of the same layouts and vertex format.
+    pub fn draw_with(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        pipeline: &wgpu::RenderPipeline,
+        entities: &wgpu::BindGroup,
+    ) {
+        if self.count == 0 {
+            return;
+        }
+        pass.set_pipeline(pipeline);
+        pass.set_bind_group(0, entities, &[]);
+        pass.set_bind_group(1, &self.group, &[]);
+        pass.set_vertex_buffer(0, self.vertices.slice(..));
+        pass.draw_indexed(0..self.count / 4 * 6, 0, 0..1);
+    }
     pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>, entities: &wgpu::BindGroup) {
         if self.count == 0 {
             return;
@@ -137,10 +151,32 @@ impl Weather {
     }
 }
 
+/// RenderPipelines.WEATHER: depth-tested, but no depth write, so the water
+/// and glass drawn behind the rain still show through it.
+fn depth_stencil() -> wgpu::DepthStencilState {
+    wgpu::DepthStencilState {
+        format: wgpu::TextureFormat::Depth32Float,
+        depth_write_enabled: Some(false),
+        depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
+        stencil: Default::default(),
+        bias: Default::default(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::weather::{Parameters, Time};
     use wgpu::util::DeviceExt;
+
+    #[test]
+    fn weather_writes_no_depth() {
+        let depth = super::depth_stencil();
+        assert_eq!(depth.depth_write_enabled, Some(false));
+        assert_eq!(
+            depth.depth_compare,
+            Some(wgpu::CompareFunction::GreaterEqual)
+        );
+    }
 
     #[repr(C)]
     #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]

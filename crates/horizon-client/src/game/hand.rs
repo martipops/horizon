@@ -104,7 +104,12 @@ impl Game<'_> {
     /// `getAttributeValue` of an interaction range of the player in place (a
     /// guest swapped in on a server): creative's modifiers are on it
     /// (`update_player_attributes`), as are `/attribute`'s and the items'.
-    fn interaction_range(&mut self, attribute: &str, survival: f64, creative: f64) -> f64 {
+    pub(super) fn interaction_range(
+        &mut self,
+        attribute: &str,
+        survival: f64,
+        creative: f64,
+    ) -> f64 {
         let otherwise = if self.creative { creative } else { survival };
         self.player
             .as_mut()
@@ -175,6 +180,7 @@ impl Game<'_> {
         });
         self.clicks.destroying = destroying;
         self.attack_clicks = 0;
+        self.use_clicks = 0;
         self.request_remote_mining_stop();
         self.mining = None;
     }
@@ -203,12 +209,18 @@ impl Game<'_> {
     /// attack clicks since the last tick and the held attack button.
     pub(super) fn tick_local_hand(&mut self) -> Result<()> {
         let attack_clicks = std::mem::take(&mut self.attack_clicks);
+        let use_clicks = std::mem::take(&mut self.use_clicks);
         if self.screen == Screen::Playing && self.title.is_none() && self.sleeping.is_none() {
             let mut clicks = std::mem::take(&mut self.clicks);
             // keyAttack.isDown(); playing implies the grabbed mouse here
             // (scripts under --control hold buttons without grabbing it).
             let down = self.left;
             let ticks = self.clicks.destroying.ticks;
+            // Minecraft.hitResult is picked once per frame: a creative break
+            // does not move the use that follows it past the broken block.
+            if use_clicks > 0 && attack_clicks > 0 {
+                self.tick_hit = Some(self.pick());
+            }
             let mut world = GameHands {
                 game: self,
                 error: None,
@@ -217,8 +229,24 @@ impl Game<'_> {
             let error = world.error.take();
             self.clicks = clicks;
             if let Some(e) = error {
+                self.tick_hit = None;
                 return Err(e);
             }
+            // Use clicks follow the attack clicks within the tick, against
+            // the block the attack may just have broken.
+            let mut used = Ok(());
+            for _ in 0..use_clicks {
+                if self.using.is_some() {
+                    break;
+                }
+                used = self.use_with_hand();
+                self.use_delay = 4;
+                if used.is_err() {
+                    break;
+                }
+            }
+            self.tick_hit = None;
+            used?;
             // A tick of breaking: the hit sound every fourth tick and the
             // cracking particles.
             let d = &self.clicks.destroying;
@@ -310,7 +338,7 @@ impl Game<'_> {
             || before(self.redirectable_hit().map(|h| h.1))
     }
     /// `LocalPlayer.isHandsBusy`: paddling a boat.
-    fn hands_busy(&self) -> bool {
+    pub(super) fn hands_busy(&self) -> bool {
         self.riding
             .is_some_and(|id| self.boats.iter().any(|b| b.id == id))
             && [
@@ -546,6 +574,16 @@ impl Game<'_> {
     pub(super) fn attack_item_info(&self) -> Option<&horizon_client::items::ItemInfo> {
         self.items().get(self.attack_item.as_deref()?)
     }
+
+    /// `Player.attack`: the attack damage attribute, with the held weapon's
+    /// and the effects' modifiers on it.
+    pub(super) fn attack_damage(&mut self) -> f32 {
+        self.player
+            .as_mut()
+            .and_then(|p| p.attribute("minecraft:attack_damage").ok())
+            .unwrap_or(1.0) as f32
+    }
+
     /// `evaluateWhichHandsToRender`: which of the main and off hand show.
     pub(super) fn hands_to_render(&self) -> [bool; 2] {
         let held = |slot| {

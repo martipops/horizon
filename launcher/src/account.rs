@@ -22,8 +22,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 /// The keychain service name every secret is stored under.
 pub const SERVICE: &str = "dev.playhorizon.launcher";
 const SCOPE: &str = "XboxLive.signin offline_access";
-pub const NOT_CONFIGURED: &str =
-    "This build of the launcher has no Microsoft sign-in (HORIZON_MSA_CLIENT_ID), so it can't start the game.";
+pub const NOT_CONFIGURED: &str = "This build of the launcher has no Microsoft sign-in (HORIZON_MSA_CLIENT_ID), so it can't start the game.";
 /// What every Play says while no account in the launcher owns the game.
 pub const NEEDS_OWNER: &str =
     "Sign in with a Microsoft account that owns Minecraft: Java Edition to play";
@@ -101,7 +100,7 @@ fn send(request: ureq::Request, body: Option<Body>, service: &str) -> Result<(u1
         Err(ureq::Error::Transport(_)) => {
             return Err(format!(
                 "Could not reach {service}. Check your internet connection."
-            ))
+            ));
         }
     };
     let status = response.status();
@@ -724,13 +723,16 @@ impl SecretStore for SystemStore {
 }
 
 /// Keychain on macOS, Credential Manager on Windows (the keyring crate). Credential Manager takes at
-/// most 2560 bytes of UTF-16 per item and a sign-in's secrets are longer, so a secret is kept in
-/// pieces: the first under the account's key, the rest under `key.1`, `key.2`...
+/// most 2560 bytes of UTF-16 per item and a sign-in's secrets are longer, so on Windows a secret is
+/// kept in pieces: the first under the account's key, the rest under `key.1`, `key.2`... The
+/// Keychain has no such limit, and every item is a consent prompt for a launcher signature it
+/// doesn't know yet — pieces meant several prompts after every self-update (#4912) — so on macOS a
+/// secret is one item, and pieces an older launcher left fold into it as they are read.
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 pub struct SystemStore;
 
 /// Bytes of UTF-8 per keychain item: at most twice as many in UTF-16, well under 2560.
-#[cfg(any(target_os = "macos", target_os = "windows", test))]
+#[cfg(any(target_os = "windows", test))]
 const PIECE: usize = 1000;
 
 #[cfg(any(target_os = "macos", target_os = "windows", test))]
@@ -743,7 +745,7 @@ fn piece_key(key: &str, n: usize) -> String {
 }
 
 /// `secret` cut into pieces of at most `PIECE` bytes, on character boundaries.
-#[cfg(any(target_os = "macos", target_os = "windows", test))]
+#[cfg(any(target_os = "windows", test))]
 fn split_secret(mut secret: &str) -> Vec<&str> {
     let mut pieces = Vec::new();
     while secret.len() > PIECE {
@@ -768,7 +770,7 @@ trait Items {
     fn remove(&self, key: &str) -> Result<bool, String>;
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows", test))]
+#[cfg(any(target_os = "windows", test))]
 fn get_pieces(items: &dyn Items, key: &str) -> Result<Option<String>, String> {
     let Some(mut secret) = items.read(key)? else {
         return Ok(None);
@@ -782,7 +784,7 @@ fn get_pieces(items: &dyn Items, key: &str) -> Result<Option<String>, String> {
     Ok(Some(secret))
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows", test))]
+#[cfg(any(target_os = "windows", test))]
 fn set_pieces(items: &dyn Items, key: &str, secret: &str) -> Result<(), String> {
     let before = get_pieces(items, key).ok().flatten();
     let pieces = split_secret(secret);
@@ -803,8 +805,20 @@ fn set_pieces(items: &dyn Items, key: &str, secret: &str) -> Result<(), String> 
     }
     // Pieces left over from a longer secret would be read back as part of this one.
     for n in pieces.len().. {
-        if !items.remove(&piece_key(key, n))? {
-            break;
+        match items.remove(&piece_key(key, n)) {
+            Ok(true) => {}
+            Ok(false) => break,
+            Err(e) => {
+                // Some leftovers are already gone, some are still there: the old secret goes back
+                // whole, as on a refused write above.
+                let _ = delete_pieces(items, key);
+                if let Some(before) = &before {
+                    for (n, piece) in split_secret(before).iter().enumerate() {
+                        let _ = items.write(&piece_key(key, n), piece);
+                    }
+                }
+                return Err(e);
+            }
         }
     }
     Ok(())
@@ -815,6 +829,66 @@ fn delete_pieces(items: &dyn Items, key: &str) -> Result<(), String> {
     for n in 0.. {
         if !items.remove(&piece_key(key, n))? {
             break;
+        }
+    }
+    Ok(())
+}
+
+/// One item per key, the whole secret in it (macOS). A secret an older launcher split over `key.1`,
+/// `key.2`, ... reads whole and folds into the one item, so a read touches a single item — and asks
+/// once — from then on. A merged item also reads fine as "piece 0" to launchers that still split.
+#[cfg(any(target_os = "macos", test))]
+fn get_item(items: &dyn Items, key: &str) -> Result<Option<String>, String> {
+    let Some(mut secret) = items.read(key)? else {
+        return Ok(None);
+    };
+    let mut split = false;
+    for n in 1.. {
+        match items.read(&piece_key(key, n))? {
+            Some(piece) => {
+                secret.push_str(&piece);
+                split = true;
+            }
+            None => break,
+        }
+    }
+    if split {
+        let _ = set_item(items, key, &secret);
+    }
+    Ok(Some(secret))
+}
+
+/// Writes `secret` to `key` and removes `key.1`, `key.2`, ... pieces an older, split secret left:
+/// they would read back as part of this one. A removal the keychain refuses puts the old items
+/// back: the merged secret beside the pieces left would read as a longer, unparseable one, and
+/// pieces removed before the failure can't be had again except from here.
+#[cfg(any(target_os = "macos", test))]
+fn set_item(items: &dyn Items, key: &str, secret: &str) -> Result<(), String> {
+    let mut before = Vec::new();
+    if let Some(piece) = items.read(key)? {
+        before.push((key.to_string(), piece));
+        for n in 1.. {
+            match items.read(&piece_key(key, n))? {
+                Some(piece) => before.push((piece_key(key, n), piece)),
+                None => break,
+            }
+        }
+    }
+    items.write(key, secret)?;
+    for n in 1.. {
+        match items.remove(&piece_key(key, n)) {
+            Ok(true) => {}
+            Ok(false) => break,
+            Err(e) => {
+                if before.is_empty() {
+                    let _ = items.remove(key);
+                } else {
+                    for (key, piece) in &before {
+                        let _ = items.write(key, piece);
+                    }
+                }
+                return Err(e);
+            }
         }
     }
     Ok(())
@@ -882,9 +956,19 @@ impl Items for KeyringItems {
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 impl SecretStore for SystemStore {
+    #[cfg(target_os = "macos")]
+    fn get(&self, key: &str) -> Result<Option<String>, String> {
+        get_item(&KeyringItems, key)
+    }
+    #[cfg(target_os = "windows")]
     fn get(&self, key: &str) -> Result<Option<String>, String> {
         get_pieces(&KeyringItems, key)
     }
+    #[cfg(target_os = "macos")]
+    fn set(&self, key: &str, secret: &str) -> Result<(), String> {
+        set_item(&KeyringItems, key, secret)
+    }
+    #[cfg(target_os = "windows")]
     fn set(&self, key: &str, secret: &str) -> Result<(), String> {
         set_pieces(&KeyringItems, key, secret)
     }
@@ -997,17 +1081,22 @@ pub fn valid_offline_name(name: &str) -> bool {
 }
 
 impl Accounts {
-    fn path() -> PathBuf {
+    pub(crate) fn path() -> PathBuf {
         crate::backend::data_dir().join("accounts.json")
     }
     pub fn load() -> Self {
-        std::fs::read_to_string(Self::path())
+        Self::load_from(&Self::path())
+    }
+    pub fn save(&self) -> Result<(), String> {
+        self.save_to(&Self::path())
+    }
+    pub(crate) fn load_from(path: &Path) -> Self {
+        std::fs::read_to_string(path)
             .ok()
             .and_then(|t| serde_json::from_str(&t).ok())
             .unwrap_or_default()
     }
-    pub fn save(&self) -> Result<(), String> {
-        let path = Self::path();
+    pub(crate) fn save_to(&self, path: &Path) -> Result<(), String> {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         }
@@ -1056,8 +1145,11 @@ impl Accounts {
     /// Whether an account here owned the game at its last check (the keychain's answer, no
     /// request): what Play and offline names need.
     pub fn has_owner(&self, store: &dyn SecretStore) -> bool {
-        self.accounts
-            .iter()
+        // The selected account first: it owning the game ends the search after one account's
+        // item — every account's item read can ask for the keychain (macOS, #4912).
+        self.selected()
+            .into_iter()
+            .chain(self.accounts.iter().filter(|a| Some(*a) != self.selected()))
             .any(|a| secrets_in(store, &a.uuid).is_some_and(|s| s.owns))
     }
 
@@ -1479,12 +1571,61 @@ pub fn session_for_game(
         offline_without_owner,
     )?;
     let _ = accounts.save();
+    Ok(session_file(game_home, pass))
+}
+
+/// [`session_for_game`] for one launch as `who` (`play --account`, a signed-in account): who
+/// plays changes for this launch only, so several games can play as several accounts at once
+/// (#4952). What the services renewed (tokens, names, skins) is still kept; which account
+/// `account select` picked is not touched.
+pub fn session_for_game_as(
+    game_home: &Path,
+    who: &Player,
+) -> Result<(Option<PathBuf>, Option<String>), String> {
+    let mut accounts = Accounts::load();
+    let pass = launch_as(
+        &Endpoints::live(),
+        client_id().as_deref(),
+        store(),
+        &mut accounts,
+        who,
+    );
+    let _ = accounts.save();
+    Ok(session_file(game_home, pass?))
+}
+
+/// The owner gate as `who`, on `accounts`, which keeps its choice of player.
+fn launch_as(
+    ep: &Endpoints,
+    client_id: Option<&str>,
+    store: &dyn SecretStore,
+    accounts: &mut Accounts,
+    who: &Player,
+) -> Result<Launch, String> {
+    let chosen = (
+        accounts.selected.clone(),
+        accounts.offline_selected.clone(),
+        accounts.offline.clone(),
+    );
+    let pass = accounts
+        .play_as(store, who.clone())
+        .and_then(|()| launch(ep, client_id, store, accounts).map_err(|e| e.to_string()));
+    (
+        accounts.selected,
+        accounts.offline_selected,
+        accounts.offline,
+    ) = chosen;
+    pass
+}
+
+/// The game's session file for a launch that passed the gate, or why it plays offline.
+fn session_file(game_home: &Path, pass: Launch) -> (Option<PathBuf>, Option<String>) {
     let Some((account, secrets)) = pass.session else {
-        return Ok((None, pass.offline));
+        return (None, pass.offline);
     };
     match write_session_file(&game_home.join("sessions"), &account, &secrets) {
-        Ok(file) => Ok((Some(file), None)),
-        Err(e) => Ok((None, Some(e))),
+        Ok(file) => (Some(file), None),
+        Err(e) => (None, Some(e)),
     }
 }
 

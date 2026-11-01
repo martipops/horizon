@@ -136,7 +136,7 @@ mod tests {
         assert!(heads.0["player"].retry_at.is_none());
         let theme = Theme::for_appearance(
             backend::Appearance::Dark,
-            horizon_launcher::themes::Accent::Violet,
+            horizon_launcher::themes::Accent::VIOLET,
             gpui::WindowAppearance::Dark,
         );
         let _ = heads.draw(Some("player"), 32., 2., &theme);
