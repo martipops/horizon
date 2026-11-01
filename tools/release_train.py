@@ -76,6 +76,10 @@ LAUNCHER_PATHS = [
     "crates/horizon-release-sign/",
     "crates/horizon-telemetry/",
     "crates/horizon-theme/",
+    # Its icon, its menu entries and its AppImage are compiled or packaged into a release
+    # (launcher/build.rs, src/desktop.rs, packaging/linux/appimage.sh).
+    "packaging/icons/",
+    "packaging/linux/",
 ]
 LAUNCHER_IGNORED = ["launcher/links.json", "launcher/docs/", "launcher/tests/"]
 
@@ -83,13 +87,15 @@ LAUNCHER_IGNORED = ["launcher/links.json", "launcher/docs/", "launcher/tests/"]
 # its notes open with the way to the launcher (#1647). Raw HTML on one line, which GitHub shows and every launcher's
 # notes view and one-line summary skip (pulldown-cmark's HTML events), so launchers never tell players to get
 # themselves. The site's Releases page leaves it out too.
-PLAYERS = ('<h3>Want to play? Download the <a href="https://playhorizon.dev">Horizon launcher</a>, not the files '
-           'below</h3><p>It installs this version and keeps it up to date. It is also on GitHub: <a href="'
-           f'https://github.com/{REPO}/releases?q=launcher&amp;expanded=true">the launcher releases</a>. You need your '
-           "own copy of Minecraft: Java Edition. The files below are what the launcher installs, and the dedicated "
-           "server for people who host one.</p>")
-LAUNCHER_FOOTER = ("Your launcher updates itself. New here? Download the archive for your system below, extract it, "
-                   "and run `horizon-launcher`. Website: https://playhorizon.dev")
+# The same warning closes the notes, above the disclaimer, for whoever scrolls past the changes to the files.
+PLAYERS_FOOTER = ('<h1>Want to play? Download the <a href="https://playhorizon.dev">Horizon launcher</a>.</h1>'
+                  '<h1>Do NOT run the files below. They will not work on their own.</h1>')
+PLAYERS = (PLAYERS_FOOTER + '<p>The launcher installs this version and keeps it up to date. You need your own copy of '
+           'Minecraft: Java Edition. The files below are what the launcher installs, and the dedicated server for '
+           'people who host one.</p>')
+LAUNCHER_FOOTER = ("Your launcher updates itself. New here? On Linux take the .AppImage below, make it executable "
+                   "and run it; on Windows and macOS download the archive, extract it and run `horizon-launcher` "
+                   "(Horizon.app on macOS). Website: https://playhorizon.dev")
 DISCLAIMER = "Not an official Minecraft product. Not approved by or associated with Mojang or Microsoft."
 # An open issue with this label holds every game release (docs/release-flow.md). Only people who can triage the
 # repository can add it, and the issue's text is never read: its author could edit it afterwards.
@@ -407,10 +413,12 @@ def notes(kind, version, prs, issues, previous=None):
         parts.append("### Known issues\n" + "\n".join(issues))
     contributors = sorted({pr["author"] for pr in shown if pr["author"] and pr["author"] != MAINTAINER})
     if contributors:
-        parts.append("Thanks to " + ", ".join(f"@{name}" for name in contributors) + ".")
+        parts.append("### Contributors\nThanks to " + ", ".join(f"@{name}" for name in contributors) + ".")
     if kind == "launcher":
         parts.append(LAUNCHER_FOOTER)
-    parts.append(DISCLAIMER)
+    if kind == "game":
+        parts.append(PLAYERS_FOOTER)
+    parts.append("---\n" + DISCLAIMER)
     return title, "\n\n".join(parts) + "\n"
 
 

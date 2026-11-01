@@ -123,6 +123,9 @@ pub(super) struct Split<'a> {
     pads: PadRouter,
     p1_pad: P1Pad<PadId>,
     p1_window: u8,
+    /// Whether Window 1 is shown (hidden while nobody plays in it): set once per change, since
+    /// Wayland can't say whether a window is visible.
+    window1_shown: bool,
     /// The windows players play in (Window 1, the game's, always first), each free or filling a
     /// monitor: what the setup screen's draft starts from (`layout::Draft`).
     windows: Vec<layout::Window>,
@@ -194,6 +197,7 @@ impl<'a> Split<'a> {
             pads: PadRouter::default(),
             p1_pad: P1Pad::default(),
             p1_window: 1,
+            window1_shown: true,
             windows: vec![layout::Window {
                 number: 1,
                 placement: Placement::Free(None),
@@ -324,7 +328,6 @@ impl<'a> Split<'a> {
             self.turn(self.focus);
             if let Some(game) = self.game_mut(self.focus) {
                 for key in std::mem::take(&mut game.physical_keys) {
-                    game.mod_key(key, false, false);
                     game.native_key_event(key, false, false);
                 }
                 for key in std::mem::take(&mut game.keys) {
@@ -333,7 +336,6 @@ impl<'a> Split<'a> {
                     }
                 }
                 for button in std::mem::take(&mut game.physical_buttons) {
-                    game.mod_mouse_key(button, false);
                     game.extras_mouse(button, false);
                 }
                 game.keys.clear();
@@ -473,6 +475,7 @@ impl<'a> Split<'a> {
             return Ok(());
         };
         main.window.set_visible(true);
+        self.window1_shown = true;
         let old = self.host.renderer.take().ok_or("no renderer")?;
         old.take_back(main.compositor);
         let api = self.host.settings.horizon.api;
@@ -538,7 +541,7 @@ impl<'a> Split<'a> {
 impl Split<'_> {
     /// The pads' players who accepted, and the testing players (`HORIZON_SPLIT`), join: whether
     /// anyone did.
-    fn admit(&mut self, event_loop: &ActiveEventLoop, pad_joins: Vec<PadId>) -> bool {
+    fn admit(&mut self, _event_loop: &ActiveEventLoop, pad_joins: Vec<PadId>) -> bool {
         let mut changed = false;
         for pad in pad_joins {
             match self.join(Some(pad), None) {
@@ -561,8 +564,9 @@ impl Split<'_> {
                     changed = true;
                 }
                 Err(e) => {
-                    self.host.error = Some(e);
-                    event_loop.exit();
+                    // One player failing doesn't stop the others: P1 keeps playing.
+                    log::warn!("Horizon: splitscreen player couldn't join: {e}");
+                    self.test_players = 0;
                 }
             }
         }
@@ -689,14 +693,27 @@ impl ApplicationHandler for Split<'_> {
                         );
                     }
                 }
-                let focus = self.focus;
-                if let Some((player, id)) = self.player(focus) {
+                // Only into the focused player's own window: a click in another window
+                // is not that player's attack or use.
+                let here = self.views().get(self.focus).is_some_and(|v| v.0 == surface);
+                if here && let Some((player, id)) = self.player(self.focus) {
                     player.window_event(event_loop, id, event);
                 }
             }
             _ => {
-                let focus = self.focus;
-                if let Some((player, id)) = self.player(focus) {
+                // Presses (keys, wheel) from a window the focused player is not in stay there;
+                // releases still pass, so a key held across a window change can't stick.
+                let here = self.views().get(self.focus).is_some_and(|v| v.0 == surface);
+                let press = match &event {
+                    WindowEvent::KeyboardInput { event: key, .. } => {
+                        key.state == ElementState::Pressed
+                    }
+                    WindowEvent::MouseWheel { .. } => true,
+                    _ => false,
+                };
+                if (here || !press)
+                    && let Some((player, id)) = self.player(self.focus)
+                {
                     player.window_event(event_loop, id, event);
                 }
             }
@@ -705,8 +722,11 @@ impl ApplicationHandler for Split<'_> {
     }
 
     fn device_event(&mut self, event_loop: &ActiveEventLoop, id: DeviceId, event: DeviceEvent) {
-        let focus = if self.enabled { self.focus } else { 0 };
-        if let Some((player, _)) = self.player(focus) {
+        // Alone: exactly P1's path, as in window_event (no GUI-scale store per mouse motion).
+        if !self.enabled {
+            return self.host.device_event(event_loop, id, event);
+        }
+        if let Some((player, _)) = self.player(self.focus) {
             player.device_event(event_loop, id, event);
         }
         self.turn(0);
@@ -833,6 +853,7 @@ impl ApplicationHandler for Split<'_> {
             .chain(self.guests.iter().map(|g| &g.game.renderer))
             .collect();
         let vsync = self.host.settings.vsync;
+        let paced = windows::paced_surface(self.window1_shown, self.surfaces.len());
         for (k, surface) in self.surfaces.iter_mut().enumerate() {
             let frames: Vec<_> = renderers
                 .iter()
@@ -840,7 +861,7 @@ impl ApplicationHandler for Split<'_> {
                 .filter(|(_, v)| v.0 == k)
                 .filter_map(|(r, v)| Some((r.as_ref()?.offscreen_frame()?, v.1)))
                 .collect();
-            surface.compositor.set_vsync(vsync && k == 0);
+            surface.compositor.set_vsync(vsync && k == paced);
             surface.compositor.present(&frames);
         }
         let presented = Instant::now();
@@ -872,7 +893,10 @@ impl ApplicationHandler for Split<'_> {
             .unwrap_or(60);
         let refresh_hz = self
             .surfaces
-            .first()
+            .get(windows::paced_surface(
+                self.window1_shown,
+                self.surfaces.len(),
+            ))
             .and_then(|s| s.window.current_monitor()?.refresh_rate_millihertz())
             .map_or(60, |mhz| mhz.div_ceil(1000) as i32);
         if !(vsync && limit >= refresh_hz) {

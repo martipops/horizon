@@ -14,6 +14,8 @@ pub const MAX_POST_PASSES: usize = 8;
 pub const MAX_OPTIONS: usize = 64;
 /// The most GPU time a pack may declare for itself, in milliseconds.
 pub const MAX_GPU_MS: f32 = 16.0;
+/// Sprite tags a pack may declare: the bits of `MaterialInput.tags`.
+pub const MAX_TAGS: usize = 32;
 
 /// A checked manifest.
 #[derive(Clone, Debug, PartialEq)]
@@ -34,7 +36,82 @@ pub struct Manifest {
     /// Full-screen passes, in the order they run.
     pub post: Vec<Stage>,
     pub options: Vec<PackOption>,
+    /// Sprite tags the material stage reads, in bit order.
+    pub tags: Vec<SpriteTag>,
     pub budget: Budget,
+    /// When the material stage's water mirror (`reflection`) is drawn.
+    pub reflection: Option<Reflection>,
+    /// The shadow map the material and post stages read, if the pack asks for one.
+    pub shadow: Option<Shadow>,
+}
+
+/// `[shadow]`: the renderer draws the solid terrain as the sun (the moon by night) sees it into
+/// a square depth map each frame, which the material and post stages read.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Shadow {
+    /// The map's side, in texels.
+    #[serde(default = "default_shadow_resolution")]
+    pub resolution: u32,
+    /// Half the side of the square the map covers around the camera, in blocks.
+    #[serde(default = "default_shadow_distance")]
+    pub distance: f32,
+}
+
+/// The shadow map's side, in texels.
+pub const SHADOW_RESOLUTIONS: std::ops::RangeInclusive<u32> = 256..=8192;
+/// Half the side of the square the shadow map covers, in blocks.
+pub const SHADOW_DISTANCES: std::ops::RangeInclusive<f32> = 32.0..=512.0;
+
+fn default_shadow_resolution() -> u32 {
+    2048
+}
+
+fn default_shadow_distance() -> f32 {
+    128.0
+}
+
+/// `[reflection]`: when Horizon draws the water mirror the material stage reads as
+/// `reflection`. Without it, whenever the stage reads that texture.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Reflection {
+    /// The option the mirror is drawn while it is not 0 (a bool on, a number other than 0),
+    /// if any.
+    #[serde(default)]
+    pub option: Option<String>,
+}
+
+/// A set of block sprites the material stage can tell apart: its bit in
+/// `MaterialInput.tags` is its index in the manifest.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct SpriteTag {
+    /// A WGSL identifier, for the pack's own reading and its errors.
+    pub id: String,
+    /// Sprite names such as `minecraft:block/glass` (the namespace defaults to
+    /// `minecraft`), each with at most one `*` matching any run of characters.
+    pub sprites: Vec<String>,
+}
+
+impl SpriteTag {
+    /// Whether the sprite `name` (`namespace:path`) is one of the tag's.
+    pub fn matches(&self, name: &str) -> bool {
+        self.sprites.iter().any(|pattern| {
+            let pattern = match pattern.contains(':') {
+                true => std::borrow::Cow::Borrowed(pattern.as_str()),
+                false => std::borrow::Cow::Owned(format!("minecraft:{pattern}")),
+            };
+            match pattern.split_once('*') {
+                None => pattern == name,
+                Some((head, tail)) => {
+                    name.len() >= head.len() + tail.len()
+                        && name.starts_with(head)
+                        && name.ends_with(tail)
+                }
+            }
+        })
+    }
 }
 
 /// One stage: the WGSL file that defines its function.
@@ -104,7 +181,11 @@ struct Raw {
     #[serde(default)]
     options: Vec<RawOption>,
     #[serde(default)]
+    tags: Vec<SpriteTag>,
+    #[serde(default)]
     budget: RawBudget,
+    reflection: Option<Reflection>,
+    shadow: Option<Shadow>,
 }
 
 #[derive(Deserialize)]
@@ -188,6 +269,32 @@ impl Manifest {
             }
             options.push(option);
         }
+        if !raw.tags.is_empty() && raw.material.is_none() {
+            return Err(err(
+                "tags are read by the material stage: give it a [material]".into(),
+            ));
+        }
+        if raw.tags.len() > MAX_TAGS {
+            return Err(err(format!(
+                "{} tags; a pack may declare {MAX_TAGS}",
+                raw.tags.len()
+            )));
+        }
+        for (i, tag) in raw.tags.iter().enumerate() {
+            let id = &tag.id;
+            if !pack_identifier(id) {
+                return Err(err(format!("tag {id:?}: the id must be a WGSL identifier")));
+            }
+            if raw.tags[..i].iter().any(|t| &t.id == id) {
+                return Err(err(format!("tag {id:?} is declared twice")));
+            }
+            let sprite_ok = |p: &String| !p.is_empty() && p.matches('*').count() <= 1;
+            if tag.sprites.is_empty() || !tag.sprites.iter().all(sprite_ok) {
+                return Err(err(format!(
+                    "tag {id:?}: needs sprites, each a name with at most one *"
+                )));
+            }
+        }
         let gpu_ms = match raw.budget.gpu_ms {
             Some(ms) if !(ms > 0.0 && ms <= f64::from(MAX_GPU_MS)) => {
                 return Err(err(format!(
@@ -196,6 +303,33 @@ impl Manifest {
             }
             ms => ms.map(|ms| ms as f32),
         };
+        if let Some(r) = &raw.reflection {
+            if raw.material.is_none() {
+                return Err(err("[reflection] needs [material]".into()));
+            }
+            if let Some(id) = &r.option
+                && !options.iter().any(|o| o.id == *id)
+            {
+                return Err(err(format!("reflection.option: `{id}` is no option")));
+            }
+        }
+        if let Some(s) = &raw.shadow {
+            if raw.material.is_none() && raw.post.is_empty() {
+                return Err(err("[shadow] needs [material] or [[post]]".into()));
+            }
+            if !SHADOW_RESOLUTIONS.contains(&s.resolution) {
+                return Err(err(format!(
+                    "shadow.resolution {} is not in {SHADOW_RESOLUTIONS:?}",
+                    s.resolution
+                )));
+            }
+            if !SHADOW_DISTANCES.contains(&s.distance) {
+                return Err(err(format!(
+                    "shadow.distance {} is not in {SHADOW_DISTANCES:?}",
+                    s.distance
+                )));
+            }
+        }
         Ok(Manifest {
             id: raw.id,
             name: raw.name,
@@ -209,8 +343,34 @@ impl Manifest {
             material: raw.material,
             post: raw.post,
             options,
+            tags: raw.tags,
             budget: Budget { gpu_ms },
+            reflection: raw.reflection,
+            shadow: raw.shadow,
         })
+    }
+
+    /// The tags of each block sprite `(name, layer)` that has any, as `(layer, bits)` in
+    /// layer order: what the material stage's `MaterialInput.tags` reads.
+    pub fn sprite_tags<'a>(
+        &self,
+        sprites: impl IntoIterator<Item = (&'a str, u32)>,
+    ) -> Vec<(u32, u32)> {
+        // Identical stills share one layer under several names: their tags are or-ed
+        // together, so each layer is one case of the shader's `switch`.
+        let mut layers = std::collections::BTreeMap::<u32, u32>::new();
+        for (name, layer) in sprites {
+            let bits = self
+                .tags
+                .iter()
+                .enumerate()
+                .filter(|(_, t)| t.matches(name))
+                .fold(0, |bits, (i, _)| bits | 1 << i);
+            if bits != 0 {
+                *layers.entry(layer).or_default() |= bits;
+            }
+        }
+        layers.into_iter().collect()
     }
 
     /// Every WGSL file the manifest names, shared files first, each once.

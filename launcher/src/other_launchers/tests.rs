@@ -48,7 +48,7 @@ fn prism_and_multimc_instances() {
             Found {
                 launcher: "Prism Launcher",
                 name: "My Fabric".into(),
-                minecraft: "1.21.1".into(),
+                minecraft: Some("1.21.1".into()),
                 loader: Some(Loader {
                     name: "fabric",
                     version: "0.16.9".into()
@@ -59,7 +59,7 @@ fn prism_and_multimc_instances() {
             Found {
                 launcher: "Prism Launcher",
                 name: "old".into(),
-                minecraft: "1.12.2".into(),
+                minecraft: Some("1.12.2".into()),
                 loader: Some(Loader {
                     name: "forge",
                     version: "14.23.5.2860".into()
@@ -116,7 +116,7 @@ fn official_launcher_profiles() {
         .map(|f| {
             (
                 f.name.as_str(),
-                f.minecraft.as_str(),
+                f.minecraft.as_deref().unwrap(),
                 f.loader.as_ref().map(|l| (l.name, l.version.as_str())),
                 f.shared,
             )
@@ -154,7 +154,7 @@ fn copies_an_instance_but_only_what_a_shared_folder_holds_for_one() {
     let mut found = Found {
         launcher: "Prism Launcher",
         name: "x".into(),
-        minecraft: "1.21.1".into(),
+        minecraft: Some("1.21.1".into()),
         loader: None,
         game: game.clone(),
         shared: false,
@@ -192,4 +192,123 @@ fn copies_an_instance_but_only_what_a_shared_folder_holds_for_one() {
     // The other launcher's folder is left as it was.
     assert!(game.join("logs/latest.log").is_file());
     let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn curseforge_and_modrinth_app_instances_are_their_game_folders() {
+    let root = scratch("apps");
+    let curseforge = root.join("Documents/curseforge/minecraft");
+    write(&curseforge.join("Instances/All the Mods/mods/a.jar"), "jar");
+    write(
+        &curseforge.join("Instances/All the Mods/minecraftinstance.json"),
+        "{}",
+    );
+    write(&curseforge.join("Instances/All the Mods/.curseclient"), "");
+    fs::create_dir_all(curseforge.join("Instances/empty")).unwrap();
+    let modrinth = root.join("data/ModrinthApp");
+    write(
+        &modrinth.join("profiles/Fabulously Optimized/options.txt"),
+        "",
+    );
+
+    let folders = Folders {
+        home: root.clone(),
+        data: root.join("data"),
+        config: root.join("config"),
+    };
+    let found = scan(Os::MacOs, &folders);
+    let short: Vec<_> = found
+        .iter()
+        .map(|f| (f.launcher, f.name.as_str(), f.minecraft.is_none(), f.shared))
+        .collect();
+    assert_eq!(
+        short,
+        [
+            (MODRINTH_APP, "Fabulously Optimized", true, false),
+            (CURSEFORGE, "All the Mods", true, false),
+        ]
+    );
+    let pack = curseforge.join("Instances/All the Mods");
+    assert_eq!(in_folder(&curseforge, None), [found[1].clone()]);
+    assert_eq!(in_folder(&pack, None), [found[1].clone()]);
+    assert_eq!(in_folder(&modrinth, None), [found[0].clone()]);
+
+    // The app's own files stay behind.
+    let to = root.join("copy");
+    copy_game(&found[1], &to).unwrap();
+    assert!(to.join("mods/a.jar").is_file());
+    assert!(!to.join("minecraftinstance.json").exists() && !to.join(".curseclient").exists());
+
+    let err = import(&found[1], "x", None).unwrap_err();
+    assert_eq!(
+        err,
+        "the CurseForge app doesn't say which Minecraft version All the Mods plays here: name \
+         it with --minecraft."
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn atlauncher_instances_are_read_from_their_instance_json() {
+    // Synthetic folders holding only the fields four real instance.json files agree on.
+    let root = scratch("atl");
+    let forge = json!({"id": "1.20.1", "launcher": {"name": "My Pack", "pack": "Minecraft",
+        "loaderVersion": {"version": "47.3.12", "rawVersion": "1.20.1-47.3.12",
+            "recommended": false, "type": "Forge"}}});
+    let neo = json!({"id": "1.21.1", "launcher": {"name": "Neo",
+        "loaderVersion": {"version": "21.1.219", "type": "NeoForge"}}});
+    let plain = json!({"id": "1.21.1", "launcher": {"name": ""}});
+    let unknown = json!({"id": "1.20.1", "launcher": {"name": "Odd",
+        "loaderVersion": {"version": "1", "type": "SomethingElse"}}});
+    for (dir, doc) in [
+        ("Pack1", &forge),
+        ("Neo", &neo),
+        ("Plain", &plain),
+        ("Odd", &unknown),
+    ] {
+        write(
+            &root.join("instances").join(dir).join("instance.json"),
+            &doc.to_string(),
+        );
+    }
+    write(&root.join("instances/Pack1/mods/a.jar"), "x");
+    write(&root.join("instances/NotOne/readme.txt"), "x");
+    write(
+        &root.join("instances/NoLauncher/instance.json"),
+        r#"{"id": "1.20.1"}"#,
+    );
+    write(
+        &root.join("instances/NoId/instance.json"),
+        r#"{"launcher": {"name": "x"}}"#,
+    );
+    let found = atlauncher_instances(&root);
+    let names: Vec<_> = found.iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(names, ["My Pack", "Neo", "Odd", "Plain"]);
+    let pack = &found[0];
+    assert_eq!(pack.launcher, "ATLauncher");
+    assert_eq!(pack.minecraft.as_deref(), Some("1.20.1"));
+    assert_eq!(pack.loader.as_ref().unwrap().name, "forge");
+    assert_eq!(pack.loader.as_ref().unwrap().version, "47.3.12");
+    assert_eq!(pack.game, root.join("instances/Pack1"));
+    assert_eq!(found[1].loader.as_ref().unwrap().name, "neoforge");
+    assert!(found[2].loader.is_none());
+    assert!(found[3].loader.is_none());
+    assert_eq!(in_folder(&root, None).len(), 4);
+    assert_eq!(in_folder(&root.join("instances"), None).len(), 4);
+    assert_eq!(in_folder(&root.join("instances/Pack1"), None).len(), 1);
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn atlauncher_loader_types_match_whatever_the_case() {
+    for (kind, want) in [
+        ("fabric", "fabric"),
+        ("Quilt", "quilt"),
+        ("NEOFORGE", "neoforge"),
+    ] {
+        let launcher = json!({"loaderVersion": {"type": kind, "version": "1.0"}});
+        assert_eq!(atlauncher_loader(&launcher).unwrap().name, want);
+    }
+    assert!(atlauncher_loader(&json!({"loaderVersion": {"type": "Forge"}})).is_none());
+    assert!(atlauncher_loader(&json!({})).is_none());
 }

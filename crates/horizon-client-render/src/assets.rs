@@ -192,16 +192,34 @@ impl Assets {
     pub fn reload(&self, root: &Path) -> Result<RenderAssets> {
         RenderAssets::load(root, self)
     }
+    /// [`Assets::reload`] for a server, which draws nothing: the sprites'
+    /// layers, without the block or item models or the textures' pixels.
+    pub fn reload_for_server(&self, root: &Path) -> Result<RenderAssets> {
+        RenderAssets::load_with(root, self, false)
+    }
 }
 impl RenderAssets {
     pub fn load(root: &Path, assets: &Assets) -> Result<Self> {
+        Self::load_with(root, assets, true)
+    }
+    fn load_with(root: &Path, assets: &Assets, draws: bool) -> Result<Self> {
         let registry = assets.registry;
         let mut sprites = crate::sprites::Sprites::with_disk_cache(root);
         for name in MATERIALS {
             sprites.insert(root, &format!("minecraft:block/{name}"))?;
         }
-        let parsed = crate::model_library::ParsedModels::load(root);
-        let models = crate::models::prepare_with_models(root, registry, &mut sprites, &parsed)?;
+        // A server draws no block and no item: its block models (about 24 MB
+        // baked) and item model library (7 MB) stay empty.
+        let parsed = if draws {
+            crate::model_library::ParsedModels::load(root)
+        } else {
+            crate::model_library::ParsedModels::default()
+        };
+        let models = if draws {
+            crate::models::prepare_with_models(root, registry, &mut sprites, &parsed)?
+        } else {
+            crate::models::PreparedModels::default()
+        };
         let model_library = parsed.into_item_library();
         // Fluids are drawn by the fluid renderer, not block models; breaking
         // progress uses the destroy-stage overlays.
@@ -217,8 +235,15 @@ impl RenderAssets {
         for stage in 0..10 {
             sprites.insert(root, &format!("minecraft:block/destroy_stage_{stage}"))?;
         }
+        if draws {
+            crate::native_emissive::load(root, &mut sprites);
+        }
         sprites.save_disk_cache();
-        sprites.finish();
+        if draws {
+            sprites.finish();
+        } else {
+            sprites.finish_without_pixels();
+        }
         // `finish` grows the buffer by doubling: keep only the bytes in use.
         sprites.pixels.shrink_to_fit();
         Ok(Self {
@@ -241,6 +266,7 @@ impl RenderAssets {
 #[cfg(test)]
 mod tests {
     use crate::items::ConsumeEffect;
+    use horizon_world::loot::PackOverlay;
 
     #[test]
     fn always_edible_and_consume_effects_loaded() {
@@ -251,7 +277,8 @@ mod tests {
         }
         let assets = crate::assets::Assets::load(&root).unwrap();
         let facts = crate::blocks::BlockFacts::load(&root, assets.registry).unwrap();
-        let items = crate::items::Items::load(&root, assets.registry, &facts).unwrap();
+        let items =
+            crate::items::Items::load(&root, assets.registry, &facts, &PackOverlay::NONE).unwrap();
 
         let apple = items.get("minecraft:golden_apple").expect("golden apple");
         assert!(apple.can_always_eat);

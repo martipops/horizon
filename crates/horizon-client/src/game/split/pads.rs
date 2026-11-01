@@ -73,11 +73,26 @@ pub(super) enum Claim {
     Pass,
 }
 
-/// The same kind of controller back (a new id on macOS) takes back its player with any button;
-/// another takes over the player waiting longest with A, or lets it leave with B. P1 is only
-/// given its own back (another joins as P1 through the offer to join).
-pub(super) fn claim<Id>(lost: &[Lost<Id>], uuid: [u8; 16], button: Button) -> Claim {
-    if uuid != [0; 16]
+/// The same kind of controller back takes back its player with any button; another takes over
+/// the player waiting longest with A, or lets it leave with B. P1 is only given its own back
+/// (another joins as P1 through the offer to join).
+///
+/// `uuid` names the model, not the device (gilrs' SDL-style GUID), so it stands for "the same
+/// controller" only where a reconnect gets a new id (`model_match`: macOS; elsewhere the id
+/// survives and `PadEvent::Back` takes it), and only when one waiting player has that model:
+/// otherwise another DualSense would silently take a DualSense player's seat. On Linux gilrs
+/// itself reuses a disconnected pad's slot for a new one of the same model, so there a
+/// `PadEvent::Back` can be that other controller: gilrs can't tell the two apart.
+pub(super) fn claim<Id>(
+    lost: &[Lost<Id>],
+    uuid: [u8; 16],
+    button: Button,
+    model_match: bool,
+) -> Claim {
+    let same_model = || lost.iter().filter(|l| l.uuid == uuid).count() == 1;
+    if model_match
+        && uuid != [0; 16]
+        && same_model()
         && let Some(k) = lost.iter().position(|l| l.uuid == uuid)
     {
         return Claim::Give(k);
@@ -100,7 +115,7 @@ impl<'a> Split<'a> {
         };
         let state = self.pads.state(id);
         if self.fresh.contains(&id) {
-            if state.buttons != 0 {
+            if pressing(&state) {
                 return Default::default();
             }
             self.fresh.retain(|&p| p != id);
@@ -140,10 +155,10 @@ impl<'a> Split<'a> {
             // In a menu, or alone in a world, the first controller pressed is P1's (alone it
             // drives P1 anyway); one P1 gave up is offered to join instead.
             let offered = self.offers.iter().any(|(o, _)| *o == id);
-            if !self.in_world()
-                || (self.guests.is_empty() && self.p1_pad.owner.is_none() && !offered)
-            {
-                if self.p1_pad.owner.is_none() {
+            // P1 with controllers off plays on keyboard and mouse: a pad given to it is dead.
+            let p1_takes = self.p1_pad.owner.is_none() && self.host.settings.controller.enabled;
+            if !self.in_world() || (self.guests.is_empty() && p1_takes && !offered) {
+                if p1_takes {
                     self.p1_pad.claim(id);
                     self.fresh.push(id);
                 }
@@ -159,7 +174,9 @@ impl<'a> Split<'a> {
                         self.offers.remove(k);
                         joins.push(id);
                     }
-                    Button::North if self.p1_pad.owner.is_none() => {
+                    Button::North
+                        if self.p1_pad.owner.is_none() && self.host.settings.controller.enabled =>
+                    {
                         self.offers.remove(k);
                         self.p1_pad.claim(id);
                         self.fresh.push(id);
@@ -307,7 +324,12 @@ impl<'a> Split<'a> {
     /// A button on a controller nobody has while players wait for one: true when it answered
     /// them (`claim`).
     pub(super) fn claim_for_lost(&mut self, id: PadId, button: Button) -> bool {
-        match claim(&self.lost, self.pads.uuid(id), button) {
+        match claim(
+            &self.lost,
+            self.pads.uuid(id),
+            button,
+            cfg!(target_os = "macos"),
+        ) {
             Claim::Give(k) => {
                 let seat = self.lost.remove(k).seat;
                 self.give_pad(seat, id);
@@ -345,7 +367,7 @@ impl<'a> Split<'a> {
             offers => format!("{} controllers want to join", offers.len()),
         };
         let mut choices = vec![(Button::South, "Join")];
-        if self.p1_pad.owner.is_none() {
+        if self.p1_pad.owner.is_none() && self.host.settings.controller.enabled {
             choices.push((Button::North, "Play as P1"));
         }
         choices.push((Button::East, "No"));
@@ -357,9 +379,30 @@ impl<'a> Split<'a> {
     }
 }
 
+/// Still holding the press that gave the pad its player: a button, or a trigger off its rest
+/// (gilrs reports a trigger press as a button, but `PadState` keeps it in `triggers`).
+fn pressing(state: &PadState) -> bool {
+    state.buttons != 0 || state.triggers.iter().any(|&t| t > 0.05)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_trigger_that_gave_a_pad_is_held_back_too() {
+        assert!(!pressing(&PadState::default()));
+        let trigger = PadState {
+            triggers: [0.0, 0.8],
+            ..Default::default()
+        };
+        assert!(pressing(&trigger), "a held trigger would attack or use");
+        let button = PadState {
+            buttons: 1,
+            ..Default::default()
+        };
+        assert!(pressing(&button));
+    }
 
     #[test]
     fn a_pending_transfer_can_be_canceled_without_claiming_an_unrelated_pad() {
@@ -405,31 +448,49 @@ mod tests {
     #[test]
     fn the_same_controller_back_takes_its_player_with_any_button() {
         let waiting = [lost(2, OTHER), lost(3, PAD)];
-        assert_eq!(claim(&waiting, PAD, Button::DPadUp), Claim::Give(1));
+        assert_eq!(claim(&waiting, PAD, Button::DPadUp, true), Claim::Give(1));
         // P1's own comes back too.
-        assert_eq!(claim(&[lost(1, PAD)], PAD, Button::West), Claim::Give(0));
+        assert_eq!(
+            claim(&[lost(1, PAD)], PAD, Button::West, true),
+            Claim::Give(0)
+        );
     }
 
     #[test]
     fn another_controller_takes_over_or_lets_go_the_longest_waiting() {
         let waiting = [lost(1, OTHER), lost(3, OTHER), lost(2, OTHER)];
-        assert_eq!(claim(&waiting, PAD, Button::South), Claim::Give(1));
-        assert_eq!(claim(&waiting, PAD, Button::East), Claim::Leave(1));
+        assert_eq!(claim(&waiting, PAD, Button::South, true), Claim::Give(1));
+        assert_eq!(claim(&waiting, PAD, Button::East, true), Claim::Leave(1));
         // Any other button: the others wait, nobody is offered to join meanwhile.
-        assert_eq!(claim(&waiting, PAD, Button::North), Claim::Wait);
+        assert_eq!(claim(&waiting, PAD, Button::North, true), Claim::Wait);
     }
 
     #[test]
     fn only_p1_waiting_leaves_the_offer_to_join() {
-        assert_eq!(claim(&[lost(1, OTHER)], PAD, Button::South), Claim::Pass);
-        assert_eq!(claim::<usize>(&[], PAD, Button::South), Claim::Pass);
+        assert_eq!(
+            claim(&[lost(1, OTHER)], PAD, Button::South, true),
+            Claim::Pass
+        );
+        assert_eq!(claim::<usize>(&[], PAD, Button::South, true), Claim::Pass);
+    }
+
+    #[test]
+    fn the_same_model_is_only_known_back_where_ids_change_and_unambiguous() {
+        // Windows and Linux keep the id across a reconnect: another of the same model asks.
+        let waiting = [lost(2, PAD)];
+        assert_eq!(claim(&waiting, PAD, Button::North, false), Claim::Wait);
+        assert_eq!(claim(&waiting, PAD, Button::South, false), Claim::Give(0));
+        // Two players wait with the same model: no guess, the longest waiting is asked for.
+        let waiting = [lost(3, PAD), lost(2, PAD)];
+        assert_eq!(claim(&waiting, PAD, Button::North, true), Claim::Wait);
+        assert_eq!(claim(&waiting, PAD, Button::East, true), Claim::Leave(0));
     }
 
     #[test]
     fn a_controller_the_system_does_not_describe_is_not_known_back() {
         let unknown = [0; 16];
         assert_eq!(
-            claim(&[lost(2, unknown)], unknown, Button::West),
+            claim(&[lost(2, unknown)], unknown, Button::West, true),
             Claim::Wait
         );
     }

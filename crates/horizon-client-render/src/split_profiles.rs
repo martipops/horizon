@@ -103,6 +103,11 @@ fn field_top(h: f32) -> f32 {
 }
 
 impl SplitProfiles {
+    /// The page shown: the last one there is once the list has shrunk (a profile forgotten).
+    fn page(&self) -> usize {
+        self.page.min(self.names.len().saturating_sub(1) / SHOWN)
+    }
+
     /// Opened: empty until the game fills it.
     pub fn reset(&mut self) {
         *self = Self::default();
@@ -157,7 +162,7 @@ impl SplitProfiles {
             .names
             .iter()
             .enumerate()
-            .skip(self.page * SHOWN)
+            .skip(self.page() * SHOWN)
             .take(SHOWN)
         {
             let microsoft = self.accounts.contains(name);
@@ -189,13 +194,13 @@ impl SplitProfiles {
             buttons.push((
                 [x, y, 98.0, 20.0],
                 "Previous".into(),
-                self.page > 0,
+                self.page() > 0,
                 Target::Previous,
             ));
             buttons.push((
                 [x + 102.0, y, 98.0, 20.0],
                 "Next".into(),
-                (self.page + 1) * SHOWN < self.names.len(),
+                (self.page() + 1) * SHOWN < self.names.len(),
                 Target::Next,
             ));
             y += 24.0;
@@ -377,8 +382,8 @@ impl SplitProfiles {
                 field.max_length = NAME_MAX;
                 self.new = Some(field);
             }
-            Target::Previous => self.page = self.page.saturating_sub(1),
-            Target::Next => self.page += 1,
+            Target::Previous => self.page = self.page().saturating_sub(1),
+            Target::Next => self.page = self.page() + 1,
             Target::Create => self.create(),
             Target::Back => self.new = None,
             Target::Cancel => {
@@ -409,7 +414,7 @@ impl SplitProfiles {
     }
 
     /// A key: true when the page took it. On New Profile Escape goes back to the list and Enter
-    /// creates; on the list Escape is the options screen's (it closes the page).
+    /// creates; on the list Escape is the options screen's (it closes the page) and counts as Cancel.
     pub fn key(&mut self, key: winit::keyboard::KeyCode, text: Option<&str>) -> bool {
         use winit::keyboard::KeyCode as K;
         if self.forgetting.is_some() {
@@ -419,6 +424,10 @@ impl SplitProfiles {
             return true;
         }
         let Some(field) = &mut self.new else {
+            // The options screen closes the page: the game hears it as Cancel.
+            if key == K::Escape {
+                self.choice = Some(None);
+            }
             return false;
         };
         match key {
@@ -494,6 +503,19 @@ mod tests {
             ["a", "verylongwordindeed", "b"]
         );
         assert!(wrap("", 60.0, width).is_empty());
+    }
+
+    #[test]
+    fn forgetting_the_last_page_s_only_profile_shows_the_page_before() {
+        let atlas = atlas();
+        let mut p = SplitProfiles {
+            names: (0..5).map(|i| format!("Player{i}")).collect(),
+            ..Default::default()
+        };
+        press(&mut p, &atlas, "Next");
+        // Player4 forgotten: the game fills the list again with four names.
+        p.names.pop();
+        assert!(p.buttons(427.0, 240.0).iter().any(|b| b.1 == "Player3"));
     }
 
     #[test]
@@ -602,5 +624,10 @@ mod tests {
         press(&mut p, &atlas, "New Profile...");
         assert!(p.key(winit::keyboard::KeyCode::Escape, None));
         assert!(!p.key(winit::keyboard::KeyCode::Escape, None));
+        assert_eq!(
+            p.take_choice(),
+            Some(None),
+            "Escape on the list cancels, as Cancel does"
+        );
     }
 }

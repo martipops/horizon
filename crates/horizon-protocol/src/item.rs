@@ -8,7 +8,12 @@ use crate::{
 use horizon_world::nbt::Tag;
 use std::sync::Arc;
 
+#[doc(hidden)]
+pub mod custom;
+mod hash;
 mod skip;
+
+pub use hash::{Names, NoNames};
 
 /// minecraft:data_component_type registry ids (26.3).
 pub mod component {
@@ -23,6 +28,8 @@ pub mod component {
     pub const LORE: i32 = 11;
     pub const RARITY: i32 = 12;
     pub const ENCHANTMENTS: i32 = 13;
+    /// `AdventureModePredicate`: the blocks an adventure player may break.
+    pub const CAN_BREAK: i32 = 15;
     pub const CUSTOM_MODEL_DATA: i32 = 17;
     pub const TOOLTIP_DISPLAY: i32 = 18;
     pub const REPAIR_COST: i32 = 19;
@@ -40,26 +47,37 @@ pub mod component {
     pub const CHARGED_PROJECTILES: i32 = 51;
     pub const BUNDLE_CONTENTS: i32 = 52;
     pub const POTION_CONTENTS: i32 = 53;
+    pub const SUSPICIOUS_STEW_EFFECTS: i32 = 55;
     pub const WRITABLE_BOOK_CONTENT: i32 = 56;
     pub const WRITTEN_BOOK_CONTENT: i32 = 57;
     pub const TRIM: i32 = 58;
+    pub const INSTRUMENT: i32 = 63;
     pub const LODESTONE_TRACKER: i32 = 69;
     pub const FIREWORK_EXPLOSION: i32 = 70;
     pub const FIREWORKS: i32 = 71;
     pub const BLOCK_ENTITY_DATA: i32 = 62;
     pub const OMINOUS_BOTTLE_AMPLIFIER: i32 = 65;
+    pub const USE_REMAINDER: i32 = 25;
+    pub const POT_DECORATIONS: i32 = 76;
     pub const CONTAINER: i32 = 77;
+    pub const SULFUR_CUBE_CONTENT: i32 = 80;
+    pub const PAINTING_VARIANT: i32 = 109;
 }
 
-/// A written book's content (`WrittenBookContent.STREAM_CODEC`): the
-/// filtered variants of the title and pages are read and dropped.
-#[derive(Clone, Debug, PartialEq)]
+/// A written book's content (`WrittenBookContent.STREAM_CODEC`). The raw title
+/// and pages are what a book shows; the filtered variants (`Filterable.filtered`,
+/// which a server sends when chat filtering is on) are kept only so that the
+/// component hashes as the server holds it.
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct WrittenBook {
     pub title: String,
+    pub title_filtered: Option<String>,
     pub author: String,
     pub generation: i32,
     /// Each page's text component.
     pub pages: Vec<Tag>,
+    /// Each page's filtered variant: empty (none filtered) or one per page.
+    pub pages_filtered: Vec<Option<Tag>>,
     pub resolved: bool,
 }
 
@@ -94,8 +112,12 @@ pub enum Component {
         hide: bool,
         hidden: Vec<i32>,
     },
-    /// `WritableBookContent`: the pages (raw text).
-    WritableBook(Vec<String>),
+    /// `WritableBookContent`: the pages (raw text) and their filtered variants
+    /// (empty, or one per page).
+    WritableBook {
+        pages: Vec<String>,
+        filtered: Vec<Option<String>>,
+    },
     WrittenBook(WrittenBook),
     /// `ChargedProjectiles`: a loaded crossbow's ammunition, as templates.
     Stacks(Vec<Stack>),
@@ -118,10 +140,19 @@ pub enum Component {
         material: i32,
         pattern: i32,
     },
+    /// `SuspiciousStewEffects`: each entry's `minecraft:mob_effect` id and
+    /// duration in ticks.
+    StewEffects(Vec<(i32, i32)>),
+    /// `InstrumentComponent` naming its instrument by `minecraft:instrument`
+    /// registry id; a direct instrument stays [`Component::Raw`].
+    Instrument(i32),
     /// `BannerPatternLayers`: each layer's `banner_pattern` registry id and
     /// its dye id (`DyeColor.getId`). A layer with a direct pattern has no
     /// registry name: that value stays [`Component::Raw`].
     BannerPatterns(Vec<(i32, i32)>),
+    /// `painting/variant` naming its `painting_variant` by registry id; a
+    /// direct variant stays [`Component::Raw`].
+    PaintingVariant(i32),
     /// A component Horizon reads past without interpreting it: its encoded
     /// bytes, written back as they came.
     Raw(Vec<u8>),
@@ -162,14 +193,20 @@ impl FireworkExplosion {
     }
 }
 
-/// `Filterable.streamCodec`: the raw value, then an optional filtered one
-/// (dropped).
-fn filterable<T>(r: &mut Reader, value: impl Fn(&mut Reader) -> Result<T>) -> Result<T> {
+/// `Filterable.streamCodec`: the raw value, then an optional filtered one.
+fn filterable<T>(
+    r: &mut Reader,
+    value: impl Fn(&mut Reader) -> Result<T>,
+) -> Result<(T, Option<T>)> {
     let raw = value(r)?;
-    if r.bool()? {
-        value(r)?;
-    }
-    Ok(raw)
+    let filtered = if r.bool()? { Some(value(r)?) } else { None };
+    Ok((raw, filtered))
+}
+/// The filtered variants of a list of pages, or none when no page has one.
+fn filtered_variants<T>(pages: &mut Vec<(T, Option<T>)>) -> (Vec<T>, Vec<Option<T>>) {
+    let any = pages.iter().any(|(_, f)| f.is_some());
+    let (raw, filtered): (Vec<_>, Vec<_>) = pages.drain(..).unzip();
+    (raw, if any { filtered } else { Vec::new() })
 }
 
 /// `ResolvableProfile`: an optional name and UUID and the profile's property
@@ -179,6 +216,47 @@ pub struct Profile {
     pub name: Option<String>,
     pub id: Option<u128>,
     pub properties: Vec<(String, String, Option<String>)>,
+    pub skin: SkinPatch,
+}
+/// `PlayerSkin.Patch`: the optional body, cape and elytra texture ids and the
+/// model type (`true` for slim).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SkinPatch {
+    pub body: Option<String>,
+    pub cape: Option<String>,
+    pub elytra: Option<String>,
+    pub slim: Option<bool>,
+}
+impl SkinPatch {
+    fn read(r: &mut Reader) -> Result<Self> {
+        let texture = |r: &mut Reader| -> Result<Option<String>> {
+            if r.bool()? {
+                Ok(Some(r.string(32767)?))
+            } else {
+                Ok(None)
+            }
+        };
+        let (body, cape, elytra) = (texture(r)?, texture(r)?, texture(r)?);
+        let slim = if r.bool()? { Some(r.bool()?) } else { None };
+        Ok(Self {
+            body,
+            cape,
+            elytra,
+            slim,
+        })
+    }
+    fn write(&self, w: &mut Writer) {
+        for texture in [&self.body, &self.cape, &self.elytra] {
+            w.bool(texture.is_some());
+            if let Some(texture) = texture {
+                w.string(texture);
+            }
+        }
+        w.bool(self.slim.is_some());
+        if let Some(slim) = self.slim {
+            w.bool(slim);
+        }
+    }
 }
 impl Component {
     pub(crate) fn read(kind: i32, r: &mut Reader) -> Result<Self> {
@@ -194,25 +272,28 @@ impl Component {
             | OMINOUS_BOTTLE_AMPLIFIER => Self::Int(r.varint()?),
             WRITABLE_BOOK_CONTENT => {
                 let n = r.count(100)?;
-                Self::WritableBook(
-                    (0..n)
-                        .map(|_| filterable(r, |r| r.string(1024)))
-                        .collect::<Result<_>>()?,
-                )
+                let mut pages = (0..n)
+                    .map(|_| filterable(r, |r| r.string(1024)))
+                    .collect::<Result<Vec<_>>>()?;
+                let (pages, filtered) = filtered_variants(&mut pages);
+                Self::WritableBook { pages, filtered }
             }
             WRITTEN_BOOK_CONTENT => {
-                let title = filterable(r, |r| r.string(32))?;
+                let (title, title_filtered) = filterable(r, |r| r.string(32))?;
                 let author = r.string(32767)?;
                 let generation = r.varint()?;
                 let n = r.count(r.remaining())?;
-                let pages = (0..n)
+                let mut pages = (0..n)
                     .map(|_| filterable(r, |r| r.nbt()))
-                    .collect::<Result<_>>()?;
+                    .collect::<Result<Vec<_>>>()?;
+                let (pages, pages_filtered) = filtered_variants(&mut pages);
                 Self::WrittenBook(WrittenBook {
                     title,
+                    title_filtered,
                     author,
                     generation,
                     pages,
+                    pages_filtered,
                     resolved: r.bool()?,
                 })
             }
@@ -229,6 +310,16 @@ impl Component {
             LORE => {
                 let n = r.count(256)?;
                 Self::Lore((0..n).map(|_| r.nbt()).collect::<Result<_>>()?)
+            }
+            // SuspiciousStewEffects.Entry.STREAM_CODEC: MobEffect.STREAM_CODEC
+            // (the registry id), then the duration, both varints.
+            SUSPICIOUS_STEW_EFFECTS => {
+                let n = r.count(r.remaining())?;
+                Self::StewEffects(
+                    (0..n)
+                        .map(|_| Ok((r.varint()?, r.varint()?)))
+                        .collect::<Result<_>>()?,
+                )
             }
             ENCHANTMENTS | STORED_ENCHANTMENTS => {
                 let n = r.count(r.remaining())?;
@@ -289,19 +380,12 @@ impl Component {
                     let name = Some(r.string(64)?);
                     (name, id, properties(r)?)
                 };
-                // PlayerSkin.Patch: body, cape, elytra and model, each absent
-                // in the profiles servers send for heads.
-                for _ in 0..4 {
-                    if r.bool()? {
-                        // ClientAsset.ResourceTexture: its id and its texture path.
-                        r.string(32767)?;
-                        r.string(32767)?;
-                    }
-                }
+                // PlayerSkin.Patch: three texture ids and the model type.
                 Self::Profile(Profile {
                     name,
                     id,
                     properties,
+                    skin: SkinPatch::read(r)?,
                 })
             }
             CUSTOM_MODEL_DATA => {
@@ -365,6 +449,30 @@ impl Component {
                     _ => Self::Raw(bytes.to_vec()),
                 }
             }
+            // InstrumentComponent.STREAM_CODEC: a holder, a reference's id plus one.
+            // A direct instrument has no registry name: read past.
+            INSTRUMENT => {
+                let start = r.position();
+                skip::component(INSTRUMENT, r)?;
+                let bytes = r.since(start);
+                let mut ids = Reader::new(bytes);
+                match ids.varint() {
+                    Ok(id @ 1..) if ids.remaining() == 0 => Self::Instrument(id - 1),
+                    _ => Self::Raw(bytes.to_vec()),
+                }
+            }
+            // Holder<PaintingVariant>: a reference's id plus one, or 0 and
+            // the variant itself (no registry name: read past).
+            PAINTING_VARIANT => {
+                let start = r.position();
+                skip::component(PAINTING_VARIANT, r)?;
+                let bytes = r.since(start);
+                let mut ids = Reader::new(bytes);
+                match ids.varint() {
+                    Ok(id @ 1..) if ids.remaining() == 0 => Self::PaintingVariant(id - 1),
+                    _ => Self::Raw(bytes.to_vec()),
+                }
+            }
             // DyeColor.STREAM_CODEC: its id.
             BASE_COLOR => Self::Int(r.varint()?),
             // BannerPatternLayers.STREAM_CODEC: a list of a pattern holder (a
@@ -378,6 +486,7 @@ impl Component {
                     None => Self::Raw(bytes.to_vec()),
                 }
             }
+            other if custom::contains(other) => Self::Nbt(r.nbt()?),
             other => {
                 let start = r.position();
                 skip::component(other, r)?;
@@ -415,6 +524,8 @@ impl Component {
                 w.varint(material + 1);
                 w.varint(pattern + 1);
             }
+            Self::Instrument(id) => w.varint(id + 1),
+            Self::PaintingVariant(id) => w.varint(id + 1),
             Self::Int(v) if kind == component::DYED_COLOR => w.i32(*v),
             Self::Int(v) => w.varint(*v),
             Self::Unit => {}
@@ -425,7 +536,7 @@ impl Component {
                 w.varint(lines.len() as i32);
                 lines.iter().for_each(|l| w.nbt(l));
             }
-            Self::Enchantments(list) => {
+            Self::Enchantments(list) | Self::StewEffects(list) => {
                 w.varint(list.len() as i32);
                 for (e, level) in list {
                     w.varint(*e);
@@ -473,9 +584,7 @@ impl Component {
                         w.string(signature);
                     }
                 }
-                for _ in 0..4 {
-                    w.bool(false);
-                }
+                p.skin.write(w);
             }
             Self::CustomModelData {
                 floats,
@@ -515,22 +624,40 @@ impl Component {
                 }
                 w.bool(*tracked);
             }
-            Self::WritableBook(pages) => {
+            Self::WritableBook { pages, filtered } => {
                 w.varint(pages.len() as i32);
-                for page in pages {
+                for (i, page) in pages.iter().enumerate() {
                     w.string(page);
-                    w.bool(false);
+                    match filtered.get(i).and_then(Option::as_ref) {
+                        Some(f) => {
+                            w.bool(true);
+                            w.string(f);
+                        }
+                        None => w.bool(false),
+                    }
                 }
             }
             Self::WrittenBook(b) => {
                 w.string(&b.title);
-                w.bool(false);
+                match &b.title_filtered {
+                    Some(f) => {
+                        w.bool(true);
+                        w.string(f);
+                    }
+                    None => w.bool(false),
+                }
                 w.string(&b.author);
                 w.varint(b.generation);
                 w.varint(b.pages.len() as i32);
-                for page in &b.pages {
+                for (i, page) in b.pages.iter().enumerate() {
                     w.nbt(page);
-                    w.bool(false);
+                    match b.pages_filtered.get(i).and_then(Option::as_ref) {
+                        Some(f) => {
+                            w.bool(true);
+                            w.nbt(f);
+                        }
+                        None => w.bool(false),
+                    }
                 }
                 w.bool(b.resolved);
             }
@@ -543,6 +670,47 @@ impl Component {
 /// edited goes back byte for byte. It is no part of a stack's equality.
 #[derive(Clone, Debug, Default)]
 pub struct WirePatch(pub Option<Arc<[u8]>>);
+impl WirePatch {
+    /// Whether a patch in this form sets component `kind`.
+    pub fn adds(patch: &[u8], kind: i32) -> bool {
+        let mut r = Reader::new(patch);
+        let Ok(positive) = r.count(65536) else {
+            return false;
+        };
+        if r.count(65536).is_err() {
+            return false;
+        }
+        (0..positive).any(|_| {
+            let Ok(k) = r.varint() else {
+                return false;
+            };
+            let Ok(len) = r.count(r.remaining()) else {
+                return false;
+            };
+            r.bytes(len).is_ok() && k == kind
+        })
+    }
+}
+impl WirePatch {
+    /// The components and removals a patch in this form holds, read as
+    /// [`DelimitedSlot`] does.
+    pub fn decode(patch: &[u8]) -> Result<(Vec<(i32, Component)>, Vec<i32>)> {
+        let mut r = Reader::new(patch);
+        let positive = r.count(65536)?;
+        let negative = r.count(65536)?;
+        let mut added = Vec::with_capacity(positive.min(64));
+        for _ in 0..positive {
+            let kind = r.varint()?;
+            let len = r.count(r.remaining())?;
+            added.push((
+                kind,
+                Component::read(kind, &mut Reader::new(r.bytes(len)?))?,
+            ));
+        }
+        let removed = (0..negative).map(|_| r.varint()).collect::<Result<_>>()?;
+        Ok((added, removed))
+    }
+}
 impl PartialEq for WirePatch {
     fn eq(&self, _: &Self) -> bool {
         true
@@ -625,7 +793,12 @@ fn read_stack(r: &mut Reader, delimited: bool) -> Result<Option<Stack>> {
         let (component, value) = if delimited {
             let len = r.count(r.remaining())?;
             let value = r.bytes(len)?;
-            (Component::read(kind, &mut Reader::new(value))?, value)
+            let mut component_reader = Reader::new(value);
+            let component = Component::read(kind, &mut component_reader)?;
+            if custom::contains(kind) && component_reader.remaining() != 0 {
+                return Err(crate::Error::new("trailing custom component data"));
+            }
+            (component, value)
         } else {
             let start = r.position();
             (Component::read(kind, r)?, r.since(start))
@@ -716,9 +889,7 @@ impl Codec<Stack> for Template {
 }
 
 /// HashedStack: what the client believes a slot holds. Component values are
-/// sent as hashes; Horizon sends patches without hashes, so a server whose
-/// stack carries components resynchronises that slot (as it does for any
-/// mismatched prediction).
+/// sent as hashes ([`Hashed::create`]).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Hashed {
     pub item: i32,
@@ -727,13 +898,10 @@ pub struct Hashed {
     pub removed: Vec<i32>,
 }
 impl Hashed {
+    /// The stack hashed without registry names: only components that hold no
+    /// registry id get a hash (see [`Hashed::create`]).
     pub fn of(stack: &Stack) -> Self {
-        Self {
-            item: stack.item,
-            count: stack.count,
-            added: Vec::new(),
-            removed: stack.removed.clone(),
-        }
+        Self::create(stack, &NoNames)
     }
 }
 pub struct HashedSlot;
@@ -786,6 +954,24 @@ mod tests {
         let mut r = Reader::new(&w.data);
         assert_eq!(C::read(&mut r).unwrap(), v);
         assert_eq!(r.remaining(), 0);
+    }
+
+    #[test]
+    fn a_wire_patch_tells_what_it_adds() {
+        // Two added components (damage 3, then can_break's bytes as read)
+        // and one removed.
+        let mut w = Writer::new();
+        w.varint(2);
+        w.varint(1);
+        w.varint(component::DAMAGE);
+        w.byte_array(&[3]);
+        w.varint(component::CAN_BREAK);
+        w.byte_array(&[1, 0, 0, 0, 0, 0]);
+        w.varint(component::ENCHANTMENTS);
+        assert!(WirePatch::adds(&w.data, component::DAMAGE));
+        assert!(WirePatch::adds(&w.data, component::CAN_BREAK));
+        assert!(!WirePatch::adds(&w.data, component::ENCHANTMENTS));
+        assert!(!WirePatch::adds(&[], component::CAN_BREAK));
     }
 
     #[test]
@@ -863,6 +1049,8 @@ mod tests {
                 author: "Guest".into(),
                 generation: 1,
                 pages: vec![literal("one"), literal("two")],
+                pages_filtered: vec![None, Some(literal("2"))],
+                title_filtered: Some("N".into()),
                 resolved: true,
             }),
         ));
@@ -881,7 +1069,10 @@ mod tests {
         let mut quill = Stack::new(1099, 1);
         quill.added.push((
             component::WRITABLE_BOOK_CONTENT,
-            Component::WritableBook(vec!["a".into(), String::new()]),
+            Component::WritableBook {
+                pages: vec!["a".into(), String::new()],
+                filtered: vec![None, Some("b".into())],
+            },
         ));
         round::<Option<Stack>, Slot>(Some(quill));
         assert_eq!(sword.damage(), 17);
@@ -959,13 +1150,16 @@ mod tests {
     }
 
     #[test]
-    fn filtered_book_pages_are_read_and_dropped() {
+    fn filtered_book_pages_are_read_and_kept() {
         // A writable book with one page "hi" and its filtered "**".
         let bytes = [1, 7, 1, 0, 56, 1, 2, b'h', b'i', 1, 2, b'*', b'*'];
         let stack = Slot::read(&mut Reader::new(&bytes)).unwrap().unwrap();
         assert_eq!(
             stack.component(component::WRITABLE_BOOK_CONTENT),
-            Some(&Component::WritableBook(vec!["hi".into()]))
+            Some(&Component::WritableBook {
+                pages: vec!["hi".into()],
+                filtered: vec![Some("**".into())],
+            })
         );
     }
 
@@ -999,6 +1193,12 @@ mod tests {
                 name: Some("Player53470".into()),
                 id: Some(0x7a5d_6a1a_30d7_4187_88c5_efe9_1201_8922),
                 properties: vec![("textures".into(), "dGV4dHVyZXM=".into(), None)],
+                skin: SkinPatch {
+                    body: Some("minecraft:entity/player/wide/steve".into()),
+                    cape: None,
+                    elytra: None,
+                    slim: Some(true),
+                },
             }),
         ));
         round::<Option<Stack>, Slot>(Some(sword));
@@ -1043,6 +1243,8 @@ mod tests {
             ("01890b01004a02200e000b6d696e6563726166743a7801790b", 74),
             ("01880301004c01f60801000001be0c0100000001d30c010000", 76),
             ("01a408010037020f6412a001", 55),
+            // A goat horn's instrument by reference (InstrumentComponent's holder).
+            ("01bd0801003f02", 63),
         ] {
             let bytes: Vec<u8> = (0..hex.len())
                 .step_by(2)
@@ -1058,6 +1260,9 @@ mod tests {
                         pattern: 1,
                     }
                 }
+                // night_vision for 100 ticks, poison for the default 160.
+                55 => *c == Component::StewEffects(vec![(15, 100), (18, 160)]),
+                63 => *c == Component::Instrument(1),
                 _ => matches!(c, Component::Raw(_)),
             };
             assert!(
@@ -1069,6 +1274,39 @@ mod tests {
             let mut w = Writer::new();
             Slot::write(&stack, &mut w);
             assert_eq!(w.data, bytes, "component {kind}");
+        }
+    }
+
+    #[test]
+    fn painting_variants_decode_by_reference() {
+        // Holder<PaintingVariant>: a reference (its id plus one) is typed; a
+        // direct variant (0, width, height, asset id, no title, no author)
+        // is read past. Both encode back to the same bytes.
+        let asset = b"minecraft:x";
+        let mut direct = vec![1u8, 7, 1, 0, 109, 0, 2, 1, asset.len() as u8];
+        direct.extend_from_slice(asset);
+        direct.extend_from_slice(&[0, 0]);
+        for (bytes, expected) in [
+            (
+                vec![1u8, 7, 1, 0, 109, 5],
+                Some(Component::PaintingVariant(4)),
+            ),
+            (direct, None),
+        ] {
+            let mut r = Reader::new(&bytes);
+            let stack = Slot::read(&mut r).unwrap();
+            assert_eq!(r.remaining(), 0);
+            let c = stack
+                .as_ref()
+                .and_then(|s| s.component(component::PAINTING_VARIANT))
+                .unwrap();
+            match &expected {
+                Some(e) => assert_eq!(c, e),
+                None => assert!(matches!(c, Component::Raw(_))),
+            }
+            let mut w = Writer::new();
+            Slot::write(&stack, &mut w);
+            assert_eq!(w.data, bytes);
         }
     }
 }
