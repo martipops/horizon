@@ -71,6 +71,9 @@ pub(in crate::game) struct LegacyCraft {
     passthrough: bool,
     /// The row's selection as last drawn: where a flick out of the row starts.
     shown_selected: usize,
+    /// The slot the carried stack was taken from by the cursor: it goes back there on leaving
+    /// the inventory.
+    taken_from: Option<usize>,
     opened_at: Option<Instant>,
     /// What the last frame showed: the row's length and the selected recipe's result.
     shown: (usize, Option<String>),
@@ -295,7 +298,11 @@ impl Game<'_> {
             }
             // B out of the grid or the inventory goes back to the recipes; from them it closes.
             Button::East if self.pad.legacy.focus != Area::Row => {
-                self.pad.legacy.focus = Area::Row;
+                if self.pad.legacy.focus != Area::Inventory || self.legacy_put_back() {
+                    self.pad.legacy.focus = Area::Row;
+                } else {
+                    self.pad_rumble(gamepad::Rumble::RadialNothing);
+                }
             }
             Button::LeftBumper => self.legacy_turn_tab(false),
             Button::RightBumper => self.legacy_turn_tab(true),
@@ -372,6 +379,11 @@ impl Game<'_> {
             return;
         };
         let cursor = layout.nearest_cell(to, from).unwrap_or(0);
+        if self.pad.legacy.focus == Area::Inventory && !self.legacy_put_back() {
+            // Nowhere to put it down: the stack stays in hand and the focus with it.
+            self.pad_rumble(gamepad::Rumble::RadialNothing);
+            return;
+        }
         self.pad.legacy.focus = to;
         self.pad.legacy.cursor = cursor;
         self.pad.legacy.repeat = None;
@@ -385,10 +397,43 @@ impl Game<'_> {
             return true;
         };
         let (sx, sy) = self.slot_position(slot);
+        let held = self.carried.is_some();
         self.pad.legacy.passthrough = true;
         self.click_at(ox + sx + 8.0, oy + sy + 8.0, right, shift);
         self.pad.legacy.passthrough = false;
+        match (held, self.carried.is_some()) {
+            (false, true) => self.pad.legacy.taken_from = Some(slot),
+            (_, false) => self.pad.legacy.taken_from = None,
+            _ => {}
+        }
         true
+    }
+
+    /// Leaving the inventory with a stack in hand: it goes back down, so it never travels with
+    /// the focus. Where it came from if that slot can take it, else the slot under the cursor,
+    /// else any empty one. False when it couldn't all go down: the focus stays.
+    fn legacy_put_back(&mut self) -> bool {
+        let Some(carried) = self.carried.clone() else {
+            return true;
+        };
+        let takes = |s: &Option<ItemStack>| {
+            s.as_ref()
+                .is_none_or(|s| s.same_item_same_components(&carried))
+        };
+        let state = &self.pad.legacy;
+        let mut order: Vec<usize> = state.taken_from.into_iter().collect();
+        order.push(state.cursor);
+        // Any empty slot: the inventory's rows first, the hotbar last, as a quick move fills.
+        order.extend((9..36).chain(0..9).filter(|&i| self.inventory[i].is_none()));
+        for slot in order {
+            if slot < 36 && takes(&self.inventory[slot]) {
+                self.legacy_slot_click(slot, false, false);
+                if self.carried.is_none() {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     /// View on an inventory slot: vanilla's Q over it, one item thrown.

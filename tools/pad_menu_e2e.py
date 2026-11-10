@@ -111,7 +111,8 @@ and prepared resources in .local/horizon-client/26.3. Exit status 0 when every c
   screen.
 - legacy_creative: X opens it in creative too, and A crafts.
 - legacy_areas: right-stick flicks go row, grid, inventory; the inventory cursor takes, puts and quick-moves as
-  vanilla's pointer does; B goes back to the row, then closes.
+  vanilla's pointer does; leaving the inventory holding a stack puts it back where it came from; B goes back to the
+  row, then closes.
 - legacy_table: a crafting table the pad player opens shows as the crafting screen, and A makes a 3x3 recipe.
 - legacy_tabs_search: search first, no empty tabs; RB and LB turn the tabs; View opens the search's keyboard and
   typing narrows the row; X shows only what can be made.
@@ -4588,6 +4589,23 @@ def legacy_areas(game, check):
     game.pad('south')
     carried = game.ctl('menu').get('carried') or {}
     check(carried.get('count') == 5 and 'oak_log' in carried.get('item', ''), f'A took {carried}')
+    # Leaving the inventory with it in hand puts it back where it came from: it never travels.
+    game.pad('right')
+    legacy_flick(game, 0, 1)
+    hotbar = game.ctl('inventory')['hotbar']
+    check(legacy(game)['focus'] == 'row' and not game.ctl('menu').get('carried'),
+          f"flick up holding: {legacy(game)['focus']}, carried {game.ctl('menu').get('carried')}")
+    check(hotbar[0].get('count') == 5, f'not back in its slot: {hotbar[:2]}')
+    # Back down to the hotbar's first slot, and this time put it in the next one.
+    legacy_flick(game, 0, -1)
+    legacy_flick(game, 1, 0)
+    for _ in range(3):
+        game.pad('down')
+    for _ in range(9):
+        if legacy(game)['cursor'] == 0:
+            break
+        game.pad('left')
+    game.pad('south')
     game.pad('right')
     game.pad('south')
     hotbar = game.ctl('inventory')['hotbar']

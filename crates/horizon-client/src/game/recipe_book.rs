@@ -657,13 +657,18 @@ impl Game<'_> {
     /// The switch to the controller crafting screen, beside the book button where the grid leaves
     /// room: only with Console Crafting on, over a crafting grid.
     fn legacy_switch_rect(&self, book: BookType, bx: f32, by: f32) -> Option<[f32; 4]> {
-        if book != BookType::Crafting || !self.settings.controller.legacy_crafting {
+        // Only for a controller player: with none connected it would open a pad screen.
+        let pad = self.settings.controller.enabled && self.pad.device_or_virtual().is_some();
+        if book != BookType::Crafting || !self.settings.controller.legacy_crafting || !pad {
             return None;
         }
         Some(if self.craft_size == 2 {
+            // Beside the book button, under the 2x2 grid.
             [bx + 22.0, by, 20.0, 18.0]
         } else {
-            [bx, by + 20.0, 20.0, 18.0]
+            // Centred under the table's result slot (its 26 px frame at 119,30 of the menu), clear
+            // of the book button and the Inventory label. The book sits at the menu's 5,34.
+            [bx - 5.0 + 122.0, by - 34.0 + 60.0, 20.0, 18.0]
         })
     }
     fn tab_pos(&self, xo: f32, yo: f32, index: usize) -> (f32, f32) {
