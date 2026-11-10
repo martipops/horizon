@@ -107,9 +107,11 @@ and prepared resources in .local/horizon-client/26.3. Exit status 0 when every c
   step the row as every shell choice does.
 - legacy_craft: Console Crafting on: X opens the controller crafting screen on the known recipe, A crafts one, Y the
   rest, B closes it, nothing left in the grid.
-- legacy_classic_and_paging: it opens on every recipe; the right stick pages, the wheel steps, L3 shows the vanilla
+- legacy_classic_and_paging: it opens on every recipe; the wheel steps, L3 shows the vanilla
   screen.
 - legacy_creative: X opens it in creative too, and A crafts.
+- legacy_areas: right-stick flicks go row, grid, inventory; the inventory cursor takes, puts and quick-moves as
+  vanilla's pointer does; B goes back to the row, then closes.
 - legacy_table: a crafting table the pad player opens shows as the crafting screen, and A makes a 3x3 recipe.
 - legacy_tabs_search: search first, no empty tabs; RB and LB turn the tabs; View opens the search's keyboard and
   typing narrows the row; X shows only what can be made.
@@ -4516,14 +4518,8 @@ def legacy_classic_and_paging(game, check):
         return
     check(shown['tab'] == 'horizon:search', f"it opened on {shown['tab']}, not every recipe")
     before = shown['row']
-    # The right stick pages along the row: about a row's worth a tilt.
     at = lambda: game.menu()['legacy']
-    first = at()['selected']
-    game.ctl('pad', 'stick', 'right', 1, 0)
-    time.sleep(0.15)
-    game.ctl('pad', 'stick', 'right', 0, 0)
-    time.sleep(SETTLE)
-    check(at()['selected'] != first and before > 20, f'the right stick did not page: {at()}')
+    check(before > 20, f'every recipe is only {before}')
     # The wheel goes one recipe a notch.
     paged = at()['selected']
     width, height = game.ctl('ui')['gui_size']
@@ -4558,6 +4554,55 @@ def legacy_creative(game, check):
     craft_ended(game)
     have = counts(game)
     check(have.get('minecraft:oak_planks') == 4 and have.get('minecraft:oak_log') == 1, f'creative A: {have}')
+
+
+def legacy_flick(game, x, y):
+    """One flick of the right stick (up positive), back to rest."""
+    game.ctl('pad', 'stick', 'right', x, y)
+    time.sleep(0.15)
+    game.ctl('pad', 'stick', 'right', 0, 0)
+    time.sleep(SETTLE)
+
+
+@legacy_case
+def legacy_areas(game, check):
+    legacy_known(game, 'minecraft:oak_planks', gives=['oak_log 5'])
+    game.pad('west')
+    if legacy(game) is None:
+        check(False, 'X did not open the crafting screen')
+        return
+    check(legacy(game)['focus'] == 'row', f"opened on {legacy(game)['focus']}")
+    # Down from the row's first recipe: the grid under it; right from there: the inventory.
+    legacy_flick(game, 0, -1)
+    check(legacy(game)['focus'] == 'grid', f"down from the row: {legacy(game)['focus']}")
+    legacy_flick(game, 1, 0)
+    check(legacy(game)['focus'] == 'inventory', f"right from the grid: {legacy(game)['focus']}")
+    # To the hotbar's first slot, where the logs are.
+    for _ in range(3):
+        game.pad('down')
+    for _ in range(9):
+        if legacy(game)['cursor'] == 0:
+            break
+        game.pad('left')
+    check(legacy(game)['cursor'] == 0, f"cursor {legacy(game)['cursor']}")
+    game.pad('south')
+    carried = game.ctl('menu').get('carried') or {}
+    check(carried.get('count') == 5 and 'oak_log' in carried.get('item', ''), f'A took {carried}')
+    game.pad('right')
+    game.pad('south')
+    hotbar = game.ctl('inventory')['hotbar']
+    check(not game.ctl('menu').get('carried') and hotbar[1].get('item') and hotbar[1].get('count') == 5,
+          f'A put down: {hotbar[:2]}')
+    # Y: vanilla's quick move, out of the hotbar into the inventory.
+    game.pad('north')
+    hotbar = game.ctl('inventory')['hotbar']
+    check(not hotbar[1].get('item') and counts(game).get('minecraft:oak_log') == 5,
+          f'Y: {hotbar[:2]}, {counts(game)}')
+    # B goes back to the recipes, then closes.
+    game.pad('east')
+    check(legacy(game) is not None and legacy(game)['focus'] == 'row', f'B from the inventory: {legacy(game)}')
+    game.pad('east')
+    check(game.ctl('screen').get('screen') == 'playing', 'B on the row did not close')
 
 CASES = {'idle_a': idle_a, 'idle_b': idle_b, 'idle_x': idle_x, 'release': release, 'move_cancels': move_cancels,
          'pad_release': pad_release, 'pause_y': pause_y, 'settings': settings, 'create_world': create_world,
@@ -4596,6 +4641,7 @@ CASES = {'idle_a': idle_a, 'idle_b': idle_b, 'idle_x': idle_x, 'release': releas
          'erase_checkbox': erase_checkbox,
          'legacy_craft': legacy_craft, 'legacy_table': legacy_table, 'legacy_tabs_search': legacy_tabs_search,
          'legacy_classic_and_paging': legacy_classic_and_paging, 'legacy_creative': legacy_creative,
+         'legacy_areas': legacy_areas,
          'extras_shell': extras_shell,
          'extras_shell_edges': extras_shell_edges,
          'graphics_shell': graphics_shell,

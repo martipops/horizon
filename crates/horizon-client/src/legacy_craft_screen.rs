@@ -100,6 +100,22 @@ pub struct View {
     pub inventory: Vec<Option<ItemStack>>,
     /// What the pointer is over, so it shows highlighted.
     pub hover: Option<Hit>,
+    /// Where the pad's focus is, and its cell there (an inventory slot or a grid cell).
+    pub focus: Area,
+    pub cursor: usize,
+}
+
+/// A part of the screen the pad's focus is in: the right stick moves between them, the left stick
+/// and the D-pad within one. Stations add their own (`Station(n)`: the station's slots).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Area {
+    /// The recipe row and the variant column standing on it.
+    #[default]
+    Row,
+    /// The recipe's grid preview.
+    Grid,
+    /// The player's 36 slots, a vanilla cursor over them.
+    Inventory,
 }
 
 /// A place on the screen that does something.
@@ -116,6 +132,8 @@ pub enum Hit {
     Result,
     Search,
     Inventory(usize),
+    /// A cell of the grid preview, row by row.
+    Cell(usize),
 }
 
 /// The drawn screen.
@@ -131,6 +149,49 @@ pub struct Layout {
     pub compact: bool,
     /// The first recipe the row shows.
     pub row_from: usize,
+    /// Each area there is, and where.
+    pub areas: Vec<(Area, [i32; 4])>,
+}
+
+impl Layout {
+    /// Where a hit is.
+    pub fn rect_of(&self, hit: Hit) -> Option<[i32; 4]> {
+        self.hits.iter().find(|(_, h)| *h == hit).map(|(r, _)| *r)
+    }
+
+    /// The area a flick of the right stick goes to from `from` (a point in area `area`) in
+    /// direction `dir` (x right, y down): the nearest one that way, its nearest point counting,
+    /// with a sideways step weighing twice a forward one. None when nothing lies that way.
+    pub fn area_toward(&self, area: Area, from: [i32; 2], dir: [i32; 2]) -> Option<Area> {
+        self.areas
+            .iter()
+            .filter(|(a, _)| *a != area)
+            .filter_map(|(a, [x, y, w, h])| {
+                let near = [from[0].clamp(*x, x + w - 1), from[1].clamp(*y, y + h - 1)];
+                let (dx, dy) = (near[0] - from[0], near[1] - from[1]);
+                let along = dx * dir[0] + dy * dir[1];
+                let across = (dx * dir[1] - dy * dir[0]).abs();
+                (along > 0 && across <= along * 3).then_some((along + 2 * across, *a))
+            })
+            .min_by_key(|(score, _)| *score)
+            .map(|(_, a)| a)
+    }
+
+    /// The cell of `area` nearest a point: an inventory slot or a grid cell.
+    pub fn nearest_cell(&self, area: Area, at: [i32; 2]) -> Option<usize> {
+        let distance = |[x, y, w, h]: [i32; 4]| {
+            let (cx, cy) = (x + w / 2, y + h / 2);
+            (cx - at[0]).pow(2) + (cy - at[1]).pow(2)
+        };
+        self.hits
+            .iter()
+            .filter_map(|(r, hit)| match (area, hit) {
+                (Area::Inventory, Hit::Inventory(i)) | (Area::Grid, Hit::Cell(i)) => Some((*r, *i)),
+                _ => None,
+            })
+            .min_by_key(|(r, _)| distance(*r))
+            .map(|(_, i)| i)
+    }
 }
 
 /// `text` cut to `room` pixels, with "..." where it was cut.
@@ -511,12 +572,20 @@ fn grid(out: &mut Out, view: &View, x: i32, y: i32) {
         let cx = gx + (i as i32 % side) * 18;
         let cy = gy + (i as i32 / side) * 18;
         out.sprite("container/slot", cx, cy, 18, 18);
+        let focused = view.focus == Area::Grid && view.cursor == i;
+        if focused {
+            highlight_back(out, cx, cy);
+        }
         if let Some(Some(cell)) = view.cells.get(i) {
             if cell.missing {
                 out.fill(cx + 1, cy + 1, 16, 16, MISSING_CELL);
             }
             out.item(&cell.stack, cx + 1, cy + 1, false);
         }
+        if focused {
+            highlight_front(out, cx, cy);
+        }
+        out.hit([cx, cy, 18, 18], Hit::Cell(i));
     }
     // The crafting table's arrow (its background at 90,35).
     out.blit(
@@ -534,6 +603,15 @@ fn grid(out: &mut Out, view: &View, x: i32, y: i32) {
     }
 }
 
+/// Vanilla's slot highlight (`container/slot_highlight_back` behind the item, `_front` over it,
+/// 24 px round an 18 px slot), as the pointer over a slot shows it.
+fn highlight_back(out: &mut Out, x: i32, y: i32) {
+    out.sprite("container/slot_highlight_back", x - 3, y - 3, 24, 24);
+}
+fn highlight_front(out: &mut Out, x: i32, y: i32) {
+    out.sprite("container/slot_highlight_front", x - 3, y - 3, 24, 24);
+}
+
 fn inventory(out: &mut Out, view: &View, x: i32, y: i32, width: &dyn Fn(&str) -> i32) {
     let t = &view.inventory_title;
     out.text(t, x + 84 - width(t) / 2, y + 4, TITLE);
@@ -547,8 +625,15 @@ fn inventory(out: &mut Out, view: &View, x: i32, y: i32, width: &dyn Fn(&str) ->
         let sx = x + 3 + col as i32 * 18;
         let sy = y + 14 + row as i32 * 18 + if row == 3 { 4 } else { 0 };
         out.sprite("container/slot", sx, sy, 18, 18);
+        let focused = view.focus == Area::Inventory && view.cursor == i;
+        if focused {
+            highlight_back(out, sx, sy);
+        }
         if let Some(Some(stack)) = view.inventory.get(i) {
             out.item(stack, sx + 1, sy + 1, true);
+        }
+        if focused {
+            highlight_front(out, sx, sy);
         }
         out.hit([sx, sy, 18, 18], Hit::Inventory(i));
     }
@@ -560,14 +645,20 @@ fn full(view: &View, width: &dyn Fn(&str) -> i32) -> Layout {
         hits: Vec::new(),
     };
     let (w, h) = (PANEL_W, PANEL_H);
-    let x = (view.width - w) / 2 + MODE_OUT / 2;
+    // The mode tabs show only with a choice to make; without them the panel sits in the middle.
+    let modes = view.modes.len() > 1;
+    let x = (view.width - w) / 2 + if modes { MODE_OUT / 2 } else { 0 };
     let y = TAB_RISE.max((view.height - (TAB_RISE + h + HINT_ROOM)) / 2 + TAB_RISE);
     let shown = tabs_shown(view.width, view.height);
     creative_tabs(&mut out, view, x, y, shown, false);
-    mode_tabs(&mut out, view, x, y, false);
+    if modes {
+        mode_tabs(&mut out, view, x, y, false);
+    }
     panel(&mut out, x, y, w, h);
     creative_tabs(&mut out, view, x, y, shown, true);
-    mode_tabs(&mut out, view, x, y, true);
+    if modes {
+        mode_tabs(&mut out, view, x, y, true);
+    }
     tab_pager(&mut out, view, x, y, shown, width);
     title_or_search(&mut out, view, x + w / 2, y + 7, width);
     let row_y = y + 36;
@@ -602,21 +693,22 @@ fn full(view: &View, width: &dyn Fn(&str) -> i32) -> Layout {
     }
     inventory(&mut out, view, x + 122, low, width);
     // Drawn last: the column stands over the title's corner and the lower half's frame.
+    let mut areas = vec![(Area::Inventory, [x + 122, low, 168, low_h])];
     if !view.row.is_empty() {
         row(&mut out, view, row_x, row_y, shown_row, first);
+        let visible = (view.row.len() - first).min(shown_row) as i32;
+        areas.push((Area::Row, [row_x, row_y, visible * RECIPE, RECIPE]));
+        areas.push((Area::Grid, [x + 6, low, 112, low_h]));
     }
+    let out_at = if modes { MODE_OUT + 2 } else { 0 };
     Layout {
         calls: out.calls,
         hits: out.hits,
-        bounds: [
-            x - MODE_OUT - 2,
-            y - TAB_RISE,
-            w + MODE_OUT + 2,
-            h + TAB_RISE,
-        ],
+        bounds: [x - out_at, y - TAB_RISE, w + out_at, h + TAB_RISE],
         hint_y: y + h + 4,
         compact: false,
         row_from: first,
+        areas,
     }
 }
 
@@ -629,12 +721,14 @@ fn compact(view: &View, width: &dyn Fn(&str) -> i32) -> Layout {
     let x = (view.width - w) / 2;
     let y = TAB_RISE.max((view.height - (TAB_RISE + h + HINT_ROOM)) / 2 + TAB_RISE);
     let shown = tabs_shown(view.width, view.height);
-    // The mode, as a slot left of the tabs.
-    out.sprite("container/slot", x + 4, y - 22, 18, 18);
-    if let Some(icon) = view.modes.get(view.mode) {
-        out.item(icon, x + 5, y - 21, false);
+    // The mode, as a slot left of the tabs, when there's a choice of them.
+    if view.modes.len() > 1 {
+        out.sprite("container/slot", x + 4, y - 22, 18, 18);
+        if let Some(icon) = view.modes.get(view.mode) {
+            out.item(icon, x + 5, y - 21, false);
+        }
+        out.hit([x + 4, y - 22, 18, 18], Hit::Mode(view.mode));
     }
-    out.hit([x + 4, y - 22, 18, 18], Hit::Mode(view.mode));
     creative_tabs(&mut out, view, x + 32, y, shown, false);
     panel(&mut out, x, y, w, h);
     creative_tabs(&mut out, view, x + 32, y, shown, true);
@@ -670,6 +764,15 @@ fn compact(view: &View, width: &dyn Fn(&str) -> i32) -> Layout {
         }
         row(&mut out, view, row_x, row_y, shown_row, first);
     }
+    // No inventory here: small views have no room for it (the vanilla screen, by L3, has one).
+    let mut areas = Vec::new();
+    if !view.row.is_empty() {
+        let visible = (view.row.len() - first).min(shown_row) as i32;
+        areas.push((Area::Row, [row_x, row_y, visible * RECIPE, RECIPE]));
+        if let Some(r) = out.hits.iter().find(|(_, h)| *h == Hit::Cell(0)).map(|(r, _)| *r) {
+            areas.push((Area::Grid, [r[0], r[1], 54, 54]));
+        }
+    }
     Layout {
         calls: out.calls,
         hits: out.hits,
@@ -677,6 +780,7 @@ fn compact(view: &View, width: &dyn Fn(&str) -> i32) -> Layout {
         hint_y: y + h + 3,
         compact: true,
         row_from: first,
+        areas,
     }
 }
 
@@ -790,6 +894,53 @@ mod tests {
         let v = view(427, 240);
         let l = layout(&v, &width);
         assert!(l.hits.iter().any(|(_, h)| *h == Hit::VariantDown));
+    }
+
+    #[test]
+    fn the_right_stick_goes_to_the_area_that_way_from_where_the_focus_is() {
+        let l = layout(&view(427, 240), &width);
+        let centre = |hit| {
+            let [x, y, w, h] = l.rect_of(hit).unwrap();
+            [x + w / 2, y + h / 2]
+        };
+        // Down from a recipe at the row's left: the grid under it; from its right: the inventory.
+        assert_eq!(l.area_toward(Area::Row, centre(Hit::Row(1)), [0, 1]), Some(Area::Grid));
+        assert_eq!(l.area_toward(Area::Row, centre(Hit::Row(10)), [0, 1]), Some(Area::Inventory));
+        // Across the lower half, and back up to the row.
+        assert_eq!(l.area_toward(Area::Grid, centre(Hit::Cell(4)), [1, 0]), Some(Area::Inventory));
+        assert_eq!(l.area_toward(Area::Inventory, centre(Hit::Inventory(13)), [-1, 0]), Some(Area::Grid));
+        assert_eq!(l.area_toward(Area::Inventory, centre(Hit::Inventory(13)), [0, -1]), Some(Area::Row));
+        // Nothing below the hotbar, nothing left of the grid.
+        assert_eq!(l.area_toward(Area::Inventory, centre(Hit::Inventory(4)), [0, 1]), None);
+        assert_eq!(l.area_toward(Area::Grid, centre(Hit::Cell(3)), [-1, 0]), None);
+    }
+
+    #[test]
+    fn entering_an_area_lands_on_its_nearest_cell() {
+        let l = layout(&view(427, 240), &width);
+        let [x, y, ..] = l.rect_of(Hit::Inventory(0)).unwrap();
+        assert_eq!(l.nearest_cell(Area::Inventory, [x + 2, y + 30]), Some(0));
+        let [x, y, w, _] = l.rect_of(Hit::Row(10)).unwrap();
+        // Straight down from the row's right end: the inventory's top row, not the hotbar.
+        let cell = l.nearest_cell(Area::Inventory, [x + w / 2, y + 60]).unwrap();
+        assert!((9..18).contains(&cell), "{cell}");
+    }
+
+    #[test]
+    fn the_inventory_isnt_an_area_of_the_compact_layout() {
+        let l = layout(&view(320, 180), &width);
+        assert!(l.areas.iter().all(|(a, _)| *a != Area::Inventory));
+        assert!(l.areas.iter().any(|(a, _)| *a == Area::Grid));
+    }
+
+    #[test]
+    fn a_single_mode_shows_no_mode_tabs() {
+        let l = layout(&view(427, 240), &width);
+        assert!(!l.hits.iter().any(|(_, h)| matches!(h, Hit::Mode(_))));
+        let mut two = view(427, 240);
+        two.modes.push(stack("minecraft:firework_rocket"));
+        let l = layout(&two, &width);
+        assert_eq!(l.hits.iter().filter(|(_, h)| matches!(h, Hit::Mode(_))).count(), 2);
     }
 
     #[test]

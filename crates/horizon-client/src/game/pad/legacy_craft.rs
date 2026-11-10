@@ -18,7 +18,7 @@ use horizon_client::{
     },
     items::ItemStack,
     legacy_craft::{self, CraftTab, SEARCH},
-    legacy_craft_screen::{self as screen, Cell, Hit, Layout, RecipeSlot, View},
+    legacy_craft_screen::{self as screen, Area, Cell, Hit, Layout, RecipeSlot, View},
     menu::place::Stacked,
     recipe_book::{Book, Collection},
 };
@@ -32,6 +32,8 @@ use std::{
 const CYCLE: Duration = Duration::from_millis(1500);
 /// How far the stick tilts before it steps, as menus' focus steps.
 const STICK_STEP: f32 = 0.55;
+/// Seconds a direction is held along the row before it runs faster (twice that: faster again).
+const ACCELERATE_AFTER: f32 = 1.0;
 
 /// The screen's state between frames.
 #[derive(Default)]
@@ -58,9 +60,17 @@ pub(in crate::game) struct LegacyCraft {
     /// A held direction and when it next steps.
     repeat: Option<(Button, Instant)>,
     stick: Option<Button>,
-    /// The right stick, tilted left or right: pages along the row.
-    page_stick: Option<Button>,
-    page_repeat: Option<Instant>,
+    /// The right stick's last flick, which moves the focus between areas once per flick.
+    area_stick: Option<Button>,
+    /// Where the pad's focus is, and its cell there (an inventory slot, a grid cell).
+    focus: Area,
+    cursor: usize,
+    /// A held direction's start: past a second of it, the row runs faster.
+    held_since: Option<Instant>,
+    /// A vanilla click the screen passes on to the inventory under it.
+    passthrough: bool,
+    /// The row's selection as last drawn: where a flick out of the row starts.
+    shown_selected: usize,
     opened_at: Option<Instant>,
     /// What the last frame showed: the row's length and the selected recipe's result.
     shown: (usize, Option<String>),
@@ -180,26 +190,18 @@ impl Game<'_> {
                 self.pad.legacy.repeat = None;
             }
         }
-        // The right stick pages: a row's worth at a time, held it repeats.
+        // The right stick flicks the focus to the next area that way, once per flick.
         let look = self.settings.controller.look_deadzone;
-        let page = gamepad::stick_direction_held(
+        let flick = gamepad::stick_direction_held(
             gamepad::radial(self.pad.state.right, look),
             STICK_STEP,
-            self.pad.legacy.page_stick,
-        )
-        .filter(|b| matches!(b, Button::DPadLeft | Button::DPadRight));
-        if page != self.pad.legacy.page_stick {
-            self.pad.legacy.page_stick = page;
-            if let Some(button) = page {
-                self.legacy_page(button == Button::DPadRight);
-                self.pad.legacy.page_repeat = Some(now + self.legacy_delay());
+            self.pad.legacy.area_stick,
+        );
+        if flick != self.pad.legacy.area_stick {
+            self.pad.legacy.area_stick = flick;
+            if let Some(button) = flick {
+                self.legacy_flick(button);
             }
-        } else if let (Some(button), Some(at)) = (page, self.pad.legacy.page_repeat)
-            && now >= at
-        {
-            self.legacy_page(button == Button::DPadRight);
-            let every = Duration::from_secs_f32(self.settings.controller.repeat_interval);
-            self.pad.legacy.page_repeat = Some(now + every);
         }
         if let Some((button, at)) = self.pad.legacy.repeat {
             let held = self.pad.edges.is_held(button) || self.pad.legacy.stick == Some(button);
@@ -208,7 +210,21 @@ impl Game<'_> {
             } else if now >= at {
                 self.legacy_step(button);
                 let every = Duration::from_secs_f32(self.settings.controller.repeat_interval);
-                self.pad.legacy.repeat = Some((button, now + every));
+                // Along a long row, a held direction speeds up: twice as fast past a second, four
+                // times past two (the all-recipes row runs to hundreds).
+                let held = self
+                    .pad
+                    .legacy
+                    .held_since
+                    .map_or(Duration::ZERO, |t| now - t);
+                let along_row = self.pad.legacy.focus == Area::Row
+                    && matches!(button, Button::DPadLeft | Button::DPadRight);
+                let speed = match held.as_secs_f32() {
+                    t if along_row && t >= ACCELERATE_AFTER * 2.0 => 4,
+                    t if along_row && t >= ACCELERATE_AFTER => 2,
+                    _ => 1,
+                };
+                self.pad.legacy.repeat = Some((button, now + every / speed));
             }
         }
         true
@@ -220,34 +236,7 @@ impl Game<'_> {
 
     fn legacy_hold(&mut self, button: Button, now: Instant) {
         self.pad.legacy.repeat = Some((button, now + self.legacy_delay()));
-    }
-
-    /// A row's worth of recipes along: to the end and no further, then round to the other end.
-    fn legacy_page(&mut self, next: bool) {
-        let Some(len) = self.legacy_current().map(|(row, ..)| row.len()) else {
-            return;
-        };
-        if len == 0 {
-            return;
-        }
-        let shown = self.pad.legacy.layout.as_ref().map_or(11, |l| {
-            l.hits
-                .iter()
-                .filter(|(_, h)| matches!(h, Hit::Row(_)))
-                .count()
-                .max(1)
-        });
-        let id = self.legacy_tab_id();
-        let place = self.pad.legacy.places.entry(id).or_default();
-        let last = len - 1;
-        place.0 = match (next, place.0) {
-            (true, at) if at == last => 0,
-            (true, at) => (at + shown).min(last),
-            (false, 0) => last,
-            (false, at) => at.saturating_sub(shown),
-        };
-        place.1 = None;
-        self.direct_craft_stop();
+        self.pad.legacy.held_since = Some(now);
     }
 
     /// The inventory's drawing: this screen when it shows, else the open station's
@@ -288,10 +277,25 @@ impl Game<'_> {
             return false;
         }
         let now = Instant::now();
+        // The inventory's cursor does what vanilla's pointer does over a slot.
+        if self.pad.legacy.focus == Area::Inventory {
+            let slot = self.pad.legacy.cursor;
+            match button {
+                Button::South => return self.legacy_slot_click(slot, false, false),
+                Button::West => return self.legacy_slot_click(slot, true, false),
+                Button::North => return self.legacy_slot_click(slot, false, true),
+                Button::Select => return self.legacy_slot_throw(slot),
+                _ => {}
+            }
+        }
         match button {
             Button::DPadLeft | Button::DPadRight | Button::DPadUp | Button::DPadDown => {
                 self.legacy_step(button);
                 self.legacy_hold(button, now);
+            }
+            // B out of the grid or the inventory goes back to the recipes; from them it closes.
+            Button::East if self.pad.legacy.focus != Area::Row => {
+                self.pad.legacy.focus = Area::Row;
             }
             Button::LeftBumper => self.legacy_turn_tab(false),
             Button::RightBumper => self.legacy_turn_tab(true),
@@ -323,6 +327,87 @@ impl Game<'_> {
     }
 
     fn legacy_step(&mut self, button: Button) {
+        match self.pad.legacy.focus {
+            Area::Row => self.legacy_row_step(button),
+            Area::Grid => {
+                let side = self.craft_size.max(1);
+                self.pad.legacy.cursor = grid_step(self.pad.legacy.cursor, side, button);
+            }
+            Area::Inventory => {
+                self.pad.legacy.cursor = inventory_step(self.pad.legacy.cursor, button);
+            }
+        }
+    }
+
+    /// A right-stick flick: the focus moves to the nearest area that way from where it is, and
+    /// onto the cell of it nearest the cell it left.
+    fn legacy_flick(&mut self, button: Button) {
+        let Some(layout) = self.pad.legacy.layout.as_ref() else {
+            return;
+        };
+        let dir = match button {
+            Button::DPadLeft => [-1, 0],
+            Button::DPadRight => [1, 0],
+            Button::DPadUp => [0, -1],
+            _ => [0, 1],
+        };
+        let state = &self.pad.legacy;
+        let at = match state.focus {
+            Area::Row => layout.rect_of(Hit::Row(state.shown_selected)),
+            Area::Grid => layout.rect_of(Hit::Cell(state.cursor)),
+            Area::Inventory => layout.rect_of(Hit::Inventory(state.cursor)),
+        }
+        .or_else(|| {
+            layout
+                .areas
+                .iter()
+                .find(|(a, _)| *a == state.focus)
+                .map(|(_, r)| *r)
+        })
+        .unwrap_or(layout.bounds);
+        let from = [at[0] + at[2] / 2, at[1] + at[3] / 2];
+        let Some(to) = layout.area_toward(state.focus, from, dir) else {
+            // Nothing that way: a soft bump, the focus stays.
+            self.pad_rumble(gamepad::Rumble::RadialNothing);
+            return;
+        };
+        let cursor = layout.nearest_cell(to, from).unwrap_or(0);
+        self.pad.legacy.focus = to;
+        self.pad.legacy.cursor = cursor;
+        self.pad.legacy.repeat = None;
+        self.direct_craft_stop();
+    }
+
+    /// Vanilla's click on an inventory slot, as the pointer over it would make it: A's take or
+    /// put, X's half or one, Y's quick move. Always the screen's press.
+    fn legacy_slot_click(&mut self, slot: usize, right: bool, shift: bool) -> bool {
+        let Ok((ox, oy)) = self.gui_origin() else {
+            return true;
+        };
+        let (sx, sy) = self.slot_position(slot);
+        self.pad.legacy.passthrough = true;
+        self.click_at(ox + sx + 8.0, oy + sy + 8.0, right, shift);
+        self.pad.legacy.passthrough = false;
+        true
+    }
+
+    /// View on an inventory slot: vanilla's Q over it, one item thrown.
+    fn legacy_slot_throw(&mut self, slot: usize) -> bool {
+        let Ok((ox, oy)) = self.gui_origin() else {
+            return true;
+        };
+        let (sx, sy) = self.slot_position(slot);
+        let saved = self.cursor;
+        self.cursor = (ox + sx + 8.0, oy + sy + 8.0);
+        let key = winit::keyboard::KeyCode::KeyQ;
+        if let Err(e) = self.key_pressed(key, key) {
+            log::warn!("Horizon: crafting screen throw: {e}");
+        }
+        self.cursor = saved;
+        true
+    }
+
+    fn legacy_row_step(&mut self, button: Button) {
         let Some((len, variants, shown)) = self
             .legacy_current()
             .map(|(row, sel, var)| (row.len(), row.get(sel).map_or(0, |c| c.entries.len()), var))
@@ -522,7 +607,7 @@ impl Game<'_> {
 
     /// A click while the screen shows: always the screen's (the inventory under it isn't drawn).
     pub(in crate::game) fn legacy_click(&mut self, right: bool) -> bool {
-        if !self.legacy_showing() {
+        if !self.legacy_showing() || self.pad.legacy.passthrough {
             return false;
         }
         let at = (self.cursor.0 as i32, self.cursor.1 as i32);
@@ -540,6 +625,7 @@ impl Game<'_> {
             Hit::TabNext => self.legacy_turn_tab(true),
             Hit::Mode(i) => self.pad.legacy.mode = i,
             Hit::Row(i) => {
+                self.pad.legacy.focus = Area::Row;
                 let place = self.pad.legacy.places.entry(id).or_default();
                 if place.0 == i && !right {
                     self.legacy_craft(false);
@@ -548,11 +634,20 @@ impl Game<'_> {
                 }
             }
             Hit::Variant(i) => self.pad.legacy.places.entry(id).or_default().1 = Some(i),
-            Hit::VariantUp => self.legacy_step(Button::DPadUp),
-            Hit::VariantDown => self.legacy_step(Button::DPadDown),
+            Hit::VariantUp => self.legacy_row_step(Button::DPadUp),
+            Hit::VariantDown => self.legacy_row_step(Button::DPadDown),
             Hit::Result => self.legacy_craft(right),
             Hit::Search => self.legacy_type_start(),
-            Hit::Inventory(_) => {}
+            Hit::Inventory(i) => {
+                let shift = self.has_shift_down();
+                self.pad.legacy.focus = Area::Inventory;
+                self.pad.legacy.cursor = i;
+                self.legacy_slot_click(i, right, shift);
+            }
+            Hit::Cell(i) => {
+                self.pad.legacy.focus = Area::Grid;
+                self.pad.legacy.cursor = i;
+            }
         }
         true
     }
@@ -560,24 +655,44 @@ impl Game<'_> {
     /// Draws the screen; called in place of the inventory's drawing.
     pub(in crate::game) fn draw_legacy_craft(&mut self, batch: &mut HudBatch) {
         self.render_transparent_background("inventory", batch);
-        let view = self.legacy_view(batch.width as i32, batch.height as i32);
+        let mut view = self.legacy_view(batch.width as i32, batch.height as i32);
         self.pad.legacy.shown = (
             view.row.len(),
             view.result.as_ref().map(|r| r.stack.item.to_string()),
         );
+        self.pad.legacy.shown_selected = view.selected;
         let atlas_width = |s: &str| self.gui.atlas.font.width(s).round() as i32;
+        // The pad's focus shows only while the pad plays; the mouse gets the hover instead.
+        let pad = self.pad.in_use;
+        if pad {
+            view.focus = self.pad.legacy.focus;
+            view.cursor = self.pad.legacy.cursor;
+        }
         let mut layout = screen::layout(&view, &atlas_width);
-        if !self.pad.in_use {
-            let at = (self.cursor.0 as i32, self.cursor.1 as i32);
-            if let Some(hit) = hit_at(&layout, at)
-                && matches!(hit, Hit::Row(_))
-            {
-                let hovered = View {
-                    hover: Some(hit),
-                    ..view
-                };
-                layout = screen::layout(&hovered, &atlas_width);
+        // An area the layout no longer has (a small view has no inventory; an empty row no grid):
+        // the focus goes to one it has.
+        if !layout
+            .areas
+            .iter()
+            .any(|(a, _)| *a == self.pad.legacy.focus)
+        {
+            let to = layout.areas.first().map_or(Area::Row, |(a, _)| *a);
+            self.pad.legacy.focus = to;
+            self.pad.legacy.cursor = 0;
+            if pad {
+                view.focus = to;
+                view.cursor = 0;
+                layout = screen::layout(&view, &atlas_width);
             }
+        }
+        let at = (self.cursor.0 as i32, self.cursor.1 as i32);
+        let hover = (!pad).then(|| hit_at(&layout, at)).flatten();
+        if let Some(hit @ Hit::Row(_)) = hover {
+            let hovered = View {
+                hover: Some(hit),
+                ..view.clone()
+            };
+            layout = screen::layout(&hovered, &atlas_width);
         }
         self.paint_book(batch, &layout.calls);
         // The recipes in sight are seen: they lose their new marks (vanilla's `recipeShown` for
@@ -586,7 +701,62 @@ impl Game<'_> {
         for display in self.legacy_in_sight(&layout, &stock) {
             self.recipe_seen(display);
         }
-        if self.pad.in_use {
+        // What's under the focus or the pointer gets its tooltip, as over a vanilla slot; none
+        // while an item's carried, as vanilla shows none then.
+        let focused = if pad {
+            match view.focus {
+                Area::Inventory => Some(Hit::Inventory(view.cursor)),
+                Area::Grid => Some(Hit::Cell(view.cursor)),
+                Area::Row => None,
+            }
+        } else {
+            hover
+        };
+        let stack = focused.and_then(|hit| match hit {
+            Hit::Inventory(i) => view.inventory.get(i).cloned().flatten(),
+            Hit::Cell(i) => view.cells.get(i).cloned().flatten().map(|c| c.stack),
+            Hit::Row(i) => view.row.get(i).map(|r| r.stack.clone()),
+            Hit::Result => view.result.as_ref().map(|r| r.stack.clone()),
+            _ => None,
+        });
+        let place = focused.and_then(|hit| layout.rect_of(hit));
+        if self.carried.is_none()
+            && let (Some(stack), Some([x, y, w, _])) = (stack, place)
+        {
+            let (tx, ty) = if pad {
+                ((x + w) as f32, y as f32 + 8.0)
+            } else {
+                self.cursor
+            };
+            self.draw_stack_tooltip(batch, &stack, tx, ty);
+        }
+        // Over the focused cell, the controller's cursor, as over a vanilla inventory's slot.
+        if pad && let Some([x, y, w, h]) = place {
+            use horizon_client::pad_cursor;
+            let (left, top) = pad_cursor::origin(((x + w / 2) as f32, (y + h / 2) as f32));
+            let size = pad_cursor::DRAWN;
+            batch.sprite_scaled(
+                &self.gui.atlas,
+                pad_cursor::SPRITE,
+                left,
+                top,
+                size,
+                size,
+                u32::MAX,
+            );
+        }
+        // The carried stack: at the pointer, or floating over the focused slot or recipe.
+        if let Some(carried) = self.carried.clone() {
+            if pad {
+                let [x, y, ..] = place
+                    .or_else(|| layout.rect_of(Hit::Row(view.selected)))
+                    .unwrap_or(layout.bounds);
+                self.draw_item(batch, &carried, x as f32 + 5.0, y as f32 - 3.0);
+            } else {
+                self.draw_carried(batch);
+            }
+        }
+        if pad {
             self.legacy_hints(batch, layout.hint_y as f32);
         }
         self.pad.legacy.layout = Some(layout);
@@ -604,6 +774,8 @@ impl Game<'_> {
             "row": state.shown.0,
             "selected": state.shown.1,
             "query": state.query,
+            "focus": format!("{:?}", state.focus).to_lowercase(),
+            "cursor": state.cursor,
             "typing": state.typing,
             "only_craftable": state.only_craftable,
             "compact": state.layout.as_ref().is_some_and(|l| l.compact),
@@ -634,7 +806,47 @@ impl Game<'_> {
     /// pad's family and a Nintendo pad's letters all reach it.
     fn legacy_hints(&mut self, batch: &mut HudBatch, y: f32) {
         let tr = |key: &str| horizon_client::lang::get(key);
-        let mut rows = vec![
+        let glyph = |job| self.menu_glyph(job);
+        let back = HintRow::new([glyph(MenuJob::Back)], tr("horizon.legacy_craft.recipes"));
+        let rows = match self.pad.legacy.focus {
+            // Vanilla's slot jobs, as the inventory's guide names them.
+            Area::Inventory => {
+                let carrying = self.carried.is_some();
+                let pick = if carrying { "put" } else { "take" };
+                let half = if carrying { "put_one" } else { "take_half" };
+                vec![
+                    HintRow::new(
+                        [glyph(MenuJob::Confirm)],
+                        tr(&format!("horizon.controller.guide.{pick}")),
+                    ),
+                    HintRow::new(
+                        [glyph(MenuJob::Alternate)],
+                        tr(&format!("horizon.controller.guide.{half}")),
+                    ),
+                    HintRow::new(
+                        [glyph(MenuJob::Extra)],
+                        tr("horizon.controller.guide.quick_move"),
+                    ),
+                    HintRow::new([glyph(MenuJob::View)], tr("horizon.controller.guide.drop")),
+                    back,
+                ]
+            }
+            Area::Grid => vec![
+                HintRow::new([glyph(MenuJob::Confirm)], tr("horizon.legacy_craft.craft")),
+                HintRow::new(
+                    [glyph(MenuJob::Extra)],
+                    tr("horizon.legacy_craft.craft_all"),
+                ),
+                back,
+            ],
+            Area::Row => self.legacy_row_hints(),
+        };
+        self.legacy_draw_hints(batch, y, rows)
+    }
+
+    fn legacy_row_hints(&self) -> Vec<HintRow> {
+        let tr = |key: &str| horizon_client::lang::get(key);
+        vec![
             HintRow::new(
                 [self.menu_glyph(MenuJob::Confirm)],
                 tr("horizon.legacy_craft.craft"),
@@ -667,7 +879,11 @@ impl Game<'_> {
                 tr("horizon.legacy_craft.classic"),
             ),
             HintRow::new([self.menu_glyph(MenuJob::Back)], tr("gui.back")),
-        ];
+        ]
+    }
+
+    fn legacy_draw_hints(&mut self, batch: &mut HudBatch, y: f32, mut rows: Vec<HintRow>) {
+        let row_hints = self.pad.legacy.focus == Area::Row;
         let atlas = &self.gui.atlas;
         let look = Look {
             side: Side::Leading,
@@ -684,7 +900,11 @@ impl Game<'_> {
                 + BETWEEN * rows.len().saturating_sub(1) as f32
         };
         // What goes first when it doesn't fit: the filter, Classic, Craft All, then Search.
-        for drop in [2, 4, 1, 2] {
+        for drop in if row_hints {
+            [2, 4, 1, 2]
+        } else {
+            [3, 2, 1, 1]
+        } {
             if total(&rows) <= room || rows.len() <= drop {
                 break;
             }
@@ -813,7 +1033,11 @@ impl Game<'_> {
         view.result = Some(result);
         let (cells, missing) = grid_cells(book, entry_index, grid, &stock, cycle);
         view.cells = cells;
-        view.note = Some(if craftable {
+        let carrying = self.carried.is_some();
+        view.note = Some(if carrying {
+            // A craft can't start with something in hand (`direct_craft_start`): say so here.
+            (tr("horizon.legacy_craft.holding"), screen::MISSING)
+        } else if craftable {
             let ingredients = entry.requirements();
             let can = stock.clone().try_pick_all(&ingredients, i32::MAX, None);
             (
@@ -899,4 +1123,58 @@ fn grid_cells(
         }
     }
     (cells, missing)
+}
+
+/// A grid cell one step that way, stopping at the edges.
+fn grid_step(cell: usize, side: usize, button: Button) -> usize {
+    let (row, col) = (cell / side, cell % side);
+    let (row, col) = match button {
+        Button::DPadLeft => (row, col.saturating_sub(1)),
+        Button::DPadRight => (row, (col + 1).min(side - 1)),
+        Button::DPadUp => (row.saturating_sub(1), col),
+        _ => ((row + 1).min(side - 1), col),
+    };
+    row * side + col
+}
+
+/// An inventory slot one step that way, as the slots are laid out: three rows of the inventory
+/// (slots 9-35) over the hotbar (0-8). Left and right wrap along a row; up and down stop.
+fn inventory_step(slot: usize, button: Button) -> usize {
+    // Shown row (0-3, the hotbar last) and column.
+    let (row, col) = if slot < 9 {
+        (3, slot)
+    } else {
+        ((slot - 9) / 9, (slot - 9) % 9)
+    };
+    let (row, col) = match button {
+        Button::DPadLeft => (row, (col + 8) % 9),
+        Button::DPadRight => (row, (col + 1) % 9),
+        Button::DPadUp => (row.saturating_sub(1), col),
+        _ => ((row + 1).min(3), col),
+    };
+    if row == 3 { col } else { 9 + row * 9 + col }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_inventory_cursor_walks_the_slots_as_they_are_drawn() {
+        // The hotbar is the bottom row: up from its first slot is the inventory's last row.
+        assert_eq!(inventory_step(0, Button::DPadUp), 27);
+        assert_eq!(inventory_step(27, Button::DPadDown), 0);
+        assert_eq!(inventory_step(9, Button::DPadUp), 9);
+        assert_eq!(inventory_step(4, Button::DPadDown), 4);
+        assert_eq!(inventory_step(8, Button::DPadRight), 0);
+        assert_eq!(inventory_step(9, Button::DPadLeft), 17);
+    }
+
+    #[test]
+    fn the_grid_cursor_stops_at_the_edges() {
+        assert_eq!(grid_step(0, 3, Button::DPadLeft), 0);
+        assert_eq!(grid_step(4, 3, Button::DPadRight), 5);
+        assert_eq!(grid_step(5, 3, Button::DPadRight), 5);
+        assert_eq!(grid_step(1, 2, Button::DPadDown), 3);
+    }
 }

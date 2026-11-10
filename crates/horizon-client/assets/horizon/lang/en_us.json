@@ -87,6 +87,8 @@
   "horizon.legacy_craft.missing": "Missing: %s",
   "horizon.legacy_craft.missing_some": "Missing items",
   "horizon.legacy_craft.switch": "Console Crafting",
+  "horizon.legacy_craft.recipes": "Recipes",
+  "horizon.legacy_craft.holding": "Hands full",
   "horizon.legacy_craft.guide": "Crafting",
   "horizon.legacy_craft.classic": "Classic",
   "horizon.legacy_craft.page": "Page",
