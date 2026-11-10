@@ -160,8 +160,10 @@ impl Game<'_> {
     }
     /// Whether typed keys go to the search box.
     pub(super) fn recipe_search_focused(&self) -> bool {
-        self.active_book().is_some_and(|b| self.book_open(b))
-            && self.recipe_ui.search.as_ref().is_some_and(|s| s.focused)
+        // The controller crafting screen's search box takes the same keys.
+        self.legacy_typing()
+            || (self.active_book().is_some_and(|b| self.book_open(b))
+                && self.recipe_ui.search.as_ref().is_some_and(|s| s.focused))
     }
     /// `keyChat` focuses the search box.
     pub(super) fn recipe_focus_search(&mut self) {
@@ -174,6 +176,10 @@ impl Game<'_> {
     }
     /// Text typed (or one backspace) into the search box.
     pub(super) fn recipe_text(&mut self, text: Option<&str>, backspace: bool) {
+        if self.legacy_typing() {
+            self.legacy_type(text, backspace, false);
+            return;
+        }
         let Some(search) = self.recipe_ui.search.as_mut() else {
             return;
         };
@@ -191,7 +197,22 @@ impl Game<'_> {
     }
     /// A key press while the search box has focus.
     pub(super) fn recipe_key(&mut self, event: &winit::event::KeyEvent) {
-        use winit::keyboard::PhysicalKey;
+        use winit::keyboard::{KeyCode, PhysicalKey};
+        if self.legacy_typing() {
+            let code = match event.physical_key {
+                PhysicalKey::Code(code) => Some(code),
+                _ => None,
+            };
+            let text = event.text.as_deref().filter(|_| self.types_text());
+            match code {
+                Some(KeyCode::Backspace) => self.legacy_type(None, true, false),
+                Some(KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::Escape) => {
+                    self.legacy_type(None, false, true)
+                }
+                _ => self.legacy_type(text.map(String::from).as_deref(), false, false),
+            }
+            return;
+        }
         if let Some(shortcut) = self.edit_shortcut(event) {
             self.recipe_shortcut(shortcut);
             return;
@@ -633,6 +654,18 @@ impl Game<'_> {
             _ => (ox + 20.0, mid - 49.0),
         }
     }
+    /// The switch to the controller crafting screen, beside the book button where the grid leaves
+    /// room: only with Console Crafting on, over a crafting grid.
+    fn legacy_switch_rect(&self, book: BookType, bx: f32, by: f32) -> Option<[f32; 4]> {
+        if book != BookType::Crafting || !self.settings.controller.legacy_crafting {
+            return None;
+        }
+        Some(if self.craft_size == 2 {
+            [bx + 22.0, by, 20.0, 18.0]
+        } else {
+            [bx, by + 20.0, 20.0, 18.0]
+        })
+    }
     fn tab_pos(&self, xo: f32, yo: f32, index: usize) -> (f32, f32) {
         (xo - 30.0, yo + 3.0 + 27.0 * index as f32)
     }
@@ -673,6 +706,15 @@ impl Game<'_> {
             self.recipe_ui.ghost.clear();
         }
         let (bx, by) = self.book_button_pos(book_type, ox, &batch);
+        if let Some([x, y, w, h]) = self.legacy_switch_rect(book_type, bx, by)
+            && inside(cursor, x, y, w, h)
+            && !right
+        {
+            self.legacy_start();
+            self.audio
+                .play("minecraft:ui.button.click", None, 0.25, 1.0);
+            return true;
+        }
         if inside(cursor, bx, by, 20.0, 18.0) {
             let open = !self.book_open(book_type);
             self.level.recipe_book.open[book_type.index()] = open;
@@ -948,6 +990,35 @@ impl Game<'_> {
             let [x, y, w, h] = t.rect;
             inside(self.cursor, x, y, w, h)
         })
+    }
+    /// Brings the crafting book and the recipes the player knows up to date: a number that changes
+    /// whenever either does (`pad/legacy_craft.rs`).
+    pub(super) fn crafting_book_refresh(&mut self) -> u64 {
+        self.ensure_book();
+        self.sync_client_book();
+        let ui = &self.recipe_ui;
+        let entries = ui.book.as_ref().map_or(0, |b| b.entries.len()) as u64;
+        ui.client_version ^ (entries << 40)
+    }
+    /// The crafting book and the recipes the player knows, as last brought up to date.
+    pub(super) fn crafting_book(&self) -> Option<(&Book, &ClientBook)> {
+        let ui = &self.recipe_ui;
+        Some((ui.book.as_ref()?, &ui.client))
+    }
+    /// `LocalPlayer.removeRecipeHighlight`: a recipe the player has now seen loses its
+    /// highlight, and the server hears of it (`ServerboundRecipeBookSeenRecipePacket`).
+    pub(super) fn recipe_seen(&mut self, display: i32) {
+        if self.recipe_ui.client.highlight.remove(&display) && self.remote.is_some() {
+            self.send(
+                horizon_protocol::packets::play::Serverbound::RecipeBookSeenRecipe(
+                    horizon_protocol::packets::recipes::RecipeBookSeenRecipe { recipe: display },
+                ),
+            );
+        }
+    }
+    /// What the crafting book counts as there to craft with: the inventory and the grid.
+    pub(super) fn crafting_stock(&mut self) -> Stacked {
+        self.book_available(BookType::Crafting)
     }
     /// Whether the crafting book's entry can be crafted from what the menu holds now.
     pub(super) fn recipe_craftable(&mut self, entry_index: usize) -> bool {
@@ -1474,6 +1545,41 @@ impl Game<'_> {
             bx,
             by,
         );
+        if let Some([x, y, w, h]) = self.legacy_switch_rect(book_type, bx, by) {
+            // The switch to the controller crafting screen: the book button's own frame (its edges,
+            // and one blank texel of its face stretched over the book), with a table on it.
+            let name = sprite(if inside(cursor, x, y, w, h) {
+                "button_highlighted"
+            } else {
+                "button"
+            });
+            if let Some(r) = self.gui.atlas.sprites.get(&name).copied() {
+                const EDGE: f32 = 2.0;
+                let (sw, sh) = (r.w as f32, r.h as f32);
+                let parts = [
+                    ([0.0, 0.0, sw, EDGE], [x, y, w, EDGE]),
+                    ([0.0, sh - EDGE, sw, EDGE], [x, y + h - EDGE, w, EDGE]),
+                    (
+                        [0.0, EDGE, EDGE, sh - 2.0 * EDGE],
+                        [x, y + EDGE, EDGE, h - 2.0 * EDGE],
+                    ),
+                    (
+                        [sw - EDGE, EDGE, EDGE, sh - 2.0 * EDGE],
+                        [x + w - EDGE, y + EDGE, EDGE, h - 2.0 * EDGE],
+                    ),
+                    (
+                        [EDGE, EDGE, 1.0, 1.0],
+                        [x + EDGE, y + EDGE, w - 2.0 * EDGE, h - 2.0 * EDGE],
+                    ),
+                ];
+                for (from, [dx, dy, dw, dh]) in parts {
+                    batch.rect_uv(dx, dy, dw, dh, sub_rect(r, from), u32::MAX);
+                }
+            }
+            let table = ItemStack::new("minecraft:crafting_table", 1);
+            self.draw_item_model(batch, &table, x + 2.0, y + 1.0);
+            horizon_client::widgets::target([x, y, w, h]);
+        }
         self.draw_ghost(batch, book_type);
         if self.book_open(book_type) {
             self.refresh_book_view(book_type);
@@ -1740,7 +1846,7 @@ impl Game<'_> {
     }
     /// Paints recipe book calls; returns the first tooltip set (vanilla keeps
     /// the first one a frame asks for).
-    fn paint_book(
+    pub(super) fn paint_book(
         &mut self,
         batch: &mut HudBatch,
         calls: &[Drawn],
@@ -1751,9 +1857,20 @@ impl Game<'_> {
             let atlas = &self.gui.atlas;
             match &d.call {
                 Call::Blit {
-                    x, y, w, h, u, v, ..
+                    texture,
+                    x,
+                    y,
+                    w,
+                    h,
+                    u,
+                    v,
+                    ..
                 } => {
-                    if let Some(r) = atlas.sprites.get("gui/recipe_book").copied() {
+                    // `textures/gui/recipe_book.png` is the atlas's `gui/recipe_book`.
+                    let name = texture
+                        .trim_start_matches("textures/")
+                        .trim_end_matches(".png");
+                    if let Some(r) = atlas.sprites.get(name).copied() {
                         let (w, h) = (*w as f32, *h as f32);
                         batch.rect_uv(
                             *x as f32,

@@ -860,6 +860,8 @@ pub enum Opt {
     PadInvertX,
     PadInvertY,
     PadCraftOnServers,
+    PadLegacyCrafting,
+    PadLegacyTiers,
     PadToggleSneak,
     PadMoveDeadzone,
     PadLookDeadzone,

@@ -19,6 +19,8 @@ use crate::{
 };
 
 mod shell_pages;
+mod wrap;
+use wrap::wrap;
 
 fn tr(key: &str) -> Text {
     Text::translate(key, &[])
@@ -42,30 +44,6 @@ fn percent(caption: &str, value: f32) -> Text {
             Text::literal(((f64::from(value) * 100.0) as i32).to_string()),
         ],
     )
-}
-/// `text` cut into lines of at most `width` characters, at spaces where it has them.
-fn wrap(text: &str, width: usize) -> Vec<String> {
-    let mut lines = Vec::new();
-    let mut line = String::new();
-    for word in text.split_whitespace() {
-        let len = line.chars().count();
-        if len > 0 && len + 1 + word.chars().count() > width {
-            lines.push(std::mem::take(&mut line));
-        }
-        if !line.is_empty() {
-            line.push(' ');
-        }
-        line.push_str(word);
-        while line.chars().count() > width {
-            let rest: String = line.chars().skip(width).collect();
-            line = line.chars().take(width).collect();
-            lines.push(std::mem::replace(&mut line, rest));
-        }
-    }
-    if !line.is_empty() {
-        lines.push(line);
-    }
-    lines
 }
 fn on_off(v: bool) -> Text {
     tr(if v { "options.on" } else { "options.off" })
@@ -316,6 +294,8 @@ impl Opt {
             Opt::PadInvertX => "horizon.options.invert_x",
             Opt::PadInvertY => "horizon.options.invert_y",
             Opt::PadCraftOnServers => "horizon.options.craft_on_servers",
+            Opt::PadLegacyCrafting => "horizon.options.legacy_crafting",
+            Opt::PadLegacyTiers => "horizon.options.legacy_tiers",
             Opt::PadToggleSneak => "horizon.options.sneak_button",
             Opt::PadMoveDeadzone => "horizon.options.move_deadzone",
             Opt::PadLookDeadzone => "horizon.options.look_deadzone",
@@ -858,6 +838,8 @@ impl Opt {
             Opt::PadInvertX => on_off(s.controller.invert_x),
             Opt::PadInvertY => on_off(s.controller.invert_y),
             Opt::PadCraftOnServers => on_off(s.controller.craft_on_servers),
+            Opt::PadLegacyCrafting => on_off(s.controller.legacy_crafting),
+            Opt::PadLegacyTiers => on_off(s.controller.legacy_tiers),
             Opt::PadToggleSneak => tr(if s.controller.toggle_sneak {
                 "options.key.toggle"
             } else {
@@ -1171,6 +1153,11 @@ impl Opt {
             Opt::PadCraftOnServers => {
                 s.controller.craft_on_servers = !s.controller.craft_on_servers
             }
+            Opt::PadLegacyCrafting => {
+                let on = !s.controller.legacy_crafting;
+                s.controller.set_legacy_crafting(on)
+            }
+            Opt::PadLegacyTiers => s.controller.legacy_tiers = !s.controller.legacy_tiers,
             Opt::PadToggleSneak => s.controller.toggle_sneak = !s.controller.toggle_sneak,
             Opt::PadNintendoButtons => {
                 s.controller.nintendo_letters = !s.controller.nintendo_letters

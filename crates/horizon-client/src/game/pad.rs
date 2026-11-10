@@ -88,6 +88,7 @@ pub(super) struct Pads {
     connections: Vec<Connection>,
     /// The cursor the pad drives in menus.
     pub(super) menu: super::pad_menu::MenuCursor,
+    pub(super) legacy: legacy_craft::LegacyCraft,
     /// The radial menu while its opener is held, and the page it stays on.
     pub(super) radial: radial::RadialMenu,
     /// What the radial menu ran, for `pad status`.
@@ -142,6 +143,7 @@ mod capture;
 mod guide;
 #[cfg(feature = "controllers")]
 mod hardware;
+mod legacy_craft;
 #[cfg(test)]
 mod parity_tests;
 mod radial_play;
@@ -651,6 +653,12 @@ impl Game<'_> {
                 } else {
                     self.pad_radial_release()
                 }
+            }
+            Route::Crafting => {
+                if down {
+                    self.legacy_open_crafting()?;
+                }
+                Ok(())
             }
             Route::HotbarStep { next } => {
                 if down {

@@ -6280,7 +6280,7 @@ impl Game<'_> {
     }
     fn draw_inventory(&mut self, batch: &mut HudBatch) {
         screen_info::begin_container("container");
-        if self.draw_station(batch) {
+        if self.draw_legacy_or_station(batch) {
             return;
         }
         let (ox, oy) = self.inventory_origin(batch);
@@ -10604,7 +10604,7 @@ impl Game<'_> {
                         && !bundle
                         && !self.tweak_scroll(d, self.inventory_target().0)
                     {
-                        self.station_scroll(d);
+                        self.legacy_or_station_scroll(d);
                     }
                     if self.screen == Screen::Stats && d != 0.0 {
                         self.stats_scroll(d);

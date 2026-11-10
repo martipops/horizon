@@ -105,6 +105,14 @@ and prepared resources in .local/horizon-client/26.3. Exit status 0 when every c
   walking thumb easing on its frozen stick never takes over.
 - radial_stick_back: Selects With stepped from Left (Y the opener) back to Right gives D-pad Right again; Right and Left
   step the row as every shell choice does.
+- legacy_craft: Console Crafting on: X opens the controller crafting screen on the known recipe, A crafts one, Y the
+  rest, B closes it, nothing left in the grid.
+- legacy_classic_and_paging: it opens on every recipe; the right stick pages, the wheel steps, L3 shows the vanilla
+  screen.
+- legacy_creative: X opens it in creative too, and A crafts.
+- legacy_table: a crafting table the pad player opens shows as the crafting screen, and A makes a 3x3 recipe.
+- legacy_tabs_search: search first, no empty tabs; RB and LB turn the tabs; View opens the search's keyboard and
+  typing narrows the row; X shows only what can be made.
 - radial_status_rows: survival with armour and absorption, shot at 427x240 and 320x180: the dial clear of the rows.
 """
 import argparse
@@ -4363,6 +4371,194 @@ def radial_actions(game, check):
     check(any('only available in multiplayer' in line.lower() for line in said), f'nothing said: {said}')
 
 
+
+# The controller crafting screen (Console Crafting): on, with X opening it as turning it on does.
+def legacy_seed(home):
+    (home / 'horizon-controller.txt').write_text(
+        'legacyCrafting:true\nbind_pad.crafting:west\nbind_key.swapOffhand:none\n')
+
+
+def legacy_case(run):
+    def case(args, name):
+        game = Game(args, name, world=True, seed=legacy_seed)
+        check = Check()
+        try:
+            run(game, check)
+        finally:
+            game.quit()
+        return check.failures
+    case.__name__ = run.__name__
+    return case
+
+
+def legacy(game):
+    return game.menu().get('legacy')
+
+
+def legacy_find(game, item):
+    """RB through the tabs and Right along each row until the recipe making this item is selected. Having an
+    item teaches its recipes' neighbours (vanilla's recipe advancements), so rows hold more than was given."""
+    for _ in range(len(legacy(game)['tabs'])):
+        for _ in range(legacy(game)['row']):
+            if legacy(game)['selected'] == item:
+                return True
+            game.pad('right')
+        if legacy(game)['selected'] == item:
+            return True
+        game.pad('rb')
+    return False
+
+
+def legacy_known(game, *recipes, gives=()):
+    """Survival, knowing only these recipes, holding these stacks."""
+    command = lambda line: game.ctl('command', line)
+    command('gamerule send_command_feedback false')
+    command('gamemode survival @s')
+    command('recipe take @s *')
+    for recipe in recipes:
+        command(f'recipe give @s {recipe}')
+    command('clear @s')
+    for give in gives:
+        command(f'give @s {give}')
+    time.sleep(1)
+
+
+@legacy_case
+def legacy_craft(game, check):
+    legacy_known(game, 'minecraft:oak_planks', gives=['oak_log 5'])
+    game.pad('west')
+    shown = legacy(game)
+    check(shown is not None, f'X opened {game.ctl("screen").get("screen")}, not the crafting screen')
+    if shown is None:
+        return
+    check(legacy_find(game, 'minecraft:oak_planks'), f'no planks in {legacy(game)}')
+    game.pad('south')
+    craft_ended(game)
+    have = counts(game)
+    check(have.get('minecraft:oak_planks') == 4 and have.get('minecraft:oak_log') == 4, f'A: {have}')
+    check(not grid(game), f'A left {grid(game)} in the grid')
+    game.pad('north')
+    craft_ended(game)
+    have = counts(game)
+    check(have.get('minecraft:oak_planks') == 20 and not have.get('minecraft:oak_log'), f'Y: {have}')
+    check(not grid(game), f'Y left {grid(game)} in the grid')
+    game.pad('east')
+    check(game.ctl('screen').get('screen') == 'playing', 'B did not close the crafting screen')
+
+
+@legacy_case
+def legacy_table(game, check):
+    legacy_known(game, 'minecraft:chest', gives=['oak_planks 8'])
+    x, y, z = (int(v // 1) for v in game.ctl('state')['player']['position'])
+    game.ctl('command', f'fill {x - 1} {y} {z} {x + 1} {y + 2} {z + 3} minecraft:air')
+    game.ctl('command', f'setblock {x} {y} {z + 2} minecraft:crafting_table')
+    # The pad in use, as a player reaching the table with it.
+    game.ctl('pad', 'stick', 'left', 0, 0.5)
+    time.sleep(0.2)
+    game.ctl('pad', 'stick', 'left', 0, 0)
+    time.sleep(SETTLE)
+    game.ctl('interact', x, y, z + 2)
+    time.sleep(1.5)
+    shown = legacy(game)
+    check(shown is not None, 'a crafting table opened by a pad player is not the crafting screen')
+    if shown is None:
+        return
+    check(legacy_find(game, 'minecraft:chest'), f'no chest in {legacy(game)}')
+    game.pad('south')
+    craft_ended(game)
+    have = counts(game)
+    check(have.get('minecraft:chest') == 1 and not have.get('minecraft:oak_planks'), f'3x3: {have}')
+
+
+@legacy_case
+def legacy_tabs_search(game, check):
+    legacy_known(game, 'minecraft:oak_planks', 'minecraft:stick', 'minecraft:torch', 'minecraft:bread',
+                 gives=['oak_log 1'])
+    game.pad('west')
+    shown = legacy(game)
+    if shown is None:
+        check(False, 'X did not open the crafting screen')
+        return
+    tabs = shown['tabs']
+    check(tabs[0] == 'horizon:search', f'tabs {tabs}')
+    check('minecraft:spawn_eggs' not in tabs, f'a tab without recipes: {tabs}')
+    # It opens on every recipe: the search tab with nothing typed.
+    check(shown['tab'] == 'horizon:search', f"opened on {shown['tab']}")
+    game.pad('rb')
+    check(legacy(game)['tab'] == tabs[1], f"RB: {legacy(game)['tab']}")
+    game.pad('lb')
+    check(legacy(game)['tab'] == 'horizon:search', f"RB then LB: {legacy(game)['tab']}")
+    everything = legacy(game)['row']
+    game.pad('select')
+    check(legacy(game)['typing'] and game.menu()['keyboard'], 'View opened no keyboard on the search')
+    game.ctl('type', 'stic')
+    time.sleep(SETTLE)
+    found = legacy(game)
+    check(found['query'] == 'stic' and found['row'] < everything, f'searching: {found}')
+    check(found['selected'] == 'minecraft:stick', f'searching: {found}')
+    # The filter: off the search tab, X shows only what can be made now (planks, from the log).
+    game.pad('east')
+    game.pad('rb')
+    game.pad('west')
+    filtered = legacy(game)
+    check(filtered['only_craftable'], f'X did not filter: {filtered}')
+
+
+@legacy_case
+def legacy_classic_and_paging(game, check):
+    legacy_known(game, gives=['oak_log 1'])
+    game.ctl('command', 'recipe give @s *')
+    time.sleep(1)
+    game.pad('west')
+    shown = legacy(game)
+    if shown is None:
+        check(False, 'X did not open the crafting screen')
+        return
+    check(shown['tab'] == 'horizon:search', f"it opened on {shown['tab']}, not every recipe")
+    before = shown['row']
+    # The right stick pages along the row: about a row's worth a tilt.
+    at = lambda: game.menu()['legacy']
+    first = at()['selected']
+    game.ctl('pad', 'stick', 'right', 1, 0)
+    time.sleep(0.15)
+    game.ctl('pad', 'stick', 'right', 0, 0)
+    time.sleep(SETTLE)
+    check(at()['selected'] != first and before > 20, f'the right stick did not page: {at()}')
+    # The wheel goes one recipe a notch.
+    paged = at()['selected']
+    width, height = game.ctl('ui')['gui_size']
+    game.ctl('scroll-at', width // 2, height // 2, -1)
+    time.sleep(SETTLE)
+    check(at()['selected'] != paged, 'the wheel did not move along the row')
+    # The left stick: the vanilla screen of the same menu, and back.
+    game.pad('ls')
+    check(legacy(game) is None and game.ctl('screen').get('screen') == 'inventory',
+          f"L3: {legacy(game)}, {game.ctl('screen').get('screen')}")
+    have = counts(game)
+    game.pad('ls')
+    check(legacy(game) is not None, 'L3 in the vanilla inventory did not come back to the crafting screen')
+    check(counts(game) == have, f'L3 threw something: {have} -> {counts(game)}')
+
+
+@legacy_case
+def legacy_creative(game, check):
+    command = lambda line: game.ctl('command', line)
+    command('gamerule send_command_feedback false')
+    command('recipe take @s *')
+    command('recipe give @s minecraft:oak_planks')
+    command('clear @s')
+    command('give @s oak_log 2')
+    time.sleep(1)
+    game.pad('west')
+    check(legacy(game) is not None, 'X in creative did not open the crafting screen')
+    if legacy(game) is None:
+        return
+    check(legacy_find(game, 'minecraft:oak_planks'), f'no planks: {legacy(game)}')
+    game.pad('south')
+    craft_ended(game)
+    have = counts(game)
+    check(have.get('minecraft:oak_planks') == 4 and have.get('minecraft:oak_log') == 1, f'creative A: {have}')
+
 CASES = {'idle_a': idle_a, 'idle_b': idle_b, 'idle_x': idle_x, 'release': release, 'move_cancels': move_cancels,
          'pad_release': pad_release, 'pause_y': pause_y, 'settings': settings, 'create_world': create_world,
          'world_options': world_options, 'key_row_b': key_row_b, 'lock_question': lock_question,
@@ -4398,6 +4594,8 @@ CASES = {'idle_a': idle_a, 'idle_b': idle_b, 'idle_x': idle_x, 'release': releas
          'every_screen_has_targets': every_screen_has_targets,
          'studio_rows': studio_rows, 'pause_icon': pause_icon,
          'erase_checkbox': erase_checkbox,
+         'legacy_craft': legacy_craft, 'legacy_table': legacy_table, 'legacy_tabs_search': legacy_tabs_search,
+         'legacy_classic_and_paging': legacy_classic_and_paging, 'legacy_creative': legacy_creative,
          'extras_shell': extras_shell,
          'extras_shell_edges': extras_shell_edges,
          'graphics_shell': graphics_shell,

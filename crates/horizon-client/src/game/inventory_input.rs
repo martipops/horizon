@@ -113,6 +113,11 @@ impl Game<'_> {
         use horizon_client::container_screen::Target;
         use horizon_client::menu::Input;
         self.direct_craft_stop();
+        // The controller crafting screen takes every click: the inventory under it isn't drawn.
+        if self.legacy_click(right) {
+            self.inv_clicks.skip_release();
+            return;
+        }
         if self.mod_browser_press(right) {
             return;
         }

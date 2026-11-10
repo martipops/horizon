@@ -367,6 +367,9 @@ impl Game<'_> {
 
     /// The open screen is one the crosshair drives, whatever is over it.
     fn pad_pointer_screen(&self) -> bool {
+        if self.legacy_showing() {
+            return false;
+        }
         matches!(
             self.screen,
             Screen::HudEditor
@@ -851,6 +854,9 @@ impl Game<'_> {
             }
             return Ok(());
         }
+        if !prompt && self.legacy_button(button) {
+            return Ok(());
+        }
         // B lets go of a slider, before it means Back or a screen's button.
         if button == Button::East && self.pad_holding_slider() {
             self.pad.menu.slider_hold = None;
@@ -968,6 +974,9 @@ impl Game<'_> {
                     self.keys.remove(&KeyCode::ShiftLeft);
                 }
             }
+            // The left stick over a crafting grid with Console Crafting on: the controller crafting
+            // screen, instead of throwing the stack.
+            Button::LeftStick if self.legacy_switch_here() => self.legacy_start(),
             // View / left stick in an inventory: throw one / the stack from
             // the slot under focus (Q / Ctrl+Q).
             Button::Select | Button::LeftStick
@@ -1447,6 +1456,7 @@ impl Game<'_> {
     /// follows its widget from frame to frame, and the OS pointer hides
     /// while the pad drives.
     pub(super) fn pad_menu_frame(&mut self, event_loop: &dyn EventLoopCtl) {
+        self.legacy_watch();
         let now = Instant::now();
         let seconds = self
             .pad
@@ -1484,6 +1494,10 @@ impl Game<'_> {
         }
         self.pad.menu.open_polls = self.pad.menu.open_polls.saturating_add(1);
         self.direct_craft_poll();
+        if self.legacy_frame() {
+            self.pad_show_os_pointer(!self.pad.in_use);
+            return;
+        }
         // Once the focus or the screen moved on from a slider it's let go for good, or coming back
         // to it would find it still held.
         if !self.pad_holding_slider() {
@@ -1981,6 +1995,7 @@ impl Game<'_> {
             "pointer": self.pad.menu.pos.map(|_| self.cursor),
             "keyboard": self.pad.menu.osk.is_some(),
             "crafting": self.pad.menu.craft.is_some(),
+            "legacy": self.legacy_status(),
             "craft_hint": self.direct_craft_usable(),
             "targets": self.pad_targets().iter().map(target).collect::<Vec<_>>(),
             "actions": self.pad_actions_status(),
@@ -2362,6 +2377,7 @@ impl Game<'_> {
             || matches!(self.book, Some(super::books::BookScreen::Edit { .. }))
             || (self.screen == Screen::Creative && self.creative_screen.tab().search)
             || self.recipe_search_focused()
+            || self.legacy_typing()
             || self.station_typing()
             || self.dialog_typing()
             || self.mod_browser_typing()
@@ -2391,7 +2407,7 @@ impl Game<'_> {
     /// Open the on-screen keyboard over the focused field: Horizon's, or
     /// Steam's on a Steam Deck (`steam://open/keyboard`, which types into
     /// the window like a real keyboard).
-    fn pad_open_keyboard(&mut self) {
+    pub(super) fn pad_open_keyboard(&mut self) {
         // Without xdg-open (macOS, Windows), Horizon's keyboard instead.
         if gamepad::steam_keyboard(self.settings.controller.keyboard)
             && std::process::Command::new("xdg-open")
@@ -2436,6 +2452,7 @@ impl Game<'_> {
             Output::Backspace => (Some(KeyCode::Backspace), None),
             Output::Enter => (Some(KeyCode::Enter), None),
             Output::Close => {
+                self.legacy_stop_typing();
                 self.pad.menu.osk = None;
                 self.pad.menu.osk_dismissed = true;
                 return;
@@ -2475,6 +2492,12 @@ impl Game<'_> {
         } else if self.mod_browser_typing() {
             if key != Some(KeyCode::Enter) {
                 self.mod_browser_text(text, backspace);
+            }
+        } else if self.legacy_typing() {
+            let enter = key == Some(KeyCode::Enter);
+            self.legacy_type(text, backspace, enter);
+            if enter {
+                self.pad.menu.osk = None;
             }
         } else if self.recipe_search_focused() {
             if key != Some(KeyCode::Enter) {
