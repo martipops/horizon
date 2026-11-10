@@ -110,7 +110,7 @@ and prepared resources in .local/horizon-client/26.3. Exit status 0 when every c
 - legacy_classic_and_paging: it opens on every recipe; the wheel steps, L3 shows the vanilla
   screen.
 - legacy_creative: X opens it in creative too, and A crafts.
-- legacy_compact: a 320x180 view's compact layout pages to the inventory and back, its cursor taking as usual.
+- legacy_compact: a 320x180 view's compact layout has the whole inventory on screen; its cursor takes as usual.
 - legacy_areas: right-stick flicks go row, grid, inventory; the inventory cursor takes, puts and quick-moves as
   vanilla's pointer does; leaving the inventory holding a stack puts it back where it came from; B goes back to the
   row, then closes.
@@ -4625,7 +4625,7 @@ def legacy_areas(game, check):
 
 
 def legacy_compact(args, name):
-    """The smallest layout (a 320x180 view) still has the inventory: a page the right stick turns to."""
+    """The smallest layout (a 320x180 view) keeps the whole inventory on screen beside the grid."""
     game = Game(args, name, world=True, seed=legacy_seed, extra=('--width', 320, '--height', 180))
     check = Check()
     try:
@@ -4638,7 +4638,7 @@ def legacy_compact(args, name):
         check(shown['compact'], f'a 320x180 view is not compact: {shown}')
         legacy_flick(game, 0, -1)
         legacy_flick(game, 1, 0)
-        check(legacy(game)['focus'] == 'inventory', f"no inventory page: {legacy(game)['focus']}")
+        check(legacy(game)['focus'] == 'inventory', f"no inventory to flick to: {legacy(game)['focus']}")
         # The cursor takes from it as in the full layout.
         for _ in range(3):
             game.pad('down')
@@ -4648,10 +4648,10 @@ def legacy_compact(args, name):
             game.pad('left')
         game.pad('south')
         carried = game.ctl('menu').get('carried') or {}
-        check('oak_log' in carried.get('item', ''), f'A on the page took {carried}')
+        check('oak_log' in carried.get('item', ''), f'A in the small inventory took {carried}')
         legacy_flick(game, 0, 1)
         check(legacy(game)['focus'] == 'row' and not game.ctl('menu').get('carried'),
-              f"up from the page: {legacy(game)}, carrying {game.ctl('menu').get('carried')}")
+              f"up from the inventory: {legacy(game)}, carrying {game.ctl('menu').get('carried')}")
     finally:
         game.quit()
     return check.failures

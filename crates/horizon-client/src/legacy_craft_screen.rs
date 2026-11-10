@@ -42,7 +42,15 @@ pub const HINT_ROOM: i32 = 14;
 const RECIPE: i32 = 25;
 /// The compact layout's panel.
 const COMPACT_W: i32 = 252;
-const COMPACT_H: i32 = 132;
+/// Where `transferable_list/move_up` and `move_down` draw their arrows in their 32 px sprites:
+/// 11x7 at 18,5 and 18,20. `ARROW_X` puts the art in the middle of a recipe slot.
+const ARROW_X: i32 = 18 + 11 / 2 - RECIPE / 2;
+const ARROW_UP_Y: i32 = 5;
+const ARROW_DOWN_Y: i32 = 20;
+const ARROW_H: i32 = 7;
+/// The small layout's panel height: title line, row with its variant arrows, then the grid and
+/// the inventory (76 px) side by side.
+const COMPACT_H: i32 = 136;
 
 /// One slot of the recipe row or the variant column.
 #[derive(Clone, Debug)]
@@ -241,7 +249,11 @@ const MODE_SLOT: i32 = 24;
 
 /// How many recipes the row shows at once.
 pub fn row_shown(width: i32, height: i32) -> usize {
-    if full_fits(width, height) { 11 } else { 9 }
+    if full_fits(width, height) {
+        11
+    } else {
+        ((width - 4 - 16) / RECIPE).clamp(1, 11) as usize
+    }
 }
 
 /// The first recipe the row shows, keeping the selection in sight with one slot to spare.
@@ -527,9 +539,9 @@ fn title_or_search(out: &mut Out, view: &View, cx: i32, y: i32, width: &dyn Fn(&
 }
 
 /// The row and the variant column standing on the selected slot.
-fn row(out: &mut Out, view: &View, x: i32, y: i32, shown: usize, first: usize) {
+fn row(out: &mut Out, view: &View, x: i32, y: i32, shown: usize, first: usize, flat: bool) {
     let end = (first + shown).min(view.row.len());
-    let column = view.variants.len() > 1;
+    let column = view.variants.len() > 1 && !flat;
     for i in first..end {
         let sx = x + (i - first) as i32 * RECIPE;
         out.hit([sx, y, RECIPE, RECIPE], Hit::Row(i));
@@ -545,6 +557,15 @@ fn row(out: &mut Out, view: &View, x: i32, y: i32, shown: usize, first: usize) {
         return;
     }
     let sx = x + (view.selected - first) as i32 * RECIPE;
+    if flat && view.variants.len() > 1 {
+        // No room for the column: the shown recipe in the row, with the column's arrows just above
+        // and below it.
+        recipe_slot(out, &view.variants[view.variant], sx, y);
+        out.sprite("transferable_list/move_up", sx - ARROW_X, y - 1 - ARROW_UP_Y - ARROW_H, 32, 32);
+        out.hit([sx, y - 8, RECIPE, 8], Hit::VariantUp);
+        out.sprite("transferable_list/move_down", sx - ARROW_X, y + RECIPE + 1 - ARROW_DOWN_Y, 32, 32);
+        out.hit([sx, y + RECIPE, RECIPE, 8], Hit::VariantDown);
+    }
     if !column {
         selection(out, sx, y);
         return;
@@ -561,7 +582,7 @@ fn row(out: &mut Out, view: &View, x: i32, y: i32, shown: usize, first: usize) {
     let n = view.variants.len();
     let above = (view.variant + n - 1) % n;
     let below = (view.variant + 1) % n;
-    out.sprite("transferable_list/move_up", sx - 4, top - 10, 32, 32);
+    out.sprite("transferable_list/move_up", sx - ARROW_X, top - 10, 32, 32);
     out.hit([sx, top, RECIPE, 8], Hit::VariantUp);
     for (slot, at, hit) in [
         (above, y - RECIPE, Hit::VariantUp),
@@ -572,7 +593,7 @@ fn row(out: &mut Out, view: &View, x: i32, y: i32, shown: usize, first: usize) {
     }
     out.sprite(
         "transferable_list/move_down",
-        sx - 4,
+        sx - ARROW_X,
         y + 2 * RECIPE - 12,
         32,
         32,
@@ -634,6 +655,11 @@ fn highlight_front(out: &mut Out, x: i32, y: i32) {
 fn inventory(out: &mut Out, view: &View, x: i32, y: i32, width: &dyn Fn(&str) -> i32) {
     let t = &view.inventory_title;
     out.text(t, x + 84 - width(t) / 2, y + 4, TITLE);
+    inventory_slots(out, view, x + 3, y + 14);
+}
+
+/// The 36 slots from their top left: three rows of the inventory over the hotbar, 162x76.
+fn inventory_slots(out: &mut Out, view: &View, x: i32, y: i32) {
     for i in 0..36usize {
         // The rest of the inventory first, the hotbar under it, as vanilla's menus lay them out.
         let (row, col) = if i < 9 {
@@ -641,8 +667,8 @@ fn inventory(out: &mut Out, view: &View, x: i32, y: i32, width: &dyn Fn(&str) ->
         } else {
             ((i - 9) / 9, (i - 9) % 9)
         };
-        let sx = x + 3 + col as i32 * 18;
-        let sy = y + 14 + row as i32 * 18 + if row == 3 { 4 } else { 0 };
+        let sx = x + col as i32 * 18;
+        let sy = y + row as i32 * 18 + if row == 3 { 4 } else { 0 };
         out.sprite("container/slot", sx, sy, 18, 18);
         let focused = view.focus == Area::Inventory && view.cursor == i;
         if focused {
@@ -719,7 +745,7 @@ fn full(view: &View, width: &dyn Fn(&str) -> i32) -> Layout {
     // Drawn last: the column stands over the title's corner and the lower half's frame.
     let mut areas = vec![(Area::Inventory, [x + 122, low, 168, low_h])];
     if !view.row.is_empty() {
-        row(&mut out, view, row_x, row_y, shown_row, first);
+        row(&mut out, view, row_x, row_y, shown_row, first, false);
         let visible = (view.row.len() - first).min(shown_row) as i32;
         areas.push((Area::Row, [row_x, row_y, visible * RECIPE, RECIPE]));
         areas.push((Area::Grid, [x + 6, low, 112, low_h]));
@@ -736,80 +762,73 @@ fn full(view: &View, width: &dyn Fn(&str) -> i32) -> Layout {
     }
 }
 
+/// The small layout (under 236 GUI px tall): everything on one screen still, a tighter stack.
+/// The recipe's name goes up to the title line, the variant column folds to arrows on the row,
+/// and the grid and the full-size inventory share the lower half without frames or titles.
 fn compact(view: &View, width: &dyn Fn(&str) -> i32) -> Layout {
     let mut out = Out {
         calls: Vec::new(),
         hits: Vec::new(),
     };
-    let (w, h) = (COMPACT_W.min(view.width - 4), COMPACT_H);
+    let (w, h) = ((view.width - 4).min(PANEL_W), COMPACT_H);
     let x = (view.width - w) / 2;
     let y = TAB_RISE.max((view.height - (TAB_RISE + h + HINT_ROOM)) / 2 + TAB_RISE);
     let shown = tabs_shown(view.width, view.height, view.tabs.len(), view.modes.len());
     // The mode, as a slot left of the tabs, when there's a choice of them.
-    if view.modes.len() > 1 {
-        out.sprite("container/slot", x + 4, y - 22, 18, 18);
-        if let Some(icon) = view.modes.get(view.mode) {
-            out.item(icon, x + 5, y - 21, false);
-        }
-        out.hit([x + 4, y - 22, 18, 18], Hit::Mode(view.mode));
-    }
-    creative_tabs(&mut out, view, x + 32, y, shown, false);
+    let tabs_x = if view.modes.len() > 1 {
+        mode_slot(&mut out, view, x + 4, y - 22);
+        x + 28
+    } else {
+        x
+    };
+    creative_tabs(&mut out, view, tabs_x, y, shown, false);
     panel(&mut out, x, y, w, h);
-    creative_tabs(&mut out, view, x + 32, y, shown, true);
-    tab_pager(&mut out, view, x + 32, y, shown, width);
-    title_or_search(&mut out, view, x + w / 2, y + 6, width);
-    let row_y = y + 36;
+    creative_tabs(&mut out, view, tabs_x, y, shown, true);
+    tab_pager(&mut out, view, tabs_x, y, shown, width);
+    // Title line: the tab's title or the search on the left, the recipe on the right.
+    let line = y + 4;
+    let left_end = match &view.search {
+        Some(_) => {
+            title_or_search(&mut out, view, x + 6 + 60, line + 1, width);
+            x + 6 + 120
+        }
+        None => {
+            let title = fit(&view.title, w / 2 - 10, width);
+            out.text(&title, x + 7, line, TITLE);
+            x + 7 + width(&title)
+        }
+    };
+    // Room over the row for its up arrow, clear of the title line and the search box.
+    let row_y = y + 24;
     let shown_row = row_shown(view.width, view.height);
-    let row_x = x + 1 + (w - shown_row as i32 * RECIPE) / 2;
+    let row_x = x + (w - shown_row as i32 * RECIPE) / 2;
     let first = row_first(view.row.len(), view.selected, shown_row, view.row_from);
-    // Too short for both: the panel shows the recipes or, with the focus there, the inventory.
-    let inventory_page = view.focus == Area::Inventory;
-    if inventory_page {
-        let ix = x + (w - 168) / 2;
-        inventory(&mut out, view, ix, y + 16, width);
-    } else if view.row.is_empty() {
-        out.text(
-            &view.empty,
-            x + w / 2 - width(&view.empty) / 2,
-            row_y + 9,
-            NOTE,
-        );
+    let low = row_y + RECIPE + 8;
+    let grid_x = x + 6;
+    let inv_x = x + w - 6 - 162;
+    inventory_slots(&mut out, view, inv_x, low);
+    let mut areas = vec![(Area::Inventory, [inv_x, low, 162, 76])];
+    if view.row.is_empty() {
+        out.text(&view.empty, x + w / 2 - width(&view.empty) / 2, row_y + 9, NOTE);
     } else {
-        let column_end = row_x + (view.selected.saturating_sub(first) as i32 + 1) * RECIPE + 4;
-        let tx = column_end.max(row_x + 3 * RECIPE + 4).min(x + w - 120);
-        let pos = format!("{}/{}", view.selected + 1, view.row.len());
-        let pos_x = x + w - 8 - width(&pos);
-        out.text(
-            &fit(&view.name, pos_x - tx - 6, width),
-            tx,
-            row_y + 30,
-            TITLE,
-        );
-        out.text(&pos, pos_x, row_y + 30, NOTE);
-        grid(&mut out, view, tx, row_y + 40);
+        let name = if view.variants.len() > 1 {
+            format!("{} {}/{}", view.name, view.variant + 1, view.variants.len())
+        } else {
+            view.name.clone()
+        };
+        let right = x + w - 7;
+        let name = fit(&name, right - left_end - 8, width);
+        out.text(&name, right - width(&name), line, TITLE);
+        grid(&mut out, view, grid_x, low + 11);
         if let Some((note, color)) = &view.note {
-            // Under the result, clear of the grid.
-            let note = fit(note, x + w - 6 - (tx + 58), width);
-            out.text(&note, tx + 58, row_y + 84, *color);
+            let room = inv_x - grid_x - 4;
+            let note = fit(note, room, width);
+            out.text(&note, grid_x + 54 / 2 + 28 - width(&note) / 2, low + 66, *color);
         }
-        row(&mut out, view, row_x, row_y, shown_row, first);
-    }
-    // The page not shown still has its place, so a flick reaches it: the inventory at the
-    // recipes' lower right, the recipes along the inventory page's top.
-    let mut areas = Vec::new();
-    if inventory_page {
-        let ix = x + (w - 168) / 2;
-        areas.push((Area::Inventory, [ix, y + 16, 168, 90]));
-        areas.push((Area::Row, [x + 4, y + 2, w - 8, 12]));
-    } else {
-        if !view.row.is_empty() {
-            let visible = (view.row.len() - first).min(shown_row) as i32;
-            areas.push((Area::Row, [row_x, row_y, visible * RECIPE, RECIPE]));
-            if let Some(r) = out.hits.iter().find(|(_, h)| *h == Hit::Cell(0)).map(|(r, _)| *r) {
-                areas.push((Area::Grid, [r[0], r[1], 54, 54]));
-            }
-        }
-        areas.push((Area::Inventory, [x + w - 60, row_y + 40, 54, 54]));
+        row(&mut out, view, row_x, row_y, shown_row, first, true);
+        let visible = (view.row.len() - first).min(shown_row) as i32;
+        areas.push((Area::Row, [row_x, row_y, visible * RECIPE, RECIPE]));
+        areas.push((Area::Grid, [grid_x, low, inv_x - grid_x - 4, 76]));
     }
     Layout {
         calls: out.calls,
@@ -973,24 +992,29 @@ mod tests {
     }
 
     #[test]
-    fn the_compact_layout_turns_to_an_inventory_page() {
+    fn the_compact_layout_keeps_everything_on_one_screen() {
         let l = layout(&view(320, 180), &width);
-        // On the recipes page: the grid's there, and a flick right from it reaches the inventory.
-        let [x, y, w, h] = l.rect_of(Hit::Cell(4)).unwrap();
-        let grid = [x + w / 2, y + h / 2];
-        assert_eq!(l.area_toward(Area::Grid, grid, [1, 0]), Some(Area::Inventory));
-        assert!(!l.hits.iter().any(|(_, h)| matches!(h, Hit::Inventory(_))));
-        // With the focus there, the inventory page: all 36 slots on the view, a flick up goes back.
-        let mut v = view(320, 180);
-        v.focus = Area::Inventory;
-        let l = layout(&v, &width);
+        assert!(l.compact);
         let slots: Vec<_> = l.hits.iter().filter(|(_, h)| matches!(h, Hit::Inventory(_))).collect();
-        assert_eq!(slots.len(), 36);
-        for (r, _) in slots {
-            assert!(r[1] + r[3] <= 180, "{r:?}");
+        assert_eq!(slots.len(), 36, "the whole inventory, at full size");
+        assert!(slots.iter().all(|(r, _)| r[2] == 18 && r[3] == 18));
+        assert!(l.hits.iter().any(|(_, h)| *h == Hit::Cell(8)));
+        for area in [Area::Row, Area::Grid, Area::Inventory] {
+            assert!(l.areas.iter().any(|(a, _)| *a == area), "{area:?}");
         }
-        let [x, y, w, h] = l.rect_of(Hit::Inventory(13)).unwrap();
-        assert_eq!(l.area_toward(Area::Inventory, [x + w / 2, y + h / 2], [0, -1]), Some(Area::Row));
+        // The grid beside the inventory, nothing overlapping: right from the grid is the inventory.
+        let [x, y, w, h] = l.rect_of(Hit::Cell(4)).unwrap();
+        assert_eq!(l.area_toward(Area::Grid, [x + w / 2, y + h / 2], [1, 0]), Some(Area::Inventory));
+        let [gx, _, gw, _] = l.rect_of(Hit::Cell(2)).unwrap();
+        let [ix, ..] = l.rect_of(Hit::Inventory(9)).unwrap();
+        assert!(gx + gw < ix);
+        // The variant column folds to arrows on the row: nothing below the row but the lower half.
+        let [_, ry, _, rh] = l.rect_of(Hit::Row(2)).unwrap();
+        let [_, vy, _, vh] = l.rect_of(Hit::VariantDown).unwrap();
+        assert!(vy + vh <= y.min(ry + rh + 8), "the down arrow reaches into the grid");
+        let [_, uy, ..] = l.rect_of(Hit::VariantUp).unwrap();
+        let panel_top = l.bounds[1] + 28;
+        assert!(uy >= panel_top + 13, "the up arrow reaches the title line");
     }
 
     #[test]
