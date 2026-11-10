@@ -82,6 +82,9 @@ enum Step {
 impl Game<'_> {
     /// The builder the mode tabs have selected: none on Crafting.
     pub(in crate::game) fn legacy_builder(&self) -> Option<Kind> {
+        if self.legacy_furnace().is_some() {
+            return None;
+        }
         self.pad
             .legacy
             .mode

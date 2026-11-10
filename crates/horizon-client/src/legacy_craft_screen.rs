@@ -68,6 +68,14 @@ pub struct Cell {
     pub missing: bool,
 }
 
+/// A furnace, blast furnace or smoker's state as its screen shows it: how much of the fuel is
+/// left (the flame) and how far the smelt is (the arrow), each 0 to 1.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Furnace {
+    pub lit: f32,
+    pub cook: f32,
+}
+
 /// What the screen shows this frame. Text comes translated.
 #[derive(Clone, Debug, Default)]
 pub struct View {
@@ -111,6 +119,9 @@ pub struct View {
     /// Where the pad's focus is, and its cell there (an inventory slot or a grid cell).
     pub focus: Area,
     pub cursor: usize,
+    /// At a furnace: the grid's place shows its three slots (input, fuel, output: `cells` 0-2)
+    /// with its flame and arrow, instead of a crafting grid.
+    pub furnace: Option<Furnace>,
 }
 
 /// A part of the screen the pad's focus is in: the right stick moves between them, the left stick
@@ -603,8 +614,66 @@ fn row(out: &mut Out, view: &View, x: i32, y: i32, shown: usize, first: usize, f
     selection(out, sx, y);
 }
 
+/// Where a furnace's three slots sit in the grid's place: input, fuel, output (x, y).
+pub const FURNACE_SLOTS: [(i32, i32); 3] = [(4, 0), (4, 36), (64, 18)];
+
+/// A furnace in the grid's place, laid out as vanilla's furnace screen: input over the flame
+/// over the fuel, the arrow, the output. The flame and arrow fill from vanilla's sprites as
+/// `AbstractFurnaceScreen` crops them.
+fn furnace(out: &mut Out, view: &View, f: Furnace, x: i32, y: i32) {
+    for (i, (dx, dy)) in FURNACE_SLOTS.iter().enumerate() {
+        let (sx, sy) = (x + dx, y + dy);
+        out.sprite("container/slot", sx, sy, 18, 18);
+        let focused = view.focus == Area::Grid && view.cursor == i;
+        if focused {
+            highlight_back(out, sx, sy);
+        }
+        if let Some(Some(cell)) = view.cells.get(i) {
+            out.item(&cell.stack, sx + 1, sy + 1, true);
+        }
+        if focused {
+            highlight_front(out, sx, sy);
+        }
+        out.hit([sx, sy, 18, 18], Hit::Cell(i));
+    }
+    // The flame, from the bottom up: ceil(lit * 13) + 1 rows of its 14.
+    if f.lit > 0.0 {
+        let h = (f.lit * 13.0).ceil() as i32 + 1;
+        out.push(Call::Blit {
+            texture: "textures/gui/sprites/container/furnace/lit_progress.png",
+            x: x + 6,
+            y: y + 20 + 14 - h,
+            w: 14,
+            h,
+            u: 0.0,
+            v: (14 - h) as f32,
+            tw: 14,
+            th: 14,
+        });
+    }
+    // The arrow: the crafting table's empty one, then ceil(cook * 24) columns of the burn.
+    out.blit("textures/gui/container/crafting_table.png", x + 31, y + 19, 22, 15, 90.0, 35.0);
+    if f.cook > 0.0 {
+        let w = (f.cook * 24.0).ceil() as i32;
+        out.push(Call::Blit {
+            texture: "textures/gui/sprites/container/furnace/burn_progress.png",
+            x: x + 30,
+            y: y + 18,
+            w,
+            h: 16,
+            u: 0.0,
+            v: 0.0,
+            tw: 24,
+            th: 16,
+        });
+    }
+}
+
 /// The grid preview, the arrow and the result, from the grid's top left.
 fn grid(out: &mut Out, view: &View, x: i32, y: i32) {
+    if let Some(f) = view.furnace {
+        return furnace(out, view, f, x, y);
+    }
     let side = view.grid.max(1) as i32;
     // A 2x2 grid sits in the middle of the 3x3 room.
     let (gx, gy) = if side == 2 { (x + 9, y + 9) } else { (x, y) };
@@ -1025,6 +1094,25 @@ mod tests {
         two.modes.push(stack("minecraft:firework_rocket"));
         let l = layout(&two, &width);
         assert_eq!(l.hits.iter().filter(|(_, h)| matches!(h, Hit::Mode(_))).count(), 2);
+    }
+
+    #[test]
+    fn a_furnace_shows_its_three_slots_in_the_grids_place() {
+        for (w, h) in [(427, 240), (320, 180)] {
+            let mut v = view(w, h);
+            v.furnace = Some(Furnace { lit: 0.5, cook: 0.25 });
+            v.cells = vec![None; 3];
+            let l = layout(&v, &width);
+            let cells: Vec<_> = l.hits.iter().filter(|(_, h)| matches!(h, Hit::Cell(_))).collect();
+            assert_eq!(cells.len(), 3, "at {w}x{h}");
+            // The output right of the input and fuel; a flick right from the input reaches it.
+            let input = l.rect_of(Hit::Cell(0)).unwrap();
+            let output = l.rect_of(Hit::Cell(2)).unwrap();
+            assert!(output[0] > input[0] + 18);
+            for (r, _) in cells {
+                assert!(r[0] + r[2] <= w && r[1] + r[3] <= h);
+            }
+        }
     }
 
     #[test]

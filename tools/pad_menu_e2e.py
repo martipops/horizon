@@ -112,6 +112,8 @@ and prepared resources in .local/horizon-client/26.3. Exit status 0 when every c
 - legacy_creative: X opens it in creative too, and A crafts.
 - legacy_builders: RT turns to the builders; a firework rocket and a dyed chestplate are made from the staged items
   by vanilla clicks, nothing left in the grid; LT goes back to Crafting.
+- legacy_furnace: a furnace the pad opens is the crafting screen: X fuels it, A puts one smelt in, Y the stack;
+  its slots take vanilla's clicks.
 - legacy_compact: a 320x180 view's compact layout has the whole inventory on screen; its cursor takes as usual.
 - legacy_areas: right-stick flicks go row, grid, inventory; the inventory cursor takes, puts and quick-moves as
   vanilla's pointer does; leaving the inventory holding a stack puts it back where it came from; B goes back to the
@@ -4716,6 +4718,51 @@ def legacy_builders(game, check):
     legacy_trigger(game, 'lt')
     check(legacy(game)['mode'] == 0, f"LT twice: mode {legacy(game)['mode']}")
 
+
+def menu_slots(game):
+    """The open menu's slots by number: (item, count)."""
+    return {s['slot']: (s['stack']['item'], s['stack']['count']) for s in game.ctl('menu')['slots']}
+
+
+@legacy_case
+def legacy_furnace(game, check):
+    legacy_known(game, 'minecraft:iron_ingot_from_smelting_raw_iron', gives=['raw_iron 4', 'coal 2'])
+    x, y, z = (int(v // 1) for v in game.ctl('state')['player']['position'])
+    game.ctl('command', f'fill {x - 1} {y} {z} {x + 1} {y + 2} {z + 3} minecraft:air')
+    game.ctl('command', f'setblock {x} {y} {z + 2} minecraft:furnace')
+    # The pad in use, as a player reaching the furnace with it.
+    game.ctl('pad', 'stick', 'left', 0, 0.5)
+    time.sleep(0.2)
+    game.ctl('pad', 'stick', 'left', 0, 0)
+    time.sleep(SETTLE)
+    game.ctl('interact', x, y, z + 2)
+    time.sleep(1.5)
+    shown = legacy(game)
+    check(shown is not None and shown.get('furnace') == 'Furnace', f'the furnace is not the crafting screen: {shown}')
+    if not shown:
+        return
+    check(legacy_find(game, 'minecraft:iron_ingot'), f'no iron ingot: {legacy(game)}')
+    # X: fuel in. A: one smelt's raw iron. Y: the rest of the stack.
+    game.pad('west')
+    slots = menu_slots(game)
+    check(slots.get(301, (None,))[0] == 'minecraft:coal', f'X put no fuel in: {slots}')
+    game.pad('south')
+    slots = menu_slots(game)
+    check(slots.get(300) == ('minecraft:raw_iron', 1), f'A: {slots}')
+    game.pad('north')
+    slots = menu_slots(game)
+    check(slots.get(300) == ('minecraft:raw_iron', 4), f'Y: {slots}')
+    # The furnace's slots take vanilla's clicks: Y on the input quick-moves it back.
+    legacy_flick(game, 0, -1)
+    check(legacy(game)['focus'] == 'grid', f"down from the row: {legacy(game)['focus']}")
+    for _ in range(2):
+        game.pad('up')
+    game.pad('north')
+    time.sleep(SETTLE)
+    have = counts(game)
+    slots = menu_slots(game)
+    check(300 not in slots or slots[300][1] < 4, f'Y on the input: {slots}, {have}')
+
 CASES = {'idle_a': idle_a, 'idle_b': idle_b, 'idle_x': idle_x, 'release': release, 'move_cancels': move_cancels,
          'pad_release': pad_release, 'pause_y': pause_y, 'settings': settings, 'create_world': create_world,
          'world_options': world_options, 'key_row_b': key_row_b, 'lock_question': lock_question,
@@ -4754,7 +4801,7 @@ CASES = {'idle_a': idle_a, 'idle_b': idle_b, 'idle_x': idle_x, 'release': releas
          'legacy_craft': legacy_craft, 'legacy_table': legacy_table, 'legacy_tabs_search': legacy_tabs_search,
          'legacy_classic_and_paging': legacy_classic_and_paging, 'legacy_creative': legacy_creative,
          'legacy_areas': legacy_areas, 'legacy_compact': legacy_compact,
-         'legacy_builders': legacy_builders,
+         'legacy_builders': legacy_builders, 'legacy_furnace': legacy_furnace,
          'extras_shell': extras_shell,
          'extras_shell_edges': extras_shell_edges,
          'graphics_shell': graphics_shell,
