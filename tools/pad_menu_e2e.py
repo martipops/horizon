@@ -110,6 +110,8 @@ and prepared resources in .local/horizon-client/26.3. Exit status 0 when every c
 - legacy_classic_and_paging: it opens on every recipe; the wheel steps, L3 shows the vanilla
   screen.
 - legacy_creative: X opens it in creative too, and A crafts.
+- legacy_builders: RT turns to the builders; a firework rocket and a dyed chestplate are made from the staged items
+  by vanilla clicks, nothing left in the grid; LT goes back to Crafting.
 - legacy_compact: a 320x180 view's compact layout has the whole inventory on screen; its cursor takes as usual.
 - legacy_areas: right-stick flicks go row, grid, inventory; the inventory cursor takes, puts and quick-moves as
   vanilla's pointer does; leaving the inventory holding a stack puts it back where it came from; B goes back to the
@@ -4656,6 +4658,64 @@ def legacy_compact(args, name):
         game.quit()
     return check.failures
 
+
+def legacy_trigger(game, trigger):
+    """A trigger pulled and let go: a trigger is read as how far it's pulled, not as a button."""
+    side = 'right' if trigger == 'rt' else 'left'
+    game.ctl('pad', 'trigger', side, 1)
+    time.sleep(0.15)
+    game.ctl('pad', 'trigger', side, 0)
+    time.sleep(SETTLE)
+
+
+def legacy_builder_to(game, item, tries=12):
+    """Right along the builder's row until its result is this item."""
+    for _ in range(tries):
+        if legacy(game)['selected'] == item:
+            return True
+        game.pad('right')
+    return legacy(game)['selected'] == item
+
+
+def legacy_build_ended(game):
+    end = time.time() + 30
+    while legacy(game)['building']:
+        if time.time() > end:
+            raise RuntimeError('the builder never finished')
+        time.sleep(0.1)
+    time.sleep(SETTLE)
+
+
+@legacy_case
+def legacy_builders(game, check):
+    legacy_known(game, gives=['paper 2', 'gunpowder 2', 'leather_chestplate 1', 'red_dye 1'])
+    game.pad('west')
+    if legacy(game) is None:
+        check(False, 'X did not open the crafting screen')
+        return
+    # RT: the first builder, Fireworks. A rocket from paper and gunpowder, by vanilla's clicks.
+    legacy_trigger(game, 'rt')
+    check(legacy(game)['mode'] == 1, f"RT: mode {legacy(game)['mode']}")
+    check(legacy_builder_to(game, 'minecraft:firework_rocket'), f'no rocket: {legacy(game)}')
+    game.pad('south')
+    legacy_build_ended(game)
+    have = counts(game)
+    check(have.get('minecraft:firework_rocket') == 3 and have.get('minecraft:paper') == 1
+          and have.get('minecraft:gunpowder') == 1, f'rocket: {have}')
+    check(not grid(game), f'the rocket left {grid(game)} in the grid')
+    # Dyeing: the chestplate turns red.
+    legacy_trigger(game, 'rt')
+    check(legacy_builder_to(game, 'minecraft:leather_chestplate'), f'no dyeing: {legacy(game)}')
+    game.pad('south')
+    legacy_build_ended(game)
+    have = counts(game)
+    check(not have.get('minecraft:red_dye') and have.get('minecraft:leather_chestplate') == 1, f'dye: {have}')
+    check(not grid(game), f'the dye left {grid(game)} in the grid')
+    # The grid's A steps a cell through what fits: flick down to it, A on the dye cell.
+    legacy_trigger(game, 'lt')
+    legacy_trigger(game, 'lt')
+    check(legacy(game)['mode'] == 0, f"LT twice: mode {legacy(game)['mode']}")
+
 CASES = {'idle_a': idle_a, 'idle_b': idle_b, 'idle_x': idle_x, 'release': release, 'move_cancels': move_cancels,
          'pad_release': pad_release, 'pause_y': pause_y, 'settings': settings, 'create_world': create_world,
          'world_options': world_options, 'key_row_b': key_row_b, 'lock_question': lock_question,
@@ -4694,6 +4754,7 @@ CASES = {'idle_a': idle_a, 'idle_b': idle_b, 'idle_x': idle_x, 'release': releas
          'legacy_craft': legacy_craft, 'legacy_table': legacy_table, 'legacy_tabs_search': legacy_tabs_search,
          'legacy_classic_and_paging': legacy_classic_and_paging, 'legacy_creative': legacy_creative,
          'legacy_areas': legacy_areas, 'legacy_compact': legacy_compact,
+         'legacy_builders': legacy_builders,
          'extras_shell': extras_shell,
          'extras_shell_edges': extras_shell_edges,
          'graphics_shell': graphics_shell,

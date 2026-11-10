@@ -44,7 +44,7 @@ pub(in crate::game) struct LegacyCraft {
     menu: Option<i32>,
     tab: usize,
     first_tab: usize,
-    mode: usize,
+    pub(in crate::game) mode: usize,
     /// Per tab id: the selected collection and the recipe the player picked of it (none: the
     /// first that can be made, as vanilla's recipe buttons show).
     places: HashMap<String, (usize, Option<usize>)>,
@@ -63,8 +63,10 @@ pub(in crate::game) struct LegacyCraft {
     /// The right stick's last flick, which moves the focus between areas once per flick.
     area_stick: Option<Button>,
     /// Where the pad's focus is, and its cell there (an inventory slot, a grid cell).
-    focus: Area,
-    cursor: usize,
+    pub(in crate::game) focus: Area,
+    pub(in crate::game) cursor: usize,
+    /// The builders' templates, staging and running craft.
+    pub(in crate::game) build: super::legacy_build::Build,
     /// A held direction's start: past a second of it, the row runs faster.
     held_since: Option<Instant>,
     /// A vanilla click the screen passes on to the inventory under it.
@@ -291,6 +293,10 @@ impl Game<'_> {
                 _ => {}
             }
         }
+        // A builder's own presses: crafting its staging, stepping a grid cell's item.
+        if self.legacy_build_button(button) {
+            return true;
+        }
         match button {
             Button::DPadLeft | Button::DPadRight | Button::DPadUp | Button::DPadDown => {
                 self.legacy_step(button);
@@ -324,6 +330,8 @@ impl Game<'_> {
             // View: straight to the search, typing (it throws in an inventory; here nothing's under
             // a pointer to throw).
             Button::Select => {
+                self.pad.legacy.mode = 0;
+                self.pad.legacy.focus = Area::Row;
                 self.pad.legacy.tab = 0;
                 self.legacy_type_start();
             }
@@ -392,7 +400,12 @@ impl Game<'_> {
 
     /// Vanilla's click on an inventory slot, as the pointer over it would make it: A's take or
     /// put, X's half or one, Y's quick move. Always the screen's press.
-    fn legacy_slot_click(&mut self, slot: usize, right: bool, shift: bool) -> bool {
+    pub(in crate::game) fn legacy_slot_click(
+        &mut self,
+        slot: usize,
+        right: bool,
+        shift: bool,
+    ) -> bool {
         let Ok((ox, oy)) = self.gui_origin() else {
             return true;
         };
@@ -453,6 +466,9 @@ impl Game<'_> {
     }
 
     fn legacy_row_step(&mut self, button: Button) {
+        if self.legacy_builder().is_some() {
+            return self.legacy_build_step(button);
+        }
         let Some((len, variants, shown)) = self
             .legacy_current()
             .map(|(row, sel, var)| (row.len(), row.get(sel).map_or(0, |c| c.entries.len()), var))
@@ -487,17 +503,26 @@ impl Game<'_> {
 
     fn legacy_turn_mode(&mut self, next: bool) {
         let n = self.legacy_modes().len();
+        // A builder's craft ends where it is (its grid comes back as it goes on), and the focus
+        // starts again on the row.
+        if self.legacy_build_running() {
+            self.pad_rumble(gamepad::Rumble::RadialNothing);
+            return;
+        }
         let state = &mut self.pad.legacy;
         state.mode = if next {
             (state.mode + 1) % n
         } else {
             (state.mode + n - 1) % n
         };
+        state.focus = Area::Row;
+        state.cursor = 0;
+        state.typing = false;
     }
 
-    /// The modes at the panel's left: crafting, for now.
+    /// The modes at the panel's left: crafting, then the builders (`legacy_build.rs`).
     fn legacy_modes(&self) -> Vec<ItemStack> {
-        vec![ItemStack::new("minecraft:crafting_table", 1)]
+        self.legacy_mode_icons()
     }
 
     fn legacy_tab_id(&self) -> String {
@@ -711,6 +736,7 @@ impl Game<'_> {
     /// Draws the screen; called in place of the inventory's drawing.
     pub(in crate::game) fn draw_legacy_craft(&mut self, batch: &mut HudBatch) {
         self.render_transparent_background("inventory", batch);
+        self.legacy_build_poll();
         let mut view = self.legacy_view(batch.width as i32, batch.height as i32);
         self.pad.legacy.shown = (
             view.row.len(),
@@ -832,6 +858,8 @@ impl Game<'_> {
             "selected": state.shown.1,
             "query": state.query,
             "focus": format!("{:?}", state.focus).to_lowercase(),
+            "mode": state.mode,
+            "building": self.legacy_build_running(),
             "cursor": state.cursor,
             "typing": state.typing,
             "only_craftable": state.only_craftable,
@@ -841,6 +869,10 @@ impl Game<'_> {
 
     /// The display ids of every recipe in the row's slots on screen.
     fn legacy_in_sight(&self, layout: &Layout, stock: &Stacked) -> Vec<i32> {
+        // A builder's row holds no book recipes.
+        if self.legacy_builder().is_some() {
+            return Vec::new();
+        }
         let Some((row, _, _)) = self.legacy_row(stock) else {
             return Vec::new();
         };
@@ -864,83 +896,98 @@ impl Game<'_> {
     fn legacy_hints(&mut self, batch: &mut HudBatch, y: f32) {
         let tr = |key: &str| horizon_client::lang::get(key);
         let glyph = |job| self.menu_glyph(job);
-        let back = HintRow::new([glyph(MenuJob::Back)], tr("horizon.legacy_craft.recipes"));
-        let rows = match self.pad.legacy.focus {
+        let row =
+            |jobs: &[MenuJob], key: &str| HintRow::new(jobs.iter().map(|&j| glyph(j)), tr(key));
+        let builder = self.legacy_builder().is_some();
+        // Each row with how much it's needed: when they don't all fit, the highest number goes.
+        let rows: Vec<(u8, HintRow)> = match self.pad.legacy.focus {
             // Vanilla's slot jobs, as the inventory's guide names them.
             Area::Inventory => {
                 let carrying = self.carried.is_some();
                 let pick = if carrying { "put" } else { "take" };
                 let half = if carrying { "put_one" } else { "take_half" };
                 vec![
-                    HintRow::new(
-                        [glyph(MenuJob::Confirm)],
-                        tr(&format!("horizon.controller.guide.{pick}")),
+                    (
+                        0,
+                        row(
+                            &[MenuJob::Confirm],
+                            &format!("horizon.controller.guide.{pick}"),
+                        ),
                     ),
-                    HintRow::new(
-                        [glyph(MenuJob::Alternate)],
-                        tr(&format!("horizon.controller.guide.{half}")),
+                    (
+                        1,
+                        row(
+                            &[MenuJob::Alternate],
+                            &format!("horizon.controller.guide.{half}"),
+                        ),
                     ),
-                    HintRow::new(
-                        [glyph(MenuJob::Extra)],
-                        tr("horizon.controller.guide.quick_move"),
+                    (
+                        2,
+                        row(&[MenuJob::Extra], "horizon.controller.guide.quick_move"),
                     ),
-                    HintRow::new([glyph(MenuJob::View)], tr("horizon.controller.guide.drop")),
-                    back,
+                    (3, row(&[MenuJob::View], "horizon.controller.guide.drop")),
+                    (0, row(&[MenuJob::Back], "horizon.legacy_craft.recipes")),
                 ]
             }
-            Area::Grid => vec![
-                HintRow::new([glyph(MenuJob::Confirm)], tr("horizon.legacy_craft.craft")),
-                HintRow::new(
-                    [glyph(MenuJob::Extra)],
-                    tr("horizon.legacy_craft.craft_all"),
+            Area::Grid if builder => vec![
+                (
+                    0,
+                    row(&[MenuJob::Confirm], "horizon.legacy_craft.next_item"),
                 ),
-                back,
+                (
+                    1,
+                    row(&[MenuJob::Alternate], "horizon.legacy_craft.prev_item"),
+                ),
+                (2, row(&[MenuJob::Extra], "horizon.legacy_craft.craft_all")),
+                (0, row(&[MenuJob::Back], "horizon.legacy_craft.recipes")),
             ],
-            Area::Row => self.legacy_row_hints(),
+            Area::Grid => vec![
+                (0, row(&[MenuJob::Confirm], "horizon.legacy_craft.craft")),
+                (1, row(&[MenuJob::Extra], "horizon.legacy_craft.craft_all")),
+                (0, row(&[MenuJob::Back], "horizon.legacy_craft.recipes")),
+            ],
+            Area::Row => {
+                let filter = if self.pad.legacy.only_craftable {
+                    "gui.recipebook.toggleRecipes.craftable"
+                } else {
+                    "gui.recipebook.toggleRecipes.all"
+                };
+                let mut rows = vec![
+                    (0, row(&[MenuJob::Confirm], "horizon.legacy_craft.craft")),
+                    (3, row(&[MenuJob::Extra], "horizon.legacy_craft.craft_all")),
+                ];
+                if !builder {
+                    rows.push((6, row(&[MenuJob::Alternate], filter)));
+                    rows.push((
+                        1,
+                        row(
+                            &[MenuJob::PagePrev, MenuJob::PageNext],
+                            "horizon.legacy_craft.category",
+                        ),
+                    ));
+                }
+                rows.extend([
+                    (
+                        2,
+                        row(
+                            &[MenuJob::GroupPrev, MenuJob::GroupNext],
+                            "horizon.legacy_craft.modes",
+                        ),
+                    ),
+                    (4, row(&[MenuJob::View], "horizon.legacy_craft.search")),
+                    (
+                        5,
+                        row(&[MenuJob::LeftStick], "horizon.legacy_craft.classic"),
+                    ),
+                    (0, row(&[MenuJob::Back], "gui.back")),
+                ]);
+                rows
+            }
         };
         self.legacy_draw_hints(batch, y, rows)
     }
 
-    fn legacy_row_hints(&self) -> Vec<HintRow> {
-        let tr = |key: &str| horizon_client::lang::get(key);
-        vec![
-            HintRow::new(
-                [self.menu_glyph(MenuJob::Confirm)],
-                tr("horizon.legacy_craft.craft"),
-            ),
-            HintRow::new(
-                [self.menu_glyph(MenuJob::Extra)],
-                tr("horizon.legacy_craft.craft_all"),
-            ),
-            HintRow::new(
-                [self.menu_glyph(MenuJob::Alternate)],
-                tr(if self.pad.legacy.only_craftable {
-                    "gui.recipebook.toggleRecipes.craftable"
-                } else {
-                    "gui.recipebook.toggleRecipes.all"
-                }),
-            ),
-            HintRow::new(
-                [
-                    self.menu_glyph(MenuJob::PagePrev),
-                    self.menu_glyph(MenuJob::PageNext),
-                ],
-                tr("horizon.legacy_craft.category"),
-            ),
-            HintRow::new(
-                [self.menu_glyph(MenuJob::View)],
-                tr("horizon.legacy_craft.search"),
-            ),
-            HintRow::new(
-                [self.menu_glyph(MenuJob::LeftStick)],
-                tr("horizon.legacy_craft.classic"),
-            ),
-            HintRow::new([self.menu_glyph(MenuJob::Back)], tr("gui.back")),
-        ]
-    }
-
-    fn legacy_draw_hints(&mut self, batch: &mut HudBatch, y: f32, mut rows: Vec<HintRow>) {
-        let row_hints = self.pad.legacy.focus == Area::Row;
+    fn legacy_draw_hints(&mut self, batch: &mut HudBatch, y: f32, mut rows: Vec<(u8, HintRow)>) {
         let atlas = &self.gui.atlas;
         let look = Look {
             side: Side::Leading,
@@ -950,29 +997,31 @@ impl Game<'_> {
         const EDGE: f32 = 6.0;
         // The rows that fit, from the right; the least needed (the filter) goes first.
         let room = batch.width - 2.0 * EDGE;
-        let total = |rows: &[HintRow]| {
+        let total = |rows: &[(u8, HintRow)]| {
             rows.iter()
-                .map(|r| hint::plated_width(atlas, r, &look))
+                .map(|(_, r)| hint::plated_width(atlas, r, &look))
                 .sum::<f32>()
                 + BETWEEN * rows.len().saturating_sub(1) as f32
         };
-        // What goes first when it doesn't fit: the filter, Classic, Craft All, then Search.
-        for drop in if row_hints {
-            [2, 4, 1, 2]
-        } else {
-            [3, 2, 1, 1]
-        } {
-            if total(&rows) <= room || rows.len() <= drop {
+        // The least needed go first until they fit; what's needed most (0) always stays.
+        while total(&rows) > room {
+            let Some(least) = rows
+                .iter()
+                .enumerate()
+                .filter(|(_, (need, _))| *need > 0)
+                .max_by_key(|(i, (need, _))| (*need, *i))
+                .map(|(i, _)| i)
+            else {
                 break;
-            }
-            rows.remove(drop);
+            };
+            rows.remove(least);
         }
         // On the player's text background (Accessibility), as the gameplay guide's rows are.
         let alpha = (self.settings.text_background(0.4) >> 24) as u8;
         const ROW_H: f32 = 11.0;
         // Centred under the panel, as the screen is.
         let mut x = ((batch.width - total(&rows)) / 2.0).max(EDGE).round();
-        for row in &rows {
+        for (_, row) in &rows {
             let w = hint::plated_width(atlas, row, &look);
             let plate = Plate::Backing { alpha };
             hint::draw_plated(batch, atlas, row, &look, plate, [x, y - 1.0, w, ROW_H]);
@@ -1040,6 +1089,13 @@ impl Game<'_> {
             } else {
                 view.title = tab.title.clone();
             }
+        }
+        // A builder: its own row and grid, no category tabs.
+        if let Some(kind) = self.legacy_builder() {
+            view.tab_page = None;
+            view.search = None;
+            self.legacy_build_view(&mut view, kind);
+            return view;
         }
         let Some((row, sel, var)) = current else {
             return view;

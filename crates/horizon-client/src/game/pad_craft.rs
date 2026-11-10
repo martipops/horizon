@@ -333,7 +333,7 @@ impl Game<'_> {
     /// Whether direct crafting is allowed where the player is: only through a server, as every
     /// world is played (its quick moves are the server's), and on someone else's only if the
     /// player allowed it (`craft_on_servers`).
-    fn direct_craft_allowed(&self) -> bool {
+    pub(super) fn direct_craft_allowed(&self) -> bool {
         self.remote.is_some()
             && (!self.direct_craft_elsewhere() || self.settings.controller.craft_on_servers)
     }

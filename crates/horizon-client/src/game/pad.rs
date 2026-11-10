@@ -143,6 +143,7 @@ mod capture;
 mod guide;
 #[cfg(feature = "controllers")]
 mod hardware;
+mod legacy_build;
 mod legacy_craft;
 #[cfg(test)]
 mod parity_tests;

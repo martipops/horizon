@@ -1,0 +1,537 @@
+//! The controller crafting screen's builders (Horizon's own; `legacy_craft.rs`): the crafting
+//! recipes vanilla's recipe book can't show, the ones built from what's put in the grid
+//! (`CustomRecipe`s and the rest of `Special`): fireworks, dyed armour, banners and shields,
+//! decorated pots, map and book copies, tipped arrows.
+//!
+//! Each special recipe the game knows becomes a template: the cells it fills and what each cell
+//! takes (its `Ingredient`), required or not. The screen stages items from the player's inventory
+//! in those cells, asks the recipes what they make (`Recipes::craft`, the game's own matcher, so
+//! the preview is the real result, colours and flight included), and crafts by putting the items
+//! in the grid with vanilla's clicks. A mod's recipe of one of these kinds gets a template too.
+use crate::{
+    crafting::{Ingredient, Recipe, Recipes, Special},
+    items::ItemStack,
+};
+
+/// The builders: the mode tabs after Crafting.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Kind {
+    Fireworks,
+    Dyeing,
+    Banners,
+    Pottery,
+    Copying,
+    Arrows,
+}
+
+impl Kind {
+    pub const ALL: [Kind; 6] = [
+        Kind::Fireworks,
+        Kind::Dyeing,
+        Kind::Banners,
+        Kind::Pottery,
+        Kind::Copying,
+        Kind::Arrows,
+    ];
+    /// The item on its tab.
+    pub fn icon(self) -> &'static str {
+        match self {
+            Kind::Fireworks => "minecraft:firework_rocket",
+            Kind::Dyeing => "minecraft:red_dye",
+            Kind::Banners => "minecraft:shield",
+            Kind::Pottery => "minecraft:decorated_pot",
+            Kind::Copying => "minecraft:filled_map",
+            Kind::Arrows => "minecraft:tipped_arrow",
+        }
+    }
+    /// Its title's language key.
+    pub fn title_key(self) -> &'static str {
+        match self {
+            Kind::Fireworks => "horizon.legacy_craft.builder.fireworks",
+            Kind::Dyeing => "horizon.legacy_craft.builder.dyeing",
+            Kind::Banners => "horizon.legacy_craft.builder.banners",
+            Kind::Pottery => "horizon.legacy_craft.builder.pottery",
+            Kind::Copying => "horizon.legacy_craft.builder.copying",
+            Kind::Arrows => "horizon.legacy_craft.builder.arrows",
+        }
+    }
+}
+
+/// What a cell takes.
+#[derive(Clone, Debug)]
+pub struct Role {
+    pub accepts: Ingredient,
+    /// The recipe makes something with the cell empty.
+    pub optional: bool,
+}
+
+/// One special recipe as the builder stages it.
+#[derive(Clone, Debug)]
+pub struct Template {
+    /// The recipe's id.
+    pub recipe: String,
+    pub kind: Kind,
+    /// What its row slot shows.
+    pub icon: ItemStack,
+    /// Its cells: a position in a 3x3 grid (row by row) and what goes there. A shapeless
+    /// recipe's come first to last and fill any grid in that order.
+    pub cells: Vec<(usize, Role)>,
+    /// The positions matter (a pot's four sides, a ring round a map): only a 3x3 grid has them.
+    pub shaped: bool,
+    /// What the row groups it with: the recipes of one family share an entry, their variants
+    /// (each colour of dyeing a shulker box, each piece of armour a dye colours).
+    pub family: String,
+}
+
+impl Template {
+    /// Where its `i`th cell goes in a grid `grid` wide: none when the grid has no room for it.
+    pub fn cell_in(&self, i: usize, grid: usize) -> Option<usize> {
+        let (at, _) = self.cells.get(i)?;
+        if self.shaped {
+            (grid == 3).then_some(*at)
+        } else {
+            (i < grid * grid).then_some(i)
+        }
+    }
+
+    /// The grid can hold every cell it requires.
+    pub fn fits(&self, grid: usize) -> bool {
+        self.cells
+            .iter()
+            .enumerate()
+            .all(|(i, (_, role))| role.optional || self.cell_in(i, grid).is_some())
+    }
+}
+
+fn required(accepts: &Ingredient) -> Role {
+    Role {
+        accepts: accepts.clone(),
+        optional: false,
+    }
+}
+
+fn optional(accepts: &Ingredient) -> Role {
+    Role {
+        accepts: accepts.clone(),
+        optional: true,
+    }
+}
+
+/// Shapeless cells in order: their positions are only their order.
+fn shapeless(roles: Vec<Role>) -> Vec<(usize, Role)> {
+    roles.into_iter().enumerate().collect()
+}
+
+fn first_item(ingredient: &Ingredient) -> ItemStack {
+    ItemStack::new(
+        ingredient
+            .order
+            .first()
+            .map_or("minecraft:barrier", String::as_str),
+        1,
+    )
+}
+
+/// The builders' templates, one per special crafting recipe the recipes hold, in their order.
+pub fn templates(recipes: &Recipes) -> Vec<Template> {
+    let mut out = Vec::new();
+    for (name, recipe) in &recipes.crafting {
+        let Recipe::Special(special) = recipe else {
+            continue;
+        };
+        let result = |template: &crate::crafting::Template, or: &Ingredient| match &template.item {
+            Some(_) => template.create(),
+            None => first_item(or),
+        };
+        let (kind, icon, cells, shaped) = match special {
+            Special::FireworkRocket {
+                shell,
+                fuel,
+                star,
+                result: made,
+            } => (
+                Kind::Fireworks,
+                result(made, shell),
+                // Paper and one gunpowder; more gunpowder flies higher, stars burst.
+                shapeless(vec![
+                    required(shell),
+                    required(fuel),
+                    optional(star),
+                    optional(fuel),
+                    optional(fuel),
+                    optional(star),
+                    optional(star),
+                ]),
+                false,
+            ),
+            Special::FireworkStar {
+                dye,
+                fuel,
+                trail,
+                twinkle,
+                shapes,
+                result: made,
+            } => {
+                let shape = Ingredient::of(
+                    shapes
+                        .iter()
+                        .flat_map(|(_, i)| i.order.iter().cloned())
+                        .collect(),
+                );
+                let mut roles = vec![
+                    required(fuel),
+                    required(dye),
+                    optional(&shape),
+                    optional(trail),
+                    optional(twinkle),
+                ];
+                roles.extend((0..4).map(|_| optional(dye)));
+                (Kind::Fireworks, result(made, fuel), shapeless(roles), false)
+            }
+            Special::FireworkStarFade {
+                dye,
+                target,
+                result: made,
+            } => {
+                let mut roles = vec![required(target), required(dye)];
+                roles.extend((0..7).map(|_| optional(dye)));
+                (Kind::Fireworks, result(made, target), shapeless(roles), false)
+            }
+            Special::Dye {
+                target,
+                dye,
+                result: _,
+            } => {
+                let mut roles = vec![required(target), required(dye)];
+                roles.extend((0..7).map(|_| optional(dye)));
+                (Kind::Dyeing, first_item(target), shapeless(roles), false)
+            }
+            Special::Transmute {
+                input,
+                material,
+                min,
+                max,
+                result: made,
+                ..
+            } => {
+                let dyes = !material.order.is_empty()
+                    && material.order.iter().all(|i| i.ends_with("_dye"));
+                let mut roles = vec![required(input)];
+                for n in 0..(*max).clamp(1, 8) {
+                    roles.push(if n < (*min).max(1) {
+                        required(material)
+                    } else {
+                        optional(material)
+                    });
+                }
+                let kind = if dyes { Kind::Dyeing } else { Kind::Copying };
+                (kind, result(made, input), shapeless(roles), false)
+            }
+            Special::BookCloning {
+                source,
+                material,
+                min,
+                max,
+                result: made,
+            } => {
+                let mut roles = vec![required(source)];
+                for n in 0..(*max).clamp(1, 8) {
+                    roles.push(if n < (*min).max(1) {
+                        required(material)
+                    } else {
+                        optional(material)
+                    });
+                }
+                (Kind::Copying, result(made, source), shapeless(roles), false)
+            }
+            Special::MapExtending {
+                map,
+                material,
+                result: made,
+            } => {
+                // The map in the middle, paper all round it.
+                let cells = (0..9)
+                    .map(|at| {
+                        let role = if at == 4 { map } else { material };
+                        (at, required(role))
+                    })
+                    .collect();
+                (Kind::Copying, result(made, map), cells, true)
+            }
+            Special::BannerDuplicate { banner, result } => (
+                Kind::Banners,
+                ItemStack::new(result, 1),
+                shapeless(vec![required(banner), required(banner)]),
+                false,
+            ),
+            Special::ShieldDecoration {
+                banner,
+                target,
+                result,
+            } => (
+                Kind::Banners,
+                ItemStack::new(result, 1),
+                shapeless(vec![required(banner), required(target)]),
+                false,
+            ),
+            Special::DecoratedPot {
+                back,
+                left,
+                right,
+                front,
+                result: made,
+            } => (
+                Kind::Pottery,
+                result(made, back),
+                // The pattern " B ", "L R", " F ".
+                vec![
+                    (1, required(back)),
+                    (3, required(left)),
+                    (5, required(right)),
+                    (7, required(front)),
+                ],
+                true,
+            ),
+            Special::Imbue {
+                source,
+                material,
+                result: made,
+            } => {
+                // A lingering potion in the middle, arrows all round it.
+                let cells = (0..9)
+                    .map(|at| {
+                        let role = if at == 4 { source } else { material };
+                        (at, required(role))
+                    })
+                    .collect();
+                (Kind::Arrows, result(made, material), cells, true)
+            }
+            Special::RepairItem => continue,
+        };
+        // Dyed armour comes a recipe per piece; the rest group by what their first cell takes.
+        let family = match special {
+            Special::Dye { .. } => "dye".to_owned(),
+            // A recipe per banner colour: one entry.
+            Special::BannerDuplicate { .. } => "banner_duplicate".to_owned(),
+            _ => cells
+                .first()
+                .map(|(_, r)| r.accepts.order.join(","))
+                .unwrap_or_default(),
+        };
+        out.push(Template {
+            recipe: crate::crafting::recipe_id(name),
+            kind,
+            icon,
+            cells,
+            shaped,
+            family,
+        });
+    }
+    out
+}
+
+/// The templates as the row shows them: one entry per thing a builder works on (its first cell's
+/// ingredient), its templates the entry's variants. Dyeing a shulker box takes a recipe per colour
+/// in vanilla; here they're one entry with the colours in its variant column.
+pub fn groups(templates: &[Template]) -> Vec<Vec<usize>> {
+    let mut out: Vec<(Kind, &str, Vec<usize>)> = Vec::new();
+    for (i, t) in templates.iter().enumerate() {
+        match out
+            .iter_mut()
+            .find(|(k, family, _)| *k == t.kind && *family == t.family)
+        {
+            Some((_, _, members)) => members.push(i),
+            None => out.push((t.kind, &t.family, vec![i])),
+        }
+    }
+    out.into_iter().map(|(_, _, members)| members).collect()
+}
+
+/// The stacks of `inventory` a cell can take, one of each kind (item and components), in the
+/// inventory's order: the hotbar first.
+pub fn candidates(role: &Role, inventory: &[Option<ItemStack>]) -> Vec<ItemStack> {
+    let mut out: Vec<ItemStack> = Vec::new();
+    for stack in inventory.iter().flatten() {
+        if role.accepts.test(stack) && !out.iter().any(|s| s.same_item_same_components(stack)) {
+            let mut one = stack.clone();
+            one.count = 1;
+            out.push(one);
+        }
+    }
+    out
+}
+
+/// How many of `stack` the inventory holds.
+pub fn held(stack: &ItemStack, inventory: &[Option<ItemStack>]) -> u32 {
+    inventory
+        .iter()
+        .flatten()
+        .filter(|s| s.same_item_same_components(stack))
+        .map(|s| s.count)
+        .sum()
+}
+
+/// A first staging of a template's cells: each required cell takes the first candidate the
+/// inventory still has one of; optional cells stay empty.
+pub fn stage(template: &Template, inventory: &[Option<ItemStack>]) -> Vec<Option<ItemStack>> {
+    let mut staged: Vec<Option<ItemStack>> = vec![None; template.cells.len()];
+    for (i, (_, role)) in template.cells.iter().enumerate() {
+        if role.optional {
+            continue;
+        }
+        staged[i] = candidates(role, inventory).into_iter().find(|c| {
+            let used = staged.iter().flatten().filter(|s| s.same_item_same_components(c)).count();
+            held(c, inventory) as usize > used
+        });
+    }
+    staged
+}
+
+/// Whether the inventory holds every staged item, as many times as it's staged.
+pub fn available(staged: &[Option<ItemStack>], inventory: &[Option<ItemStack>]) -> bool {
+    staged.iter().flatten().all(|stack| {
+        let used = staged
+            .iter()
+            .flatten()
+            .filter(|s| s.same_item_same_components(stack))
+            .count();
+        held(stack, inventory) as usize >= used
+    })
+}
+
+/// The grid the staging lays out, `grid` wide: none when a staged cell has no room in it.
+pub fn layout(
+    template: &Template,
+    staged: &[Option<ItemStack>],
+    grid: usize,
+) -> Option<Vec<Option<ItemStack>>> {
+    let mut cells = vec![None; grid * grid];
+    for (i, stack) in staged.iter().enumerate() {
+        let Some(stack) = stack else {
+            continue;
+        };
+        *cells.get_mut(template.cell_in(i, grid)?)? = Some(stack.clone());
+    }
+    Some(cells)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::items::Items;
+    use std::path::{Path, PathBuf};
+
+    fn recipes() -> Option<Recipes> {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        let root: PathBuf = std::env::var_os("HORIZON_TEST_RESOURCES")
+            .map(PathBuf::from)
+            .unwrap_or(root);
+        if !root.join("registries.json").exists() {
+            return None;
+        }
+        let none = &horizon_world::loot::PackOverlay::NONE;
+        let items = Items::catalog(&root, none).expect("items");
+        Some(Recipes::load(&root, &items, none).expect("recipes"))
+    }
+
+    fn stacks(items: &[(&str, u32)]) -> Vec<Option<ItemStack>> {
+        items.iter().map(|(i, n)| Some(ItemStack::new(i, *n))).collect()
+    }
+
+    #[test]
+    fn every_builder_has_a_template_from_the_real_recipes() {
+        let Some(recipes) = recipes() else {
+            return;
+        };
+        let all = templates(&recipes);
+        for kind in Kind::ALL {
+            assert!(all.iter().any(|t| t.kind == kind), "no {kind:?} template");
+        }
+        let pot = all.iter().find(|t| t.kind == Kind::Pottery).unwrap();
+        assert!(pot.shaped && !pot.fits(2) && pot.fits(3));
+    }
+
+    #[test]
+    fn colour_recipes_of_one_thing_share_a_row_entry() {
+        let Some(recipes) = recipes() else {
+            return;
+        };
+        let all = templates(&recipes);
+        let groups = groups(&all);
+        let dyeing: Vec<&Vec<usize>> = groups
+            .iter()
+            .filter(|g| all[g[0]].kind == Kind::Dyeing)
+            .collect();
+        // Armour, shulker boxes, bundles...: a handful of entries, not a recipe per colour.
+        // Armour, shulker boxes and bundles: three entries, not a recipe per colour or piece.
+        assert_eq!(dyeing.len(), 3, "dyeing entries");
+        let shulker = dyeing
+            .iter()
+            .find(|g| all[g[0]].cells[0].1.accepts.order.iter().any(|i| i.ends_with("shulker_box")))
+            .expect("shulker box dyeing");
+        assert_eq!(shulker.len(), 16);
+        let banners = groups.iter().filter(|g| all[g[0]].kind == Kind::Banners).count();
+        assert_eq!(banners, 2, "copying a banner and decorating a shield");
+        // Every template is in exactly one entry.
+        let mut seen: Vec<usize> = groups.iter().flatten().copied().collect();
+        seen.sort();
+        assert_eq!(seen, (0..all.len()).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn a_staged_rocket_makes_what_the_game_would() {
+        let Some(recipes) = recipes() else {
+            return;
+        };
+        let all = templates(&recipes);
+        let rocket = all
+            .iter()
+            .find(|t| &*t.icon.item == "minecraft:firework_rocket")
+            .unwrap();
+        let inventory = stacks(&[("minecraft:paper", 3), ("minecraft:gunpowder", 5)]);
+        let staged = stage(rocket, &inventory);
+        assert!(available(&staged, &inventory));
+        // Paper and one gunpowder, nothing optional.
+        assert_eq!(staged.iter().flatten().count(), 2);
+        let grid = layout(rocket, &staged, 2).unwrap();
+        let made = recipes.craft(&grid, 2).expect("a rocket");
+        assert_eq!(&*made.item, "minecraft:firework_rocket");
+        assert_eq!(made.count, 3);
+    }
+
+    #[test]
+    fn staging_never_uses_more_than_the_inventory_holds() {
+        let Some(recipes) = recipes() else {
+            return;
+        };
+        let all = templates(&recipes);
+        let copy = all
+            .iter()
+            .find(|t| t.kind == Kind::Banners && t.cells.len() == 2)
+            .unwrap();
+        // One banner can't fill both cells of a banner copy.
+        let inventory = stacks(&[("minecraft:white_banner", 1)]);
+        let staged = stage(copy, &inventory);
+        assert!(available(&staged, &inventory));
+        assert!(staged.iter().flatten().count() < 2);
+        let twice = vec![Some(ItemStack::new("minecraft:white_banner", 1)); 2];
+        assert!(!available(&twice, &inventory));
+    }
+
+    #[test]
+    fn a_shaped_template_has_no_place_in_a_small_grid() {
+        let Some(recipes) = recipes() else {
+            return;
+        };
+        let all = templates(&recipes);
+        let pot = all.iter().find(|t| t.kind == Kind::Pottery).unwrap();
+        let staged = vec![Some(ItemStack::new("minecraft:brick", 1)); 4];
+        assert!(layout(pot, &staged, 2).is_none());
+        let grid = layout(pot, &staged, 3).unwrap();
+        assert!(grid[1].is_some() && grid[4].is_none() && grid[7].is_some());
+        let made = recipes.craft(&grid, 3).expect("a pot");
+        assert_eq!(&*made.item, "minecraft:decorated_pot");
+    }
+}
