@@ -658,6 +658,17 @@ impl Game<'_> {
         let at = (self.cursor.0 as i32, self.cursor.1 as i32);
         let hit = self.pad.legacy.layout.as_ref().and_then(|l| hit_at(l, at));
         let Some(hit) = hit else {
+            // A click on an area's place with nothing there: the focus goes to it (the compact
+            // layout's inventory page, its recipes again).
+            let area = self.pad.legacy.layout.as_ref().and_then(|l| {
+                l.areas.iter().find(|(_, [x, y, w, h])| {
+                    at.0 >= *x && at.1 >= *y && at.0 < x + w && at.1 < y + h
+                })
+            });
+            if let Some((area, _)) = area.copied() {
+                self.pad.legacy.focus = area;
+                self.pad.legacy.cursor = 0;
+            }
             return true;
         };
         let id = self.legacy_tab_id();
@@ -709,10 +720,13 @@ impl Game<'_> {
         let atlas_width = |s: &str| self.gui.atlas.font.width(s).round() as i32;
         // The pad's focus shows only while the pad plays; the mouse gets the hover instead.
         let pad = self.pad.in_use;
-        if pad {
-            view.focus = self.pad.legacy.focus;
-            view.cursor = self.pad.legacy.cursor;
-        }
+        // The focus's area shows (the compact layout pages to it); its cursor only for the pad.
+        view.focus = self.pad.legacy.focus;
+        view.cursor = if pad {
+            self.pad.legacy.cursor
+        } else {
+            usize::MAX
+        };
         let mut layout = screen::layout(&view, &atlas_width);
         // An area the layout no longer has (a small view has no inventory; an empty row no grid):
         // the focus goes to one it has.
@@ -724,11 +738,9 @@ impl Game<'_> {
             let to = layout.areas.first().map_or(Area::Row, |(a, _)| *a);
             self.pad.legacy.focus = to;
             self.pad.legacy.cursor = 0;
-            if pad {
-                view.focus = to;
-                view.cursor = 0;
-                layout = screen::layout(&view, &atlas_width);
-            }
+            view.focus = to;
+            view.cursor = if pad { 0 } else { usize::MAX };
+            layout = screen::layout(&view, &atlas_width);
         }
         let at = (self.cursor.0 as i32, self.cursor.1 as i32);
         let hover = (!pad).then(|| hit_at(&layout, at)).flatten();
@@ -976,7 +988,12 @@ impl Game<'_> {
         let current = self.legacy_row(&stock);
         let grid = self.craft_size;
         let inventory: Vec<Option<ItemStack>> = self.inventory[..36].to_vec();
-        let shown = screen::tabs_shown(width, height);
+        let shown = screen::tabs_shown(
+            width,
+            height,
+            self.pad.legacy.tabs.len(),
+            self.legacy_modes().len(),
+        );
         let opened = self.pad.legacy.opened_at.unwrap_or_else(Instant::now);
         let cycle = (opened.elapsed().as_millis() / CYCLE.as_millis()) as usize;
         let mut view = View {

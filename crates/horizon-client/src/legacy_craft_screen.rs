@@ -211,18 +211,33 @@ pub fn fit(text: &str, room: i32, width: &dyn Fn(&str) -> i32) -> String {
 
 /// The full layout fits.
 pub fn full_fits(width: i32, height: i32) -> bool {
-    width >= PANEL_W + 2 * MODE_OUT + 4 && height >= TAB_RISE + PANEL_H + HINT_ROOM
+    width >= PANEL_W + 4 && height >= TAB_RISE + PANEL_H + HINT_ROOM
+}
+
+/// The mode tabs fit beside the full panel; without the room they fold into one slot at the tab
+/// strip's end (a 2-player vertical split, a 640x480 window: 320 GUI px wide).
+pub fn modes_beside(width: i32) -> bool {
+    width >= PANEL_W + 2 * MODE_OUT + 4
 }
 
 /// How many category tabs show at once.
-pub fn tabs_shown(width: i32, height: i32) -> usize {
-    let room = if full_fits(width, height) {
+/// How many of `total` category tabs show at once. When they page, the strip's last place holds
+/// the page arrows; with folded modes, its end holds the mode slot.
+pub fn tabs_shown(width: i32, height: i32, total: usize, modes: usize) -> usize {
+    let mut room = if full_fits(width, height) {
         PANEL_W
     } else {
         COMPACT_W - 32
     };
-    (room / TAB_PITCH) as usize
+    if full_fits(width, height) && modes > 1 && !modes_beside(width) {
+        room -= MODE_SLOT;
+    }
+    let fit = (room / TAB_PITCH) as usize;
+    if total > fit { fit - 1 } else { fit }
 }
+
+/// The room the folded mode slot takes at the tab strip's end.
+const MODE_SLOT: i32 = 24;
 
 /// How many recipes the row shows at once.
 pub fn row_shown(width: i32, height: i32) -> usize {
@@ -434,22 +449,26 @@ fn tab_pager(
     shown: usize,
     width: &dyn Fn(&str) -> i32,
 ) {
-    let Some(page) = &view.tab_page else {
+    if view.tab_page.is_none() {
         return;
-    };
-    let right = x + shown as i32 * TAB_PITCH + 2;
-    out.sprite("widget/page_backward", x - 26, y - 20, 23, 13);
-    out.hit([x - 26, y - 20, 23, 13], Hit::TabPrev);
-    out.sprite("widget/page_forward", right, y - 20, 23, 13);
-    out.hit([right, y - 20, 23, 13], Hit::TabNext);
+    }
+    // In the strip's last place, one arrow over the other: inside the panel's width at any size.
+    let end = x + shown as i32 * TAB_PITCH + 2;
+    out.sprite("widget/page_backward", end, y - TAB_RISE + 1, 23, 13);
+    out.hit([end, y - TAB_RISE + 1, 23, 13], Hit::TabPrev);
+    out.sprite("widget/page_forward", end, y - TAB_RISE + 14, 23, 13);
+    out.hit([end, y - TAB_RISE + 14, 23, 13], Hit::TabNext);
     let _ = width;
-    out.push(Call::Text {
-        runs: vec![Run::plain(page.clone())],
-        x: right + 26,
-        y: y - 17,
-        color: -1,
-        shadow: true,
-    });
+}
+
+/// The mode, folded into one slot at the tab strip's end when the tabs can't stand beside the
+/// panel; LT and RT still turn it.
+fn mode_slot(out: &mut Out, view: &View, x: i32, y: i32) {
+    out.sprite("container/slot", x, y, 18, 18);
+    if let Some(icon) = view.modes.get(view.mode) {
+        out.item(icon, x + 1, y + 1, false);
+    }
+    out.hit([x, y, 18, 18], Hit::Mode(view.mode));
 }
 
 fn mode_tabs(out: &mut Out, view: &View, x: i32, y: i32, front: bool) {
@@ -645,11 +664,16 @@ fn full(view: &View, width: &dyn Fn(&str) -> i32) -> Layout {
         hits: Vec::new(),
     };
     let (w, h) = (PANEL_W, PANEL_H);
-    // The mode tabs show only with a choice to make; without them the panel sits in the middle.
-    let modes = view.modes.len() > 1;
+    // The mode tabs show only with a choice to make, beside the panel where there's room for
+    // them, else folded into a slot at the tab strip's end; the panel sits in the middle.
+    let choice = view.modes.len() > 1;
+    let modes = choice && modes_beside(view.width);
     let x = (view.width - w) / 2 + if modes { MODE_OUT / 2 } else { 0 };
     let y = TAB_RISE.max((view.height - (TAB_RISE + h + HINT_ROOM)) / 2 + TAB_RISE);
-    let shown = tabs_shown(view.width, view.height);
+    let shown = tabs_shown(view.width, view.height, view.tabs.len(), view.modes.len());
+    if choice && !modes {
+        mode_slot(&mut out, view, x + w - 20, y - 22);
+    }
     creative_tabs(&mut out, view, x, y, shown, false);
     if modes {
         mode_tabs(&mut out, view, x, y, false);
@@ -720,7 +744,7 @@ fn compact(view: &View, width: &dyn Fn(&str) -> i32) -> Layout {
     let (w, h) = (COMPACT_W.min(view.width - 4), COMPACT_H);
     let x = (view.width - w) / 2;
     let y = TAB_RISE.max((view.height - (TAB_RISE + h + HINT_ROOM)) / 2 + TAB_RISE);
-    let shown = tabs_shown(view.width, view.height);
+    let shown = tabs_shown(view.width, view.height, view.tabs.len(), view.modes.len());
     // The mode, as a slot left of the tabs, when there's a choice of them.
     if view.modes.len() > 1 {
         out.sprite("container/slot", x + 4, y - 22, 18, 18);
@@ -732,12 +756,18 @@ fn compact(view: &View, width: &dyn Fn(&str) -> i32) -> Layout {
     creative_tabs(&mut out, view, x + 32, y, shown, false);
     panel(&mut out, x, y, w, h);
     creative_tabs(&mut out, view, x + 32, y, shown, true);
+    tab_pager(&mut out, view, x + 32, y, shown, width);
     title_or_search(&mut out, view, x + w / 2, y + 6, width);
     let row_y = y + 36;
     let shown_row = row_shown(view.width, view.height);
     let row_x = x + 1 + (w - shown_row as i32 * RECIPE) / 2;
     let first = row_first(view.row.len(), view.selected, shown_row, view.row_from);
-    if view.row.is_empty() {
+    // Too short for both: the panel shows the recipes or, with the focus there, the inventory.
+    let inventory_page = view.focus == Area::Inventory;
+    if inventory_page {
+        let ix = x + (w - 168) / 2;
+        inventory(&mut out, view, ix, y + 16, width);
+    } else if view.row.is_empty() {
         out.text(
             &view.empty,
             x + w / 2 - width(&view.empty) / 2,
@@ -764,14 +794,22 @@ fn compact(view: &View, width: &dyn Fn(&str) -> i32) -> Layout {
         }
         row(&mut out, view, row_x, row_y, shown_row, first);
     }
-    // No inventory here: small views have no room for it (the vanilla screen, by L3, has one).
+    // The page not shown still has its place, so a flick reaches it: the inventory at the
+    // recipes' lower right, the recipes along the inventory page's top.
     let mut areas = Vec::new();
-    if !view.row.is_empty() {
-        let visible = (view.row.len() - first).min(shown_row) as i32;
-        areas.push((Area::Row, [row_x, row_y, visible * RECIPE, RECIPE]));
-        if let Some(r) = out.hits.iter().find(|(_, h)| *h == Hit::Cell(0)).map(|(r, _)| *r) {
-            areas.push((Area::Grid, [r[0], r[1], 54, 54]));
+    if inventory_page {
+        let ix = x + (w - 168) / 2;
+        areas.push((Area::Inventory, [ix, y + 16, 168, 90]));
+        areas.push((Area::Row, [x + 4, y + 2, w - 8, 12]));
+    } else {
+        if !view.row.is_empty() {
+            let visible = (view.row.len() - first).min(shown_row) as i32;
+            areas.push((Area::Row, [row_x, row_y, visible * RECIPE, RECIPE]));
+            if let Some(r) = out.hits.iter().find(|(_, h)| *h == Hit::Cell(0)).map(|(r, _)| *r) {
+                areas.push((Area::Grid, [r[0], r[1], 54, 54]));
+            }
         }
+        areas.push((Area::Inventory, [x + w - 60, row_y + 40, 54, 54]));
     }
     Layout {
         calls: out.calls,
@@ -829,14 +867,22 @@ mod tests {
         // 1280x720, 854x480 and 2560x1440 at automatic GUI scale are all 427x240.
         assert!(full_fits(427, 240));
         assert!(full_fits(480, 270));
+        // A 2-player vertical split on 1280x720 (640x720 a view) and a 640x480 window: 320 wide.
+        assert!(full_fits(320, 360));
+        assert!(full_fits(320, 240));
         assert!(!full_fits(320, 180));
         assert!(!full_fits(427, 200));
     }
 
     #[test]
     fn every_place_stays_on_the_view() {
-        for (w, h) in [(427, 240), (480, 270), (320, 240), (320, 180), (640, 360)] {
-            let l = layout(&view(w, h), &width);
+        for (w, h) in [(427, 240), (480, 270), (320, 240), (320, 360), (320, 180), (640, 360)] {
+            // Paged tabs and two modes: every control on the view at every size.
+            let mut v = view(w, h);
+            v.tabs = (0..14).map(|_| stack("minecraft:bricks")).collect();
+            v.tab_page = Some("1/2".into());
+            v.modes.push(stack("minecraft:firework_rocket"));
+            let l = layout(&v, &width);
             for (rect, hit) in &l.hits {
                 assert!(
                     inside([0, 0, w, h], *rect),
@@ -927,10 +973,24 @@ mod tests {
     }
 
     #[test]
-    fn the_inventory_isnt_an_area_of_the_compact_layout() {
+    fn the_compact_layout_turns_to_an_inventory_page() {
         let l = layout(&view(320, 180), &width);
-        assert!(l.areas.iter().all(|(a, _)| *a != Area::Inventory));
-        assert!(l.areas.iter().any(|(a, _)| *a == Area::Grid));
+        // On the recipes page: the grid's there, and a flick right from it reaches the inventory.
+        let [x, y, w, h] = l.rect_of(Hit::Cell(4)).unwrap();
+        let grid = [x + w / 2, y + h / 2];
+        assert_eq!(l.area_toward(Area::Grid, grid, [1, 0]), Some(Area::Inventory));
+        assert!(!l.hits.iter().any(|(_, h)| matches!(h, Hit::Inventory(_))));
+        // With the focus there, the inventory page: all 36 slots on the view, a flick up goes back.
+        let mut v = view(320, 180);
+        v.focus = Area::Inventory;
+        let l = layout(&v, &width);
+        let slots: Vec<_> = l.hits.iter().filter(|(_, h)| matches!(h, Hit::Inventory(_))).collect();
+        assert_eq!(slots.len(), 36);
+        for (r, _) in slots {
+            assert!(r[1] + r[3] <= 180, "{r:?}");
+        }
+        let [x, y, w, h] = l.rect_of(Hit::Inventory(13)).unwrap();
+        assert_eq!(l.area_toward(Area::Inventory, [x + w / 2, y + h / 2], [0, -1]), Some(Area::Row));
     }
 
     #[test]
@@ -953,6 +1013,6 @@ mod tests {
 
     #[test]
     fn ten_tabs_fit_the_full_panel() {
-        assert!(tabs_shown(427, 240) >= 10);
+        assert!(tabs_shown(427, 240, 10, 1) >= 10);
     }
 }

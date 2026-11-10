@@ -110,6 +110,7 @@ and prepared resources in .local/horizon-client/26.3. Exit status 0 when every c
 - legacy_classic_and_paging: it opens on every recipe; the wheel steps, L3 shows the vanilla
   screen.
 - legacy_creative: X opens it in creative too, and A crafts.
+- legacy_compact: a 320x180 view's compact layout pages to the inventory and back, its cursor taking as usual.
 - legacy_areas: right-stick flicks go row, grid, inventory; the inventory cursor takes, puts and quick-moves as
   vanilla's pointer does; leaving the inventory holding a stack puts it back where it came from; B goes back to the
   row, then closes.
@@ -4622,6 +4623,39 @@ def legacy_areas(game, check):
     game.pad('east')
     check(game.ctl('screen').get('screen') == 'playing', 'B on the row did not close')
 
+
+def legacy_compact(args, name):
+    """The smallest layout (a 320x180 view) still has the inventory: a page the right stick turns to."""
+    game = Game(args, name, world=True, seed=legacy_seed, extra=('--width', 320, '--height', 180))
+    check = Check()
+    try:
+        legacy_known(game, 'minecraft:oak_planks', gives=['oak_log 5'])
+        game.pad('west')
+        shown = legacy(game)
+        if shown is None:
+            check(False, 'X did not open the crafting screen')
+            return check.failures
+        check(shown['compact'], f'a 320x180 view is not compact: {shown}')
+        legacy_flick(game, 0, -1)
+        legacy_flick(game, 1, 0)
+        check(legacy(game)['focus'] == 'inventory', f"no inventory page: {legacy(game)['focus']}")
+        # The cursor takes from it as in the full layout.
+        for _ in range(3):
+            game.pad('down')
+        for _ in range(9):
+            if legacy(game)['cursor'] == 0:
+                break
+            game.pad('left')
+        game.pad('south')
+        carried = game.ctl('menu').get('carried') or {}
+        check('oak_log' in carried.get('item', ''), f'A on the page took {carried}')
+        legacy_flick(game, 0, 1)
+        check(legacy(game)['focus'] == 'row' and not game.ctl('menu').get('carried'),
+              f"up from the page: {legacy(game)}, carrying {game.ctl('menu').get('carried')}")
+    finally:
+        game.quit()
+    return check.failures
+
 CASES = {'idle_a': idle_a, 'idle_b': idle_b, 'idle_x': idle_x, 'release': release, 'move_cancels': move_cancels,
          'pad_release': pad_release, 'pause_y': pause_y, 'settings': settings, 'create_world': create_world,
          'world_options': world_options, 'key_row_b': key_row_b, 'lock_question': lock_question,
@@ -4659,7 +4693,7 @@ CASES = {'idle_a': idle_a, 'idle_b': idle_b, 'idle_x': idle_x, 'release': releas
          'erase_checkbox': erase_checkbox,
          'legacy_craft': legacy_craft, 'legacy_table': legacy_table, 'legacy_tabs_search': legacy_tabs_search,
          'legacy_classic_and_paging': legacy_classic_and_paging, 'legacy_creative': legacy_creative,
-         'legacy_areas': legacy_areas,
+         'legacy_areas': legacy_areas, 'legacy_compact': legacy_compact,
          'extras_shell': extras_shell,
          'extras_shell_edges': extras_shell_edges,
          'graphics_shell': graphics_shell,
