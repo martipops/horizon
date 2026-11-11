@@ -718,7 +718,8 @@ fn smithing(out: &mut Out, view: &View, x: i32, y: i32) {
         "container/slot/ingot",
     ];
     let hints = view.slot_hints.unwrap_or(SMITHING);
-    for i in 0..3 {
+    // Two slots (a grindstone's, a cartography table's) or three.
+    for i in 0..view.cells.len().clamp(2, 3) {
         let (sx, sy) = (x + i as i32 * 18, y + 18);
         out.sprite("container/slot", sx, sy, 18, 18);
         let focused = view.focus == Area::Grid && view.cursor == i;
@@ -732,7 +733,8 @@ fn smithing(out: &mut Out, view: &View, x: i32, y: i32) {
                 }
                 out.item(&cell.stack, sx + 1, sy + 1, false);
             }
-            _ => out.sprite(hints[i], sx + 1, sy + 1, 16, 16),
+            _ if !hints[i].is_empty() => out.sprite(hints[i], sx + 1, sy + 1, 16, 16),
+            _ => {}
         }
         if focused {
             highlight_front(out, sx, sy);

@@ -68,6 +68,7 @@ impl Game<'_> {
             || self.legacy_anvil()
             || self.legacy_brewing()
             || self.legacy_loom()
+            || self.legacy_pair().is_some()
     }
 
     /// The open screen is a stonecutter's.

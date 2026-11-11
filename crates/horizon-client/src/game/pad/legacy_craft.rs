@@ -77,6 +77,8 @@ pub(in crate::game) struct LegacyCraft {
     pub(in crate::game) brew: super::legacy_brew::Brew,
     /// The loom's pattern and staging.
     pub(in crate::game) loom: super::legacy_loom::Loom,
+    /// A grindstone's or cartography table's selection and addition.
+    pub(in crate::game) pair: super::legacy_pair::Pair,
     /// A held direction's start: past a second of it, the row runs faster.
     held_since: Option<Instant>,
     /// A vanilla click the screen passes on to the inventory under it.
@@ -125,6 +127,12 @@ impl Game<'_> {
             "brewing_stand"
         } else if self.legacy_loom() {
             "loom"
+        } else if let Some(kind) = self.legacy_pair() {
+            if kind == super::super::stations::Kind::Grindstone {
+                "grindstone"
+            } else {
+                "cartography_table"
+            }
         } else {
             match self.legacy_furnace() {
                 Some(BookType::Furnace) => "furnace",
@@ -379,6 +387,10 @@ impl Game<'_> {
         if self.legacy_brewing() && self.legacy_brew_button(button) {
             return true;
         }
+        // A grindstone's or cartography table's: the addition in the grid; A or Y works it.
+        if self.legacy_pair_button(button) {
+            return true;
+        }
         // A loom's: A and X step a cell in the grid; A or Y weaves.
         if self.legacy_loom() && self.legacy_loom_button(button) {
             return true;
@@ -614,6 +626,9 @@ impl Game<'_> {
         if self.legacy_loom() {
             return self.legacy_loom_step(button);
         }
+        if self.legacy_pair().is_some() {
+            return self.legacy_pair_step(button);
+        }
         if self.legacy_builder().is_some() {
             return self.legacy_build_step(button);
         }
@@ -693,6 +708,14 @@ impl Game<'_> {
         }
         if self.legacy_loom() {
             return vec![ItemStack::new("minecraft:loom", 1)];
+        }
+        if let Some(kind) = self.legacy_pair() {
+            let item = if kind == super::super::stations::Kind::Grindstone {
+                "minecraft:grindstone"
+            } else {
+                "minecraft:cartography_table"
+            };
+            return vec![ItemStack::new(item, 1)];
         }
         self.legacy_mode_icons()
     }
@@ -1054,6 +1077,8 @@ impl Game<'_> {
             "smith": self.legacy_smith(),
             "brewing": self.legacy_brewing(),
             "loom": self.legacy_loom(),
+            "pair": self.legacy_pair().map(|k| format!("{k:?}")),
+            "addition": self.pad.legacy.pair_addition(),
             "anvil": self.legacy_anvil().then(|| self.pad.legacy.anvil.status()),
             "building": self.legacy_build_running(),
             "cursor": state.cursor,
@@ -1098,7 +1123,8 @@ impl Game<'_> {
         let builder = self.legacy_builder().is_some()
             || self.legacy_smith()
             || self.legacy_anvil()
-            || self.legacy_loom();
+            || self.legacy_loom()
+            || self.legacy_pair().is_some();
         let furnace = self.legacy_furnace().is_some();
         let cutter = self.legacy_cutter();
         let (craft, craft_all) = if cutter {
@@ -1214,8 +1240,13 @@ impl Game<'_> {
         };
         // LT and RT only with a type to turn to (a furnace has just itself).
         let mut rows = rows;
-        // A loom: Weave for Craft, no tabs or search.
-        if self.legacy_loom() {
+        // A loom: Weave for Craft; a grindstone or cartography table: Use; no tabs or search.
+        if self.legacy_loom() || self.legacy_pair().is_some() {
+            let verb = if self.legacy_loom() {
+                "horizon.legacy_craft.weave"
+            } else {
+                "horizon.legacy_craft.use"
+            };
             let (craft, all, search) = (
                 tr("horizon.legacy_craft.craft"),
                 tr("horizon.legacy_craft.craft_all"),
@@ -1224,7 +1255,7 @@ impl Game<'_> {
             rows.retain(|(_, r)| r.caption != search);
             for (_, r) in &mut rows {
                 if r.caption == craft || r.caption == all {
-                    r.caption = tr("horizon.legacy_craft.weave");
+                    r.caption = tr(verb);
                 }
             }
             rows.dedup_by(|a, b| a.1.caption == b.1.caption);
@@ -1453,6 +1484,10 @@ impl Game<'_> {
         }
         if self.legacy_loom() {
             self.legacy_loom_view(&mut view);
+            return view;
+        }
+        if let Some(kind) = self.legacy_pair() {
+            self.legacy_pair_view(&mut view, kind);
             return view;
         }
         // A builder: its own row and grid, no category tabs.

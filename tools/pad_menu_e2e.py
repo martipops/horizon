@@ -122,6 +122,7 @@ and prepared resources in .local/horizon-client/26.3. Exit status 0 when every c
 - legacy_view_memory: a station switched to vanilla's screen opens there again, after a restart too, and back;
   other stations keep their own choice.
 - legacy_loom: a loom the pad opens: A weaves the selected pattern in red on a white banner, nothing left in it.
+- legacy_grind_and_map: a grindstone takes the enchantments off a sword; a cartography table copies a map.
 - legacy_compact: a 320x180 view's compact layout has the whole inventory on screen; its cursor takes as usual.
 - legacy_areas: right-stick flicks go row, grid, inventory; the inventory cursor takes, puts and quick-moves as
   vanilla's pointer does; leaving the inventory holding a stack puts it back where it came from; B goes back to the
@@ -4943,6 +4944,32 @@ def legacy_loom(game, check):
     check(banners and 'banner_patterns' in banners[0].get('components', ''), f'not woven: {banners}')
     check(not any(600 <= s < 603 for s in menu_slots(game)), 'left in the loom')
 
+
+@legacy_case
+def legacy_grind_and_map(game, check):
+    legacy_known(game, gives=['iron_sword[enchantments={sharpness:3}] 1', 'map 2'])
+    # A real map, with its saved data (a cartography table works only on those): one used.
+    game.ctl('select', 'minecraft:map')
+    game.ctl('use-item')
+    time.sleep(1.5)
+    shown = legacy_open_station(game, 'grindstone')
+    check(shown is not None and shown.get('pair') == 'Grindstone', f'the grindstone: {shown}')
+    if shown:
+        game.pad('south')
+        legacy_build_ended(game)
+        swords = legacy_held(game, 'minecraft:iron_sword')
+        check(swords and 'sharpness' not in swords[0].get('components', ''), f'not ground: {swords}')
+        game.pad('east')
+        time.sleep(SETTLE)
+    shown = legacy_open_station(game, 'cartography_table')
+    check(shown is not None and shown.get('pair') == 'Cartography', f'the cartography table: {shown}')
+    if shown:
+        check(shown.get('addition') == 'minecraft:map', f"addition: {shown.get('addition')}")
+        game.pad('south')
+        legacy_build_ended(game)
+        have = counts(game)
+        check(have.get('minecraft:filled_map') == 2 and not have.get('minecraft:map'), f'not copied: {have}')
+
 CASES = {'idle_a': idle_a, 'idle_b': idle_b, 'idle_x': idle_x, 'release': release, 'move_cancels': move_cancels,
          'pad_release': pad_release, 'pause_y': pause_y, 'settings': settings, 'create_world': create_world,
          'world_options': world_options, 'key_row_b': key_row_b, 'lock_question': lock_question,
@@ -4985,6 +5012,7 @@ CASES = {'idle_a': idle_a, 'idle_b': idle_b, 'idle_x': idle_x, 'release': releas
          'legacy_stonecutter': legacy_stonecutter, 'legacy_smithing': legacy_smithing,
          'legacy_anvil': legacy_anvil, 'legacy_brewing': legacy_brewing,
          'legacy_view_memory': legacy_view_memory, 'legacy_loom': legacy_loom,
+         'legacy_grind_and_map': legacy_grind_and_map,
          'extras_shell': extras_shell,
          'extras_shell_edges': extras_shell_edges,
          'graphics_shell': graphics_shell,
