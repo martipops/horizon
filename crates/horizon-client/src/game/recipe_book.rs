@@ -156,7 +156,10 @@ impl Game<'_> {
     /// visible in a window narrower than `NARROW`: the book covers the menu,
     /// so no slot is hovered or clicked.
     pub(super) fn book_covers_menu(&self, width: f32) -> bool {
-        width < NARROW && self.active_book().is_some_and(|b| self.book_open(b))
+        // Under the controller crafting screen the book isn't shown: it covers nothing.
+        width < NARROW
+            && self.active_book().is_some_and(|b| self.book_open(b))
+            && !self.legacy_showing()
     }
     /// Whether typed keys go to the search box.
     pub(super) fn recipe_search_focused(&self) -> bool {
@@ -697,6 +700,11 @@ impl Game<'_> {
     /// A click while a screen with a recipe book is open; true when the book
     /// used it.
     pub(super) fn recipe_book_click(&mut self, right: bool) -> bool {
+        // Under the controller crafting screen the book isn't shown: it takes no click (the
+        // screen's own clicks on the menu's slots pass through here).
+        if self.legacy_showing() {
+            return false;
+        }
         let Some(book_type) = self.active_book() else {
             return false;
         };

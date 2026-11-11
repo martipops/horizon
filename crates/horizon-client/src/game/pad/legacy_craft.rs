@@ -157,6 +157,9 @@ impl Game<'_> {
         } else {
             self.pad.legacy.open = false;
             self.pad.legacy.typing = false;
+            // Vanilla's screen shows what a run left in the slots, for the player to take.
+            self.pad.legacy.build.end_run();
+            self.pad.legacy.cutter = Default::default();
         }
     }
 
@@ -186,11 +189,20 @@ impl Game<'_> {
         let menu = self.remote_menu().0;
         let state = &mut self.pad.legacy;
         if state.menu != Some(menu) {
-            // Every recipe: the search tab, before anything's typed.
+            // Every recipe: the search tab, before anything's typed; the stations' selections and
+            // stagings start again too (another anvil, another loom).
             state.tab = 0;
             state.first_tab = 0;
             state.places.clear();
             state.query.clear();
+            state.focus = Area::Row;
+            state.cursor = 0;
+            state.cutter = Default::default();
+            state.smith = Default::default();
+            state.anvil = Default::default();
+            state.brew = Default::default();
+            state.loom = Default::default();
+            state.pair = Default::default();
         }
         state.open = true;
         if state.menu != Some(menu) {
@@ -212,6 +224,10 @@ impl Game<'_> {
             state.menu = None;
             state.typing = false;
             state.layout = None;
+            // A run ends with its screen: what it put in stays in the menu, which vanilla returns
+            // to the inventory as the menu closes.
+            state.build.end_run();
+            state.cutter = Default::default();
             return;
         }
         let menu = self.remote_menu().0;
@@ -347,6 +363,19 @@ impl Game<'_> {
             return false;
         }
         let now = Instant::now();
+        // While a run clicks for the player, B ends it and only moving about goes on: a press
+        // of theirs on a slot would land among its clicks.
+        if self.legacy_busy() {
+            match button {
+                Button::East => self.legacy_cancel_run(),
+                Button::DPadLeft | Button::DPadRight | Button::DPadUp | Button::DPadDown => {
+                    self.legacy_step(button);
+                    self.legacy_hold(button, now);
+                }
+                _ => self.pad_rumble(gamepad::Rumble::RadialNothing),
+            }
+            return true;
+        }
         // The inventory's cursor does what vanilla's pointer does over a slot, and so does the
         // furnace's over its own three.
         let furnace = self.legacy_furnace().is_some();
@@ -502,6 +531,10 @@ impl Game<'_> {
     /// A right-stick flick: the focus moves to the nearest area that way from where it is, and
     /// onto the cell of it nearest the cell it left.
     fn legacy_flick(&mut self, button: Button) {
+        if self.legacy_busy() || self.direct_craft_running() {
+            self.pad_rumble(gamepad::Rumble::RadialNothing);
+            return;
+        }
         let Some(layout) = self.pad.legacy.layout.as_ref() else {
             return;
         };
@@ -674,7 +707,7 @@ impl Game<'_> {
         let n = self.legacy_modes().len();
         // A builder's craft ends where it is (its grid comes back as it goes on), and the focus
         // starts again on the row.
-        if self.legacy_build_running() {
+        if self.legacy_busy() || self.direct_craft_running() {
             self.pad_rumble(gamepad::Rumble::RadialNothing);
             return;
         }
@@ -892,6 +925,10 @@ impl Game<'_> {
         if !self.legacy_showing() || self.pad.legacy.passthrough {
             return false;
         }
+        // A run clicks for the player: theirs waits.
+        if self.legacy_busy() {
+            return true;
+        }
         let at = (self.cursor.0 as i32, self.cursor.1 as i32);
         let hit = self.pad.legacy.layout.as_ref().and_then(|l| hit_at(l, at));
         let Some(hit) = hit else {
@@ -916,7 +953,8 @@ impl Game<'_> {
             }
             Hit::TabPrev => self.legacy_turn_tab(false),
             Hit::TabNext => self.legacy_turn_tab(true),
-            Hit::Mode(i) => self.pad.legacy.mode = i,
+            Hit::Mode(i) if !self.direct_craft_running() => self.pad.legacy.mode = i,
+            Hit::Mode(_) => {}
             Hit::Row(i) => {
                 self.pad.legacy.focus = Area::Row;
                 let place = self.pad.legacy.places.entry(id).or_default();

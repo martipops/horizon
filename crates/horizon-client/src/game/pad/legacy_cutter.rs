@@ -35,6 +35,8 @@ pub(in crate::game) struct Cutter {
 }
 
 struct Run {
+    /// The menu it was started on: on any other, it ends.
+    menu: i32,
     steps: VecDeque<Step>,
     next_at: Instant,
 }
@@ -45,9 +47,10 @@ enum Step {
     Load {
         material: ItemStack,
     },
-    /// The menu's button for the cut that makes this item.
+    /// The menu's button for the cut that makes this item, the list having until then to show it.
     Pick {
         result: String,
+        until: Option<Instant>,
     },
     Result {
         until: Option<Instant>,
@@ -58,6 +61,16 @@ enum Step {
     },
     /// What's in hand, down in the inventory: on a stack of it with room, else an empty slot.
     Stow,
+}
+
+impl super::legacy_craft::LegacyCraft {
+    pub(in crate::game) fn cutter_running(&self) -> bool {
+        self.cutter.run.is_some()
+    }
+    /// Ends a cut where it is.
+    pub(in crate::game) fn cutter_stop(&mut self) {
+        self.cutter.run = None;
+    }
 }
 
 impl Game<'_> {
@@ -173,14 +186,19 @@ impl Game<'_> {
             Step::Load {
                 material: materials[tab].clone(),
             },
-            Step::Pick { result },
+            Step::Pick {
+                result,
+                until: None,
+            },
             Step::Result { until: None },
             Step::Take { all },
         ]);
         if !all {
             steps.push_back(Step::Stow);
         }
+        let menu = self.remote_menu().0;
         self.pad.legacy.cutter.run = Some(Run {
+            menu,
             steps,
             next_at: Instant::now(),
         });
@@ -196,11 +214,13 @@ impl Game<'_> {
         let Some(mut run) = self.pad.legacy.cutter.run.take() else {
             return;
         };
+        // Its menu went (closed, another opened): nothing more goes out on any other.
+        if !self.legacy_cutter() || !self.legacy_showing() || self.remote_menu().0 != run.menu {
+            return;
+        }
         let now = Instant::now();
-        if now < run.next_at || !self.legacy_cutter() {
-            if self.legacy_cutter() {
-                self.pad.legacy.cutter.run = Some(run);
-            }
+        if now < run.next_at {
+            self.pad.legacy.cutter.run = Some(run);
             return;
         }
         let gap = if self.integrated.is_some() {
@@ -232,7 +252,8 @@ impl Game<'_> {
                     run.next_at = now + gap;
                 }
             }
-            Step::Pick { result } => {
+            Step::Pick { result, until } => {
+                let until = until.unwrap_or(now + RESULT_WAIT);
                 let recipes = &self.stations().recipes.stonecutting;
                 let index = self.station.as_ref().and_then(|s| {
                     s.stone
@@ -246,7 +267,10 @@ impl Game<'_> {
                         run.next_at = now + gap;
                     }
                     // The menu's list isn't there yet (the input just went in): a frame later.
-                    None if input.is_some() => run.steps.push_front(Step::Pick { result }),
+                    None if input.is_some() && now < until => run.steps.push_front(Step::Pick {
+                        result,
+                        until: Some(until),
+                    }),
                     None => run.steps.clear(),
                 }
             }

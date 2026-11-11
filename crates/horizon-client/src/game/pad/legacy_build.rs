@@ -43,6 +43,13 @@ pub(in crate::game) struct Build {
     run: Option<Run>,
 }
 
+impl Build {
+    /// Ends a running craft where it is: no more clicks go out.
+    pub(in crate::game) fn end_run(&mut self) {
+        self.run = None;
+    }
+}
+
 /// The selected builder as it stands.
 struct Now {
     ours: Vec<Template>,
@@ -56,6 +63,8 @@ struct Now {
 /// A craft under way: the clicks still to make.
 struct Run {
     recipe: String,
+    /// The menu it was started on: on any other, it ends (`legacy_build_poll`).
+    menu: i32,
     steps: VecDeque<Step>,
     next_at: Instant,
     /// The menu's result slot, and its input slots (what Clear empties): the crafting grid's,
@@ -85,6 +94,9 @@ enum Step {
     Rename(String),
     /// The menu's button, as a click on a loom's pattern or a stonecutter's recipe sends it.
     Button(usize),
+    /// The inputs are empty, or the run ends here (a full inventory left something in them,
+    /// which a Put would swap with what it carries).
+    Empty,
 }
 
 impl Game<'_> {
@@ -317,7 +329,9 @@ impl Game<'_> {
             return;
         };
         let cells = self.craft_size * self.craft_size;
+        let menu = self.remote_menu().0;
         self.pad.legacy.build.run = Some(Run {
+            menu,
             recipe: template.recipe.clone(),
             steps,
             next_at: Instant::now(),
@@ -344,7 +358,7 @@ impl Game<'_> {
             self.pad_rumble(gamepad::Rumble::RadialNothing);
             return false;
         }
-        let mut steps = VecDeque::from([Step::Clear]);
+        let mut steps = VecDeque::from([Step::Clear, Step::Empty]);
         steps.extend(
             puts.into_iter()
                 .map(|(stack, cell)| Step::Put { stack, cell }),
@@ -352,7 +366,9 @@ impl Game<'_> {
         steps.extend(rename.map(Step::Rename));
         steps.extend(button.map(Step::Button));
         steps.extend([Step::Result { until: None }, Step::Take, Step::Clear]);
+        let menu = self.remote_menu().0;
         self.pad.legacy.build.run = Some(Run {
+            menu,
             recipe: String::new(),
             steps,
             next_at: Instant::now(),
@@ -370,7 +386,7 @@ impl Game<'_> {
         staged: &[Option<ItemStack>],
     ) -> Option<VecDeque<Step>> {
         let grid = self.craft_size;
-        let mut steps = VecDeque::from([Step::Clear]);
+        let mut steps = VecDeque::from([Step::Clear, Step::Empty]);
         for (i, stack) in staged.iter().enumerate() {
             if let Some(stack) = stack {
                 let cell = GRID + template.cell_in(i, grid)?;
@@ -389,6 +405,10 @@ impl Game<'_> {
         let Some(mut run) = self.pad.legacy.build.run.take() else {
             return;
         };
+        // Its menu went (closed, another opened): nothing more goes out on any other.
+        if !self.legacy_showing() || self.remote_menu().0 != run.menu {
+            return;
+        }
         let now = Instant::now();
         if now < run.next_at {
             self.pad.legacy.build.run = Some(run);
@@ -401,7 +421,9 @@ impl Game<'_> {
         };
         let Some(step) = run.steps.pop_front() else {
             // One craft done: another, while asked for and the staging still holds.
+            // Another craft only when the last result went: a full inventory keeps it there.
             if run.more > 0
+                && self.slot_view(run.result).is_none()
                 && let Some(current) = self.legacy_build_current()
                 && current.template.recipe == run.recipe
                 && self
@@ -417,7 +439,24 @@ impl Game<'_> {
             return;
         };
         match step {
+            Step::Empty => {
+                if run.inputs.iter().any(|&s| self.slot_view(s).is_some()) {
+                    run.steps.clear();
+                    run.more = 0;
+                }
+            }
             Step::Put { stack, cell } => {
+                // Something already in hand, or another item in the cell: a click would swap
+                // them. What went in comes back out, and that's the end.
+                let other = self
+                    .slot_view(cell)
+                    .is_some_and(|s| !s.same_item_same_components(&stack));
+                if self.carried.is_some() || other {
+                    run.steps = VecDeque::from([Step::Clear]);
+                    run.more = 0;
+                    self.pad.legacy.build.run = Some(run);
+                    return;
+                }
                 let from = (0..36).find(|&s| {
                     self.inventory[s]
                         .as_ref()
@@ -509,6 +548,22 @@ impl Game<'_> {
             }
         }
         self.pad.legacy.build.run = Some(run);
+    }
+
+    /// Whether a click run (a builder's or a station's) or a direct craft is under way: the
+    /// player's own slot clicks, flicks and mode changes wait for it (B ends it).
+    pub(in crate::game) fn legacy_busy(&self) -> bool {
+        self.pad.legacy.build.run.is_some() || self.pad.legacy.cutter_running()
+    }
+
+    /// Ends whatever run is under way (B while one runs); what it put in comes back.
+    pub(in crate::game) fn legacy_cancel_run(&mut self) {
+        if let Some(run) = self.pad.legacy.build.run.as_mut() {
+            run.steps = VecDeque::from([Step::Clear]);
+            run.more = 0;
+        }
+        self.pad.legacy.cutter_stop();
+        self.direct_craft_stop();
     }
 
     /// Whether a builder's craft is running.

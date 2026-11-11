@@ -418,6 +418,11 @@ impl Game<'_> {
         true
     }
 
+    /// Whether a direct craft is under way.
+    pub(super) fn direct_craft_running(&self) -> bool {
+        self.pad.menu.craft.is_some()
+    }
+
     /// Anything that ends a running craft while the server can still answer; a click or key
     /// behind it goes on to the screen.
     pub(super) fn direct_craft_stop(&mut self) {

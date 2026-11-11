@@ -4643,6 +4643,18 @@ def legacy_compact(args, name):
     check = Check()
     try:
         legacy_known(game, 'minecraft:oak_planks', gives=['oak_log 5'])
+        # Vanilla's recipe book left open: in a view this narrow it covers vanilla's menu, but it
+        # isn't shown under the crafting screen, so it mustn't take that screen's clicks.
+        game.ctl('key', 'e', 'tap')
+        time.sleep(SETTLE)
+        book = game.ctl('screen').get('recipe_book') or {}
+        button = next((t for t in book.get('targets', []) if t[2:] == [20.0, 18.0]), None)
+        if button and not book.get('open'):
+            game.ctl('click-at', button[0] + 10, button[1] + 9)
+            time.sleep(SETTLE)
+        check(game.ctl('screen').get('recipe_book', {}).get('open'), 'the recipe book did not open')
+        game.ctl('key', 'e', 'tap')
+        time.sleep(SETTLE)
         game.pad('west')
         shown = legacy(game)
         if shown is None:
@@ -4813,9 +4825,10 @@ def legacy_stonecutter(game, check):
 def legacy_open_station(game, block):
     """A station block in front of the player, opened by a pad player."""
     x, y, z = (int(v // 1) for v in game.ctl('state')['player']['position'])
+    # A floor of its own (an anvil falls; terrain can block the view), air above, the player on it.
+    game.ctl('command', f'fill {x - 1} {y - 1} {z} {x + 1} {y - 1} {z + 3} minecraft:stone')
     game.ctl('command', f'fill {x - 1} {y} {z} {x + 1} {y + 2} {z + 3} minecraft:air')
-    # Ground under it: an anvil falls.
-    game.ctl('command', f'setblock {x} {y - 1} {z + 2} minecraft:stone')
+    game.ctl('command', f'tp @s {x + 0.5} {y} {z + 0.5}')
     game.ctl('command', f'setblock {x} {y} {z + 2} minecraft:{block}')
     game.ctl('pad', 'stick', 'left', 0, 0.5)
     time.sleep(0.2)
