@@ -73,6 +73,8 @@ pub(in crate::game) struct LegacyCraft {
     pub(in crate::game) smith: super::legacy_smith::Smith,
     /// The anvil's selection, addition and name.
     pub(in crate::game) anvil: super::legacy_anvil::Anvil,
+    /// The brewing stand's selected ingredient.
+    pub(in crate::game) brew: super::legacy_brew::Brew,
     /// A held direction's start: past a second of it, the row runs faster.
     held_since: Option<Instant>,
     /// A vanilla click the screen passes on to the inventory under it.
@@ -308,6 +310,9 @@ impl Game<'_> {
                 .get(self.pad.legacy.cursor)
                 .copied(),
             Area::Grid if cutter => cutter_slots.get(self.pad.legacy.cursor).copied(),
+            Area::Grid if self.legacy_brewing() => super::legacy_brew::SLOTS
+                .get(self.pad.legacy.cursor)
+                .copied(),
             _ => None,
         };
         if let Some(slot) = slot_area {
@@ -325,6 +330,10 @@ impl Game<'_> {
         }
         // A smithing table's: A and X step a cell in the grid; A or Y smiths.
         if self.legacy_smith() && self.legacy_smith_button(button) {
+            return true;
+        }
+        // A brewing stand's row: A adds the ingredient, Y fills the bottles, X fuels it.
+        if self.legacy_brewing() && self.legacy_brew_button(button) {
             return true;
         }
         // An anvil's: the addition in the grid, the name, A or Y works it.
@@ -409,6 +418,10 @@ impl Game<'_> {
     fn legacy_step(&mut self, button: Button) {
         match self.pad.legacy.focus {
             Area::Row => self.legacy_row_step(button),
+            Area::Grid if self.legacy_brewing() => {
+                self.pad.legacy.cursor =
+                    super::legacy_brew::brew_step(self.pad.legacy.cursor, button);
+            }
             Area::Grid if self.legacy_cutter() => {
                 self.pad.legacy.cursor = match button {
                     Button::DPadLeft => 0,
@@ -551,6 +564,9 @@ impl Game<'_> {
         if self.legacy_anvil() {
             return self.legacy_anvil_step(button);
         }
+        if self.legacy_brewing() {
+            return self.legacy_brew_step(button);
+        }
         if self.legacy_builder().is_some() {
             return self.legacy_build_step(button);
         }
@@ -624,6 +640,9 @@ impl Game<'_> {
         }
         if self.legacy_anvil() {
             return vec![ItemStack::new("minecraft:anvil", 1)];
+        }
+        if self.legacy_brewing() {
+            return vec![ItemStack::new("minecraft:brewing_stand", 1)];
         }
         self.legacy_mode_icons()
     }
@@ -983,6 +1002,7 @@ impl Game<'_> {
             "cutter": self.legacy_cutter(),
             "cutting": self.legacy_cutting(),
             "smith": self.legacy_smith(),
+            "brewing": self.legacy_brewing(),
             "anvil": self.legacy_anvil().then(|| self.pad.legacy.anvil.status()),
             "building": self.legacy_build_running(),
             "cursor": state.cursor,
@@ -1043,7 +1063,10 @@ impl Game<'_> {
         // Each row with how much it's needed: when they don't all fit, the highest number goes.
         let rows: Vec<(u8, HintRow)> = match self.pad.legacy.focus {
             // Vanilla's slot jobs, as the inventory's guide names them; a furnace's slots too.
-            focus if focus == Area::Inventory || ((furnace || cutter) && focus == Area::Grid) => {
+            focus
+                if focus == Area::Inventory
+                    || ((furnace || cutter || self.legacy_brewing()) && focus == Area::Grid) =>
+            {
                 let carrying = self.carried.is_some();
                 let pick = if carrying { "put" } else { "take" };
                 let half = if carrying { "put_one" } else { "take_half" };
@@ -1161,6 +1184,43 @@ impl Game<'_> {
                 );
                 rows.insert(1, (1, tabs));
             }
+        }
+        // A brewing stand: Add, Fill Bottles, Add Fuel; no tabs, filter or search.
+        if self.legacy_brewing() && self.pad.legacy.focus == Area::Row {
+            rows = vec![
+                (
+                    0,
+                    HintRow::new(
+                        [self.menu_glyph(MenuJob::Confirm)],
+                        tr("horizon.legacy_craft.add"),
+                    ),
+                ),
+                (
+                    1,
+                    HintRow::new(
+                        [self.menu_glyph(MenuJob::Extra)],
+                        tr("horizon.legacy_craft.fill_bottles"),
+                    ),
+                ),
+                (
+                    2,
+                    HintRow::new(
+                        [self.menu_glyph(MenuJob::Alternate)],
+                        tr("horizon.legacy_craft.add_fuel"),
+                    ),
+                ),
+                (
+                    5,
+                    HintRow::new(
+                        [self.menu_glyph(MenuJob::LeftStick)],
+                        tr("horizon.legacy_craft.classic"),
+                    ),
+                ),
+                (
+                    0,
+                    HintRow::new([self.menu_glyph(MenuJob::Back)], tr("gui.back")),
+                ),
+            ];
         }
         // An anvil: Use Anvil for Craft, X and View rename, no tabs or search.
         if self.legacy_anvil() {
@@ -1316,6 +1376,10 @@ impl Game<'_> {
         }
         if self.legacy_anvil() {
             self.legacy_anvil_view(&mut view);
+            return view;
+        }
+        if self.legacy_brewing() {
+            self.legacy_brew_view(&mut view);
             return view;
         }
         // A builder: its own row and grid, no category tabs.

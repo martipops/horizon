@@ -118,6 +118,7 @@ and prepared resources in .local/horizon-client/26.3. Exit status 0 when every c
 - legacy_smithing: a smithing table the pad opens: A turns a diamond sword netherite from the staged template,
   sword and ingot, nothing left in the table.
 - legacy_anvil: an anvil the pad opens: a damaged sword repaired with ingots and renamed by typing, in one go.
+- legacy_brewing: a brewing stand the pad opens: X fuels it, Y fills its bottles, A puts one nether wart in.
 - legacy_compact: a 320x180 view's compact layout has the whole inventory on screen; its cursor takes as usual.
 - legacy_areas: right-stick flicks go row, grid, inventory; the inventory cursor takes, puts and quick-moves as
   vanilla's pointer does; leaving the inventory holding a stack puts it back where it came from; B goes back to the
@@ -4873,6 +4874,29 @@ def legacy_anvil(game, check):
     check(swords and swords[0].get('damage', 0) < 200, f'not repaired: {swords}')
     check(swords and 'Blade' in swords[0].get('components', ''), f'not renamed: {swords}')
 
+
+def screen_slots(game):
+    """The open screen's slots by number: (item, count); a container's too."""
+    return {s['slot']: (s['item'], s['count']) for s in game.ctl('screen')['slots'] if s.get('item')}
+
+
+@legacy_case
+def legacy_brewing(game, check):
+    water = 'potion[potion_contents={potion:"minecraft:water"}]'
+    legacy_known(game, gives=['nether_wart 2', f'{water} 2', 'blaze_powder 1'])
+    shown = legacy_open_station(game, 'brewing_stand')
+    check(shown is not None and shown.get('brewing'), f'the brewing stand is not the crafting screen: {shown}')
+    if not shown:
+        return
+    # What the stand takes leaves the inventory (its own slots aren't in the screen's list).
+    game.pad('west')
+    check(not counts(game).get('minecraft:blaze_powder'), f'X put no fuel in: {counts(game)}')
+    game.pad('north')
+    check(not counts(game).get('minecraft:potion'), f'Y left bottles: {counts(game)}')
+    game.pad('south')
+    check(counts(game).get('minecraft:nether_wart') == 1, f'A: {counts(game)}')
+    check(not game.ctl('menu').get('carried'), 'A left something in hand')
+
 CASES = {'idle_a': idle_a, 'idle_b': idle_b, 'idle_x': idle_x, 'release': release, 'move_cancels': move_cancels,
          'pad_release': pad_release, 'pause_y': pause_y, 'settings': settings, 'create_world': create_world,
          'world_options': world_options, 'key_row_b': key_row_b, 'lock_question': lock_question,
@@ -4913,7 +4937,7 @@ CASES = {'idle_a': idle_a, 'idle_b': idle_b, 'idle_x': idle_x, 'release': releas
          'legacy_areas': legacy_areas, 'legacy_compact': legacy_compact,
          'legacy_builders': legacy_builders, 'legacy_furnace': legacy_furnace,
          'legacy_stonecutter': legacy_stonecutter, 'legacy_smithing': legacy_smithing,
-         'legacy_anvil': legacy_anvil,
+         'legacy_anvil': legacy_anvil, 'legacy_brewing': legacy_brewing,
          'extras_shell': extras_shell,
          'extras_shell_edges': extras_shell_edges,
          'graphics_shell': graphics_shell,

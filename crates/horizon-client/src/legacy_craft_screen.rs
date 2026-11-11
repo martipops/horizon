@@ -130,6 +130,9 @@ pub struct View {
     /// At an anvil: the name its result gets (and whether it's being typed), over its two inputs
     /// (`cells` 0-1), the arrow and the result.
     pub anvil: Option<(String, bool)>,
+    /// At a brewing stand: its fuel and brew progress (0 to 1); the grid's place shows its three
+    /// bottles, ingredient and fuel (`cells` 0-4) as vanilla's stand lays them out.
+    pub brewing: Option<(f32, f32)>,
 }
 
 /// A part of the screen the pad's focus is in: the right stick moves between them, the left stick
@@ -789,8 +792,68 @@ fn anvil(out: &mut Out, view: &View, name: &str, typing: bool, x: i32, y: i32) {
     }
 }
 
+/// Where a brewing stand's slots sit in the grid's place: three bottles, the ingredient, the fuel.
+pub const BREWING_SLOTS: [(i32, i32); 5] = [(26, 38), (49, 45), (72, 38), (49, 0), (4, 0)];
+
+/// A brewing stand in the grid's place, laid out as vanilla's: the fuel at the left with its
+/// bar, the ingredient over the bubbles and the brew arrow, the three bottles below.
+fn brewing(out: &mut Out, view: &View, fuel: f32, brew: f32, x: i32, y: i32) {
+    for (i, (dx, dy)) in BREWING_SLOTS.iter().enumerate() {
+        let (sx, sy) = (x + dx, y + dy);
+        out.sprite("container/slot", sx, sy, 18, 18);
+        let focused = view.focus == Area::Grid && view.cursor == i;
+        if focused {
+            highlight_back(out, sx, sy);
+        }
+        if let Some(Some(cell)) = view.cells.get(i) {
+            if cell.missing {
+                out.fill(sx + 1, sy + 1, 16, 16, MISSING_CELL);
+            }
+            out.item(&cell.stack, sx + 1, sy + 1, true);
+        }
+        if focused {
+            highlight_front(out, sx, sy);
+        }
+        out.hit([sx, sy, 18, 18], Hit::Cell(i));
+    }
+    // The fuel bar under the fuel (`fuel_length`, 18x4, filled from the left).
+    if fuel > 0.0 {
+        let w = (fuel * 18.0).ceil() as i32;
+        out.push(Call::Blit {
+            texture: "textures/gui/sprites/container/brewing_stand/fuel_length.png",
+            x: x + 4,
+            y: y + 20,
+            w,
+            h: 4,
+            u: 0.0,
+            v: 0.0,
+            tw: 18,
+            th: 4,
+        });
+    }
+    // The brew: the arrow down from the ingredient fills as it goes, the bubbles beside it.
+    if brew > 0.0 {
+        let h = (brew * 28.0).ceil() as i32;
+        out.push(Call::Blit {
+            texture: "textures/gui/sprites/container/brewing_stand/brew_progress.png",
+            x: x + 70,
+            y: y + 2,
+            w: 9,
+            h,
+            u: 0.0,
+            v: 0.0,
+            tw: 9,
+            th: 28,
+        });
+        out.sprite("container/brewing_stand/bubbles", x + 35, y + 3, 12, 29);
+    }
+}
+
 /// The grid preview, the arrow and the result, from the grid's top left.
 fn grid(out: &mut Out, view: &View, x: i32, y: i32) {
+    if let Some((fuel, brew)) = view.brewing {
+        return brewing(out, view, fuel, brew, x, y);
+    }
     if let Some((name, typing)) = &view.anvil {
         return anvil(out, view, name, *typing, x, y);
     }
