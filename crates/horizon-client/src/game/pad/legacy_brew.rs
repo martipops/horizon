@@ -36,16 +36,7 @@ impl Game<'_> {
     /// The brewing ingredients held, one of each.
     fn legacy_reagents(&self) -> Vec<ItemStack> {
         let brewing = &self.stations().brewing;
-        let mut out: Vec<ItemStack> = Vec::new();
-        for stack in self.inventory[..36].iter().flatten() {
-            if brewing.is_reagent(stack) && !out.iter().any(|s| s.same_item_same_components(stack))
-            {
-                let mut one = stack.clone();
-                one.count = 1;
-                out.push(one);
-            }
-        }
-        out
+        horizon_client::legacy_build::held_kinds(&self.inventory[..36], |s| brewing.is_reagent(s))
     }
 
     /// What an ingredient brews from the bottles in the stand (the first it changes).
@@ -62,16 +53,10 @@ impl Game<'_> {
 
     pub(in crate::game) fn legacy_brew_step(&mut self, button: Button) {
         let n = self.legacy_reagents().len();
-        if n == 0 {
-            return;
+        if let Some(forward) = super::legacy_anvil::row_way(button) {
+            let state = &mut self.pad.legacy.brew;
+            state.selected = horizon_client::legacy_build::wrap(state.selected, n, forward);
         }
-        let state = &mut self.pad.legacy.brew;
-        let at = state.selected.min(n - 1);
-        state.selected = match button {
-            Button::DPadLeft => (at + n - 1) % n,
-            Button::DPadRight => (at + 1) % n,
-            _ => return,
-        };
     }
 
     /// A press on the stand's row: whether it was the stand's.

@@ -216,12 +216,13 @@ impl Game<'_> {
     }
 
     /// Left and right along the row's entries, up and down through the entry's variants.
-    pub(in crate::game) fn legacy_build_step(&mut self, button: Button) {
+    /// A step along a builder's row (or through its variants): whether it went anywhere.
+    pub(in crate::game) fn legacy_build_step(&mut self, button: Button) -> bool {
         let Some(kind) = self.legacy_builder() else {
-            return;
+            return false;
         };
         let Some(now) = self.legacy_build_current() else {
-            return;
+            return false;
         };
         let n = now.groups.len().max(1);
         let m = now.groups[now.entry].len().max(1);
@@ -230,9 +231,10 @@ impl Game<'_> {
             Button::DPadRight => (Some((now.entry + 1) % n), None),
             Button::DPadUp if m > 1 => (Some(now.entry), Some((now.variant + m - 1) % m)),
             Button::DPadDown if m > 1 => (Some(now.entry), Some((now.variant + 1) % m)),
-            _ => return,
+            _ => return false,
         };
         self.pad.legacy.build.selected.insert(kind, to);
+        true
     }
 
     /// A press in a builder: whether it was the builder's. On the row (or the grid) A crafts one

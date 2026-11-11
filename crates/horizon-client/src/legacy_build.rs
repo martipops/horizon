@@ -195,7 +195,12 @@ pub fn templates(recipes: &Recipes) -> Vec<Template> {
             } => {
                 let mut roles = vec![required(target), required(dye)];
                 roles.extend((0..7).map(|_| optional(dye)));
-                (Kind::Fireworks, result(made, target), shapeless(roles), false)
+                (
+                    Kind::Fireworks,
+                    result(made, target),
+                    shapeless(roles),
+                    false,
+                )
             }
             Special::Dye {
                 target,
@@ -347,18 +352,72 @@ pub fn groups(templates: &[Template]) -> Vec<Vec<usize>> {
     out.into_iter().map(|(_, _, members)| members).collect()
 }
 
-/// The stacks of `inventory` a cell can take, one of each kind (item and components), in the
-/// inventory's order: the hotbar first.
-pub fn candidates(role: &Role, inventory: &[Option<ItemStack>]) -> Vec<ItemStack> {
+/// The stacks of `inventory` that pass `test`, one of each kind (item and components) and one
+/// item each, in the inventory's order: the hotbar first. What every station offers to stage.
+pub fn held_kinds(
+    inventory: &[Option<ItemStack>],
+    test: impl Fn(&ItemStack) -> bool,
+) -> Vec<ItemStack> {
     let mut out: Vec<ItemStack> = Vec::new();
     for stack in inventory.iter().flatten() {
-        if role.accepts.test(stack) && !out.iter().any(|s| s.same_item_same_components(stack)) {
+        if test(stack) && !out.iter().any(|s| s.same_item_same_components(stack)) {
             let mut one = stack.clone();
             one.count = 1;
             out.push(one);
         }
     }
     out
+}
+
+/// The stacks of `inventory` a cell can take (`held_kinds` of its ingredient).
+pub fn candidates(role: &Role, inventory: &[Option<ItemStack>]) -> Vec<ItemStack> {
+    held_kinds(inventory, |s| role.accepts.test(s))
+}
+
+/// The choice after (or before) `now` among `choices`, round the ends; the first when `now` isn't
+/// one of them. None when there's no choice at all.
+pub fn cycle(
+    choices: &[Option<ItemStack>],
+    now: Option<&ItemStack>,
+    next: bool,
+) -> Option<Option<ItemStack>> {
+    let n = choices.len();
+    if n == 0 {
+        return None;
+    }
+    let at = choices.iter().position(|c| match (c, now) {
+        (Some(a), Some(b)) => a.same_item_same_components(b),
+        (None, None) => true,
+        _ => false,
+    });
+    let to = match at {
+        Some(at) => wrap(at, n, next),
+        None => 0,
+    };
+    Some(choices[to].clone())
+}
+
+/// One step from `at` among `n`, round the ends.
+pub fn wrap(at: usize, n: usize, forward: bool) -> usize {
+    if n == 0 {
+        return 0;
+    }
+    let at = at.min(n - 1);
+    if forward {
+        (at + 1) % n
+    } else {
+        (at + n - 1) % n
+    }
+}
+
+/// `text` added to `to` without control characters, up to `most` characters in all.
+pub fn push_limited(to: &mut String, text: &str, most: usize) {
+    for c in text.chars().filter(|c| !c.is_control()) {
+        if to.chars().count() >= most {
+            break;
+        }
+        to.push(c);
+    }
 }
 
 /// How many of `stack` the inventory holds.
@@ -380,7 +439,11 @@ pub fn stage(template: &Template, inventory: &[Option<ItemStack>]) -> Vec<Option
             continue;
         }
         staged[i] = candidates(role, inventory).into_iter().find(|c| {
-            let used = staged.iter().flatten().filter(|s| s.same_item_same_components(c)).count();
+            let used = staged
+                .iter()
+                .flatten()
+                .filter(|s| s.same_item_same_components(c))
+                .count();
             held(c, inventory) as usize > used
         });
     }
@@ -437,7 +500,43 @@ mod tests {
     }
 
     fn stacks(items: &[(&str, u32)]) -> Vec<Option<ItemStack>> {
-        items.iter().map(|(i, n)| Some(ItemStack::new(i, *n))).collect()
+        items
+            .iter()
+            .map(|(i, n)| Some(ItemStack::new(i, *n)))
+            .collect()
+    }
+
+    #[test]
+    fn held_kinds_are_one_of_each_kind_in_inventory_order() {
+        let inventory = vec![
+            Some(ItemStack::new("minecraft:dirt", 5)),
+            None,
+            Some(ItemStack::new("minecraft:stone", 2)),
+            Some(ItemStack::new("minecraft:dirt", 7)),
+        ];
+        let kinds = held_kinds(&inventory, |_| true);
+        let items: Vec<&str> = kinds.iter().map(|s| &*s.item).collect();
+        assert_eq!(items, ["minecraft:dirt", "minecraft:stone"]);
+        assert!(kinds.iter().all(|s| s.count == 1));
+    }
+
+    #[test]
+    fn cycle_steps_round_the_ends_and_through_nothing() {
+        let a = ItemStack::new("minecraft:red_dye", 1);
+        let b = ItemStack::new("minecraft:blue_dye", 1);
+        let choices = [None, Some(a.clone()), Some(b.clone())];
+        assert_eq!(cycle(&choices, None, true), Some(Some(a.clone())));
+        assert_eq!(cycle(&choices, Some(&b), true), Some(None));
+        assert_eq!(cycle(&choices, None, false), Some(Some(b.clone())));
+        // Not among them: the first.
+        let other = ItemStack::new("minecraft:dirt", 1);
+        assert_eq!(cycle(&choices, Some(&other), true), Some(None));
+        assert_eq!(cycle(&[], None, true), None);
+        assert_eq!(wrap(0, 3, false), 2);
+        assert_eq!(wrap(7, 3, true), 0);
+        let mut name = String::from("Iron");
+        push_limited(&mut name, " Sword\n!!", 11);
+        assert_eq!(name, "Iron Sword!");
     }
 
     #[test]
@@ -469,10 +568,20 @@ mod tests {
         assert_eq!(dyeing.len(), 3, "dyeing entries");
         let shulker = dyeing
             .iter()
-            .find(|g| all[g[0]].cells[0].1.accepts.order.iter().any(|i| i.ends_with("shulker_box")))
+            .find(|g| {
+                all[g[0]].cells[0]
+                    .1
+                    .accepts
+                    .order
+                    .iter()
+                    .any(|i| i.ends_with("shulker_box"))
+            })
             .expect("shulker box dyeing");
         assert_eq!(shulker.len(), 16);
-        let banners = groups.iter().filter(|g| all[g[0]].kind == Kind::Banners).count();
+        let banners = groups
+            .iter()
+            .filter(|g| all[g[0]].kind == Kind::Banners)
+            .count();
         assert_eq!(banners, 2, "copying a banner and decorating a shield");
         // Every template is in exactly one entry.
         let mut seen: Vec<usize> = groups.iter().flatten().copied().collect();

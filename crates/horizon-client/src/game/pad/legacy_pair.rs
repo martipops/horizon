@@ -52,15 +52,7 @@ impl Game<'_> {
 
     /// The held stacks, one of each kind, that pass a test.
     fn legacy_held_kinds(&self, test: impl Fn(&ItemStack) -> bool) -> Vec<ItemStack> {
-        let mut out: Vec<ItemStack> = Vec::new();
-        for stack in self.inventory[..36].iter().flatten() {
-            if test(stack) && !out.iter().any(|s| s.same_item_same_components(stack)) {
-                let mut one = stack.clone();
-                one.count = 1;
-                out.push(one);
-            }
-        }
-        out
+        horizon_client::legacy_build::held_kinds(&self.inventory[..36], test)
     }
 
     /// The row: what the station works on.
@@ -163,16 +155,10 @@ impl Game<'_> {
             return;
         };
         let n = self.legacy_pair_items(kind).len();
-        if n == 0 {
-            return;
+        if let Some(forward) = super::legacy_anvil::row_way(button) {
+            let state = &mut self.pad.legacy.pair;
+            state.selected = horizon_client::legacy_build::wrap(state.selected, n, forward);
         }
-        let state = &mut self.pad.legacy.pair;
-        let at = state.selected.min(n - 1);
-        state.selected = match button {
-            Button::DPadLeft => (at + n - 1) % n,
-            Button::DPadRight => (at + 1) % n,
-            _ => return,
-        };
     }
 
     /// A press at a two-slot station: whether it was the station's.
@@ -197,35 +183,22 @@ impl Game<'_> {
         let Some(item) = self.legacy_pair_current(kind) else {
             return;
         };
-        if self.pad.legacy.cursor != 1 {
-            self.pad_rumble(gamepad::Rumble::RadialNothing);
-            return;
+        let mut choices: Vec<Option<ItemStack>> = Vec::new();
+        if self.pad.legacy.cursor == 1 {
+            if kind == Kind::Grindstone {
+                choices.push(None);
+            }
+            choices.extend(
+                self.legacy_pair_additions(kind, &item)
+                    .into_iter()
+                    .map(Some),
+            );
         }
-        let mut choices: Vec<Option<ItemStack>> = self
-            .legacy_pair_additions(kind, &item)
-            .into_iter()
-            .map(Some)
-            .collect();
-        if kind == Kind::Grindstone {
-            choices.insert(0, None);
+        let now = self.pad.legacy.pair.addition.clone();
+        match horizon_client::legacy_build::cycle(&choices, now.as_ref(), next) {
+            Some(to) => self.pad.legacy.pair.addition = to,
+            None => self.pad_rumble(gamepad::Rumble::RadialNothing),
         }
-        if choices.is_empty() {
-            self.pad_rumble(gamepad::Rumble::RadialNothing);
-            return;
-        }
-        let now = &self.pad.legacy.pair.addition;
-        let at = choices.iter().position(|c| match (c, now) {
-            (Some(a), Some(b)) => a.same_item_same_components(b),
-            (None, None) => true,
-            _ => false,
-        });
-        let n = choices.len();
-        let to = match (at, next) {
-            (Some(at), true) => (at + 1) % n,
-            (Some(at), false) => (at + n - 1) % n,
-            (None, _) => 0,
-        };
-        self.pad.legacy.pair.addition = choices[to].clone();
     }
 
     /// A: the item and its addition in, the result out.

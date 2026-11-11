@@ -72,15 +72,7 @@ impl Game<'_> {
 
     /// The stacks of the inventory an ingredient takes, one of each.
     fn legacy_smith_candidates(&self, ingredient: &Ingredient) -> Vec<ItemStack> {
-        let mut out: Vec<ItemStack> = Vec::new();
-        for stack in self.inventory[..36].iter().flatten() {
-            if ingredient.test(stack) && !out.iter().any(|s| s.same_item_same_components(stack)) {
-                let mut one = stack.clone();
-                one.count = 1;
-                out.push(one);
-            }
-        }
-        out
+        horizon_client::legacy_build::held_kinds(&self.inventory[..36], |s| ingredient.test(s))
     }
 
     /// A recipe's staging: kept while the inventory holds it, else each cell's first candidate.
@@ -181,27 +173,22 @@ impl Game<'_> {
         let cell = self.pad.legacy.cursor.min(2);
         let r = self.stations().recipes.smithing[recipe].clone();
         let (id, cells, _) = parts(&r);
-        let Some(ingredient) = cells[cell] else {
-            self.pad_rumble(gamepad::Rumble::RadialNothing);
-            return;
-        };
-        let choices = self.legacy_smith_candidates(ingredient);
-        if choices.is_empty() {
-            self.pad_rumble(gamepad::Rumble::RadialNothing);
-            return;
-        }
+        let choices: Vec<Option<ItemStack>> = cells[cell]
+            .map(|i| {
+                self.legacy_smith_candidates(i)
+                    .into_iter()
+                    .map(Some)
+                    .collect()
+            })
+            .unwrap_or_default();
         let mut staged = self.legacy_smith_staged(recipe);
-        let at = staged[cell]
-            .as_ref()
-            .and_then(|s| choices.iter().position(|c| c.same_item_same_components(s)));
-        let n = choices.len();
-        let to = match (at, next) {
-            (Some(at), true) => (at + 1) % n,
-            (Some(at), false) => (at + n - 1) % n,
-            (None, _) => 0,
-        };
-        staged[cell] = Some(choices[to].clone());
-        self.pad.legacy.smith.staged.insert(id.to_owned(), staged);
+        match horizon_client::legacy_build::cycle(&choices, staged[cell].as_ref(), next) {
+            Some(to) => {
+                staged[cell] = to;
+                self.pad.legacy.smith.staged.insert(id.to_owned(), staged);
+            }
+            None => self.pad_rumble(gamepad::Rumble::RadialNothing),
+        }
     }
 
     /// A: the staged items into the table, the result out.
@@ -246,14 +233,19 @@ impl Game<'_> {
         };
         let all = self.stations().recipes.smithing.clone();
         let icon = |r: &Smithing, made: Option<ItemStack>| {
-            made.unwrap_or_else(|| {
-                let (_, cells, trim) = parts(r);
-                // A trim's entry shows its template; an upgrade's, what it makes.
-                let from = if trim { cells[0] } else { cells[1] };
-                let item = from
-                    .and_then(|i| i.order.first())
-                    .map_or("minecraft:barrier", String::as_str);
-                ItemStack::new(item, 1)
+            made.unwrap_or_else(|| match r {
+                // An upgrade shows what it makes, before it can be made too.
+                Smithing::Transform { result, .. } => result
+                    .create()
+                    .unwrap_or_else(|| ItemStack::new("minecraft:barrier", 1)),
+                // A trim's entry shows its template.
+                Smithing::Trim { template, .. } => ItemStack::new(
+                    template
+                        .order
+                        .first()
+                        .map_or("minecraft:barrier", String::as_str),
+                    1,
+                ),
             })
         };
         view.row = recipes

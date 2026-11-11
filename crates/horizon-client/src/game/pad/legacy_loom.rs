@@ -36,20 +36,11 @@ impl Game<'_> {
     fn legacy_loom_candidates(&self, cell: usize) -> Vec<ItemStack> {
         let banners = &self.stations().banners;
         let items = self.items();
-        let mut out: Vec<ItemStack> = Vec::new();
-        for stack in self.inventory[..36].iter().flatten() {
-            let fits = match cell {
-                0 => banner::banner_color(&stack.item).is_some() && !banner::has_max_layers(stack),
-                1 => banners.loom_dye(items, stack).is_some(),
-                _ => banners.is_pattern_item(items, stack),
-            };
-            if fits && !out.iter().any(|s| s.same_item_same_components(stack)) {
-                let mut one = stack.clone();
-                one.count = 1;
-                out.push(one);
-            }
-        }
-        out
+        horizon_client::legacy_build::held_kinds(&self.inventory[..36], |stack| match cell {
+            0 => banner::banner_color(&stack.item).is_some() && !banner::has_max_layers(stack),
+            1 => banners.loom_dye(items, stack).is_some(),
+            _ => banners.is_pattern_item(items, stack),
+        })
     }
 
     /// The staged banner, dye and pattern item, kept while held, else the first of each.
@@ -91,16 +82,10 @@ impl Game<'_> {
     pub(in crate::game) fn legacy_loom_step(&mut self, button: Button) {
         let staged = self.legacy_loom_staged();
         let n = self.legacy_loom_patterns(staged[2].as_ref()).len();
-        if n == 0 {
-            return;
+        if let Some(forward) = super::legacy_anvil::row_way(button) {
+            let state = &mut self.pad.legacy.loom;
+            state.selected = horizon_client::legacy_build::wrap(state.selected, n, forward);
         }
-        let state = &mut self.pad.legacy.loom;
-        let at = state.selected.min(n - 1);
-        state.selected = match button {
-            Button::DPadLeft => (at + n - 1) % n,
-            Button::DPadRight => (at + 1) % n,
-            _ => return,
-        };
     }
 
     /// A press at the loom: whether it was the loom's.
@@ -129,24 +114,14 @@ impl Game<'_> {
         if cell == 2 {
             choices.insert(0, None);
         }
-        if choices.is_empty() {
-            self.pad_rumble(gamepad::Rumble::RadialNothing);
-            return;
-        }
         let mut staged = self.legacy_loom_staged();
-        let at = choices.iter().position(|c| match (c, &staged[cell]) {
-            (Some(a), Some(b)) => a.same_item_same_components(b),
-            (None, None) => true,
-            _ => false,
-        });
-        let n = choices.len();
-        let to = match (at, next) {
-            (Some(at), true) => (at + 1) % n,
-            (Some(at), false) => (at + n - 1) % n,
-            (None, _) => 0,
-        };
-        staged[cell] = choices[to].clone();
-        self.pad.legacy.loom.staged = staged;
+        match horizon_client::legacy_build::cycle(&choices, staged[cell].as_ref(), next) {
+            Some(to) => {
+                staged[cell] = to;
+                self.pad.legacy.loom.staged = staged;
+            }
+            None => self.pad_rumble(gamepad::Rumble::RadialNothing),
+        }
     }
 
     /// A: the banner, dye and pattern item in, the pattern's button, the result out.

@@ -123,6 +123,8 @@ and prepared resources in .local/horizon-client/26.3. Exit status 0 when every c
   other stations keep their own choice.
 - legacy_loom: a loom the pad opens: A weaves the selected pattern in red on a white banner, nothing left in it.
 - legacy_grind_and_map: a grindstone takes the enchantments off a sword; a cartography table copies a map.
+- legacy_hold_switch: a stack in hand stays there through the left stick's switch to vanilla's screen and back, and LB/RB.
+- legacy_back_closes: B closes every station's screen with nothing to make there, from any area.
 - legacy_compact: a 320x180 view's compact layout has the whole inventory on screen; its cursor takes as usual.
 - legacy_areas: right-stick flicks go row, grid, inventory; the inventory cursor takes, puts and quick-moves as
   vanilla's pointer does; leaving the inventory holding a stack puts it back where it came from; B goes back to the
@@ -4603,24 +4605,18 @@ def legacy_areas(game, check):
     game.pad('south')
     carried = game.ctl('menu').get('carried') or {}
     check(carried.get('count') == 5 and 'oak_log' in carried.get('item', ''), f'A took {carried}')
-    # Leaving the inventory with it in hand puts it back where it came from: it never travels.
-    game.pad('right')
+    # The stack stays in hand as the focus moves: up to the row and back down to the inventory.
     legacy_flick(game, 0, 1)
-    hotbar = game.ctl('inventory')['hotbar']
-    check(legacy(game)['focus'] == 'row' and not game.ctl('menu').get('carried'),
+    check(legacy(game)['focus'] == 'row' and (game.ctl('menu').get('carried') or {}).get('count') == 5,
           f"flick up holding: {legacy(game)['focus']}, carried {game.ctl('menu').get('carried')}")
-    check(hotbar[0].get('count') == 5, f'not back in its slot: {hotbar[:2]}')
-    # Back down to the hotbar's first slot, and this time put it in the next one.
     legacy_flick(game, 0, -1)
     legacy_flick(game, 1, 0)
     for _ in range(3):
         game.pad('down')
     for _ in range(9):
-        if legacy(game)['cursor'] == 0:
+        if legacy(game)['cursor'] == 1:
             break
-        game.pad('left')
-    game.pad('south')
-    game.pad('right')
+        game.pad('right')
     game.pad('south')
     hotbar = game.ctl('inventory')['hotbar']
     check(not game.ctl('menu').get('carried') and hotbar[1].get('item') and hotbar[1].get('count') == 5,
@@ -4630,9 +4626,13 @@ def legacy_areas(game, check):
     hotbar = game.ctl('inventory')['hotbar']
     check(not hotbar[1].get('item') and counts(game).get('minecraft:oak_log') == 5,
           f'Y: {hotbar[:2]}, {counts(game)}')
+    # The D-pad crosses areas at an edge too: left from the inventory's first column, the grid.
+    for _ in range(9):
+        game.pad('left')
+    check(legacy(game)['focus'] == 'grid', f"D-pad left out of the inventory: {legacy(game)['focus']}")
     # B goes back to the recipes, then closes.
     game.pad('east')
-    check(legacy(game) is not None and legacy(game)['focus'] == 'row', f'B from the inventory: {legacy(game)}')
+    check(legacy(game) is not None and legacy(game)['focus'] == 'row', f'B from the grid: {legacy(game)}')
     game.pad('east')
     check(game.ctl('screen').get('screen') == 'playing', 'B on the row did not close')
 
@@ -4675,7 +4675,8 @@ def legacy_compact(args, name):
         carried = game.ctl('menu').get('carried') or {}
         check('oak_log' in carried.get('item', ''), f'A in the small inventory took {carried}')
         legacy_flick(game, 0, 1)
-        check(legacy(game)['focus'] == 'row' and not game.ctl('menu').get('carried'),
+        # The stack stays in hand as the focus moves.
+        check(legacy(game)['focus'] == 'row' and 'oak_log' in (game.ctl('menu').get('carried') or {}).get('item', ''),
               f"up from the inventory: {legacy(game)}, carrying {game.ctl('menu').get('carried')}")
     finally:
         game.quit()
@@ -4785,7 +4786,10 @@ def legacy_furnace(game, check):
     # The furnace's slots take vanilla's clicks: Y on the input quick-moves it back.
     legacy_flick(game, 0, -1)
     check(legacy(game)['focus'] == 'grid', f"down from the row: {legacy(game)['focus']}")
+    # Up to the input (one more would go on up to the row).
     for _ in range(2):
+        if legacy(game)['cursor'] == 0:
+            break
         game.pad('up')
     game.pad('north')
     time.sleep(SETTLE)
@@ -4975,6 +4979,61 @@ def legacy_loom(game, check):
     check(not any(600 <= s < 603 for s in menu_slots(game)), 'left in the loom')
 
 
+LEGACY_STATIONS = ['crafting_table', 'furnace', 'blast_furnace', 'smoker', 'stonecutter', 'smithing_table', 'anvil',
+                   'brewing_stand', 'loom', 'grindstone', 'cartography_table']
+
+
+@legacy_case
+def legacy_back_closes(game, check):
+    legacy_known(game)
+    for block in LEGACY_STATIONS:
+        for flick in (False, True):
+            shown = legacy_open_station(game, block)
+            check(shown is not None, f'{block}: no crafting screen')
+            if flick:
+                legacy_flick(game, 0, -1)
+            game.pad('east')
+            time.sleep(SETTLE)
+            if game.ctl('state')['screen'] != 'playing':
+                # From the grid or the inventory B goes back to the row first; the next one closes.
+                game.pad('east')
+                time.sleep(SETTLE)
+            screen = game.ctl('state')['screen']
+            check(screen == 'playing', f'{block} (flick {flick}): B left the screen on {screen}: {legacy(game)}')
+            if screen != 'playing':
+                game.ctl('command', 'setblock ~ ~ ~ air')
+                game.pad('start')
+                time.sleep(SETTLE)
+
+
+@legacy_case
+def legacy_hold_switch(game, check):
+    legacy_known(game, 'minecraft:oak_planks', gives=['oak_log 5'])
+    game.pad('west')
+    if legacy(game) is None:
+        check(False, 'X did not open the crafting screen')
+        return
+    legacy_flick(game, 0, -1)
+    legacy_flick(game, 1, 0)
+    for _ in range(3):
+        game.pad('down')
+    for _ in range(9):
+        if legacy(game)['cursor'] == 0:
+            break
+        game.pad('left')
+    game.pad('south')
+    held = lambda: (game.ctl('menu').get('carried') or {}).get('count')
+    check(held() == 5, f'A took {held()}')
+    # The left stick: vanilla's screen, the stack still in hand, and back.
+    game.pad('ls')
+    check(legacy(game) is None and held() == 5, f'to classic holding: {legacy(game)}, carried {held()}')
+    game.pad('ls')
+    check(legacy(game) is not None and held() == 5, f'back holding: {legacy(game)}, carried {held()}')
+    # LB/RB: back to the recipes, still holding.
+    game.pad('rb')
+    check(legacy(game)['focus'] == 'row' and held() == 5, f"RB: {legacy(game)['focus']}, carried {held()}")
+
+
 @legacy_case
 def legacy_grind_and_map(game, check):
     legacy_known(game, gives=['iron_sword[enchantments={sharpness:3}] 1', 'map 2'])
@@ -5043,6 +5102,8 @@ CASES = {'idle_a': idle_a, 'idle_b': idle_b, 'idle_x': idle_x, 'release': releas
          'legacy_anvil': legacy_anvil, 'legacy_brewing': legacy_brewing,
          'legacy_view_memory': legacy_view_memory, 'legacy_loom': legacy_loom,
          'legacy_grind_and_map': legacy_grind_and_map,
+         'legacy_back_closes': legacy_back_closes,
+         'legacy_hold_switch': legacy_hold_switch,
          'extras_shell': extras_shell,
          'extras_shell_edges': extras_shell_edges,
          'graphics_shell': graphics_shell,

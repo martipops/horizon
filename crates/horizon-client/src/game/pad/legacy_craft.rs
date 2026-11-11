@@ -35,6 +35,19 @@ const STICK_STEP: f32 = 0.55;
 /// Seconds a direction is held along the row before it runs faster (twice that: faster again).
 const ACCELERATE_AFTER: f32 = 1.0;
 
+/// The screen the open menu is shown as.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(in crate::game) enum Station {
+    Crafting,
+    Furnace(horizon_client::recipe_book::BookType),
+    Cutter,
+    Smith,
+    Anvil,
+    Brew,
+    Loom,
+    Pair(super::super::stations::Kind),
+}
+
 /// The screen's state between frames.
 #[derive(Default)]
 pub(in crate::game) struct LegacyCraft {
@@ -85,9 +98,6 @@ pub(in crate::game) struct LegacyCraft {
     passthrough: bool,
     /// The row's selection as last drawn: where a flick out of the row starts.
     shown_selected: usize,
-    /// The slot the carried stack was taken from by the cursor: it goes back there on leaving
-    /// the inventory.
-    taken_from: Option<usize>,
     opened_at: Option<Instant>,
     /// What the last frame showed: the row's length and the selected recipe's result.
     shown: (usize, Option<String>),
@@ -117,30 +127,40 @@ impl Game<'_> {
     /// The station the open menu is, as its screen choice is kept (`PadSettings::legacy_views`).
     pub(in crate::game) fn legacy_kind(&self) -> &'static str {
         use horizon_client::recipe_book::BookType;
-        if self.legacy_cutter() {
-            "stonecutter"
-        } else if self.legacy_smith() {
-            "smithing_table"
-        } else if self.legacy_anvil() {
-            "anvil"
-        } else if self.legacy_brewing() {
-            "brewing_stand"
-        } else if self.legacy_loom() {
-            "loom"
-        } else if let Some(kind) = self.legacy_pair() {
-            if kind == super::super::stations::Kind::Grindstone {
-                "grindstone"
-            } else {
-                "cartography_table"
-            }
-        } else {
-            match self.legacy_furnace() {
-                Some(BookType::Furnace) => "furnace",
-                Some(BookType::BlastFurnace) => "blast_furnace",
-                Some(BookType::Smoker) => "smoker",
-                _ if self.craft_size == 3 => "crafting_table",
-                _ => "inventory",
-            }
+        match self.legacy_at() {
+            Station::Cutter => "stonecutter",
+            Station::Smith => "smithing_table",
+            Station::Anvil => "anvil",
+            Station::Brew => "brewing_stand",
+            Station::Loom => "loom",
+            Station::Pair(super::super::stations::Kind::Grindstone) => "grindstone",
+            Station::Pair(_) => "cartography_table",
+            Station::Furnace(BookType::BlastFurnace) => "blast_furnace",
+            Station::Furnace(BookType::Smoker) => "smoker",
+            Station::Furnace(_) => "furnace",
+            Station::Crafting if self.craft_size == 3 => "crafting_table",
+            Station::Crafting => "inventory",
+        }
+    }
+
+    /// Which screen the open menu is, in one place: every per-station dispatch matches on it.
+    pub(in crate::game) fn legacy_at(&self) -> Station {
+        if let Some(book) = self.legacy_furnace() {
+            return Station::Furnace(book);
+        }
+        if self.legacy_brewing() {
+            return Station::Brew;
+        }
+        match self.station.as_ref().map(|s| s.kind) {
+            Some(super::super::stations::Kind::Stonecutter) => Station::Cutter,
+            Some(super::super::stations::Kind::Smithing) => Station::Smith,
+            Some(super::super::stations::Kind::Anvil) => Station::Anvil,
+            Some(super::super::stations::Kind::Loom) => Station::Loom,
+            Some(
+                kind @ (super::super::stations::Kind::Grindstone
+                | super::super::stations::Kind::Cartography),
+            ) => Station::Pair(kind),
+            _ => Station::Crafting,
         }
     }
 
@@ -286,7 +306,7 @@ impl Game<'_> {
         if flick != self.pad.legacy.area_stick {
             self.pad.legacy.area_stick = flick;
             if let Some(button) = flick {
-                self.legacy_flick(button);
+                self.legacy_flick(button, true);
             }
         }
         if let Some((button, at)) = self.pad.legacy.repeat {
@@ -294,7 +314,7 @@ impl Game<'_> {
             if !held {
                 self.pad.legacy.repeat = None;
             } else if now >= at {
-                self.legacy_step(button);
+                self.legacy_step_within(button);
                 let every = Duration::from_secs_f32(self.settings.controller.repeat_interval);
                 // Along a long row, a held direction speeds up: twice as fast past a second, four
                 // times past two (the all-recipes row runs to hundreds).
@@ -348,7 +368,7 @@ impl Game<'_> {
             return false;
         }
         if d != 0.0 {
-            self.legacy_step(if d > 0.0 {
+            self.legacy_step_within(if d > 0.0 {
                 Button::DPadLeft
             } else {
                 Button::DPadRight
@@ -448,13 +468,11 @@ impl Game<'_> {
                 self.legacy_step(button);
                 self.legacy_hold(button, now);
             }
-            // B out of the grid or the inventory goes back to the recipes; from them it closes.
-            Button::East if self.pad.legacy.focus != Area::Row => {
-                if self.pad.legacy.focus != Area::Inventory || self.legacy_put_back() {
-                    self.pad.legacy.focus = Area::Row;
-                } else {
-                    self.pad_rumble(gamepad::Rumble::RadialNothing);
-                }
+            // B out of the grid or the inventory goes back to the recipes; from them, or with no
+            // recipes shown (nothing to make here), it closes as the inventory's B does.
+            Button::East if self.pad.legacy.focus != Area::Row && self.legacy_has_row() => {
+                self.pad.legacy.focus = Area::Row;
+                self.pad.legacy.cursor = 0;
             }
             Button::LeftBumper => self.legacy_turn_tab(false),
             Button::RightBumper => self.legacy_turn_tab(true),
@@ -500,9 +518,21 @@ impl Game<'_> {
         true
     }
 
+    /// A fresh press of a direction: a step within the focused area, or, at its edge, on to the
+    /// next area that way (as the right stick's flick), so the D-pad and left stick reach every
+    /// part of the screen.
     fn legacy_step(&mut self, button: Button) {
+        if !self.legacy_step_within(button) {
+            // Silent at an edge with nothing past it: the D-pad pressed into a wall isn't news.
+            self.legacy_flick(button, false);
+        }
+    }
+
+    /// A step within the focused area (a held direction's repeats stay in it): whether it moved.
+    fn legacy_step_within(&mut self, button: Button) -> bool {
+        let before = self.pad.legacy.cursor;
         match self.pad.legacy.focus {
-            Area::Row => self.legacy_row_step(button),
+            Area::Row => return self.legacy_row_step(button),
             Area::Grid if self.legacy_brewing() => {
                 self.pad.legacy.cursor =
                     super::legacy_brew::brew_step(self.pad.legacy.cursor, button);
@@ -526,13 +556,16 @@ impl Game<'_> {
                 self.pad.legacy.cursor = inventory_step(self.pad.legacy.cursor, button);
             }
         }
+        self.pad.legacy.cursor != before
     }
 
     /// A right-stick flick: the focus moves to the nearest area that way from where it is, and
     /// onto the cell of it nearest the cell it left.
-    fn legacy_flick(&mut self, button: Button) {
+    fn legacy_flick(&mut self, button: Button, bump: bool) {
         if self.legacy_busy() || self.direct_craft_running() {
-            self.pad_rumble(gamepad::Rumble::RadialNothing);
+            if bump {
+                self.pad_rumble(gamepad::Rumble::RadialNothing);
+            }
             return;
         }
         let Some(layout) = self.pad.legacy.layout.as_ref() else {
@@ -560,16 +593,14 @@ impl Game<'_> {
         .unwrap_or(layout.bounds);
         let from = [at[0] + at[2] / 2, at[1] + at[3] / 2];
         let Some(to) = layout.area_toward(state.focus, from, dir) else {
-            // Nothing that way: a soft bump, the focus stays.
-            self.pad_rumble(gamepad::Rumble::RadialNothing);
+            // Nothing that way: a soft bump for the right stick's flick, the focus stays.
+            if bump {
+                self.pad_rumble(gamepad::Rumble::RadialNothing);
+            }
             return;
         };
         let cursor = layout.nearest_cell(to, from).unwrap_or(0);
-        if self.pad.legacy.focus == Area::Inventory && !self.legacy_put_back() {
-            // Nowhere to put it down: the stack stays in hand and the focus with it.
-            self.pad_rumble(gamepad::Rumble::RadialNothing);
-            return;
-        }
+        // A stack in hand goes along: the player puts it down where they choose.
         self.pad.legacy.focus = to;
         self.pad.legacy.cursor = cursor;
         self.pad.legacy.repeat = None;
@@ -588,43 +619,19 @@ impl Game<'_> {
             return true;
         };
         let (sx, sy) = self.slot_position(slot);
-        let held = self.carried.is_some();
         self.pad.legacy.passthrough = true;
         self.click_at(ox + sx + 8.0, oy + sy + 8.0, right, shift);
         self.pad.legacy.passthrough = false;
-        match (held, self.carried.is_some()) {
-            (false, true) => self.pad.legacy.taken_from = Some(slot),
-            (_, false) => self.pad.legacy.taken_from = None,
-            _ => {}
-        }
         true
     }
 
-    /// Leaving the inventory with a stack in hand: it goes back down, so it never travels with
-    /// the focus. Where it came from if that slot can take it, else the slot under the cursor,
-    /// else any empty one. False when it couldn't all go down: the focus stays.
-    fn legacy_put_back(&mut self) -> bool {
-        let Some(carried) = self.carried.clone() else {
-            return true;
-        };
-        let takes = |s: &Option<ItemStack>| {
-            s.as_ref()
-                .is_none_or(|s| s.same_item_same_components(&carried))
-        };
-        let state = &self.pad.legacy;
-        let mut order: Vec<usize> = state.taken_from.into_iter().collect();
-        order.push(state.cursor);
-        // Any empty slot: the inventory's rows first, the hotbar last, as a quick move fills.
-        order.extend((9..36).chain(0..9).filter(|&i| self.inventory[i].is_none()));
-        for slot in order {
-            if slot < 36 && takes(&self.inventory[slot]) {
-                self.legacy_slot_click(slot, false, false);
-                if self.carried.is_none() {
-                    return true;
-                }
-            }
-        }
-        false
+    /// The screen shows its recipe row: B from another area goes back to it.
+    fn legacy_has_row(&self) -> bool {
+        self.pad
+            .legacy
+            .layout
+            .as_ref()
+            .is_some_and(|l| l.areas.iter().any(|(a, _)| *a == Area::Row))
     }
 
     /// View on an inventory slot: vanilla's Q over it, one item thrown.
@@ -643,33 +650,34 @@ impl Game<'_> {
         true
     }
 
-    fn legacy_row_step(&mut self, button: Button) {
-        if self.legacy_cutter() {
-            return self.legacy_cutter_step(button);
+    /// A step along the row (left and right) or through a recipe's variants (up and down):
+    /// whether it was one. A station's row has no variants: up and down leave it.
+    fn legacy_row_step(&mut self, button: Button) -> bool {
+        let along = super::legacy_anvil::row_way(button).is_some();
+        match self.legacy_at() {
+            Station::Cutter => self.legacy_cutter_step(button),
+            Station::Smith => self.legacy_smith_step(button),
+            Station::Anvil => self.legacy_anvil_step(button),
+            Station::Brew => self.legacy_brew_step(button),
+            Station::Loom => self.legacy_loom_step(button),
+            Station::Pair(_) => self.legacy_pair_step(button),
+            Station::Crafting | Station::Furnace(_) => {
+                if self.legacy_builder().is_some() {
+                    return self.legacy_build_step(button);
+                }
+                return self.legacy_recipe_step(button);
+            }
         }
-        if self.legacy_smith() {
-            return self.legacy_smith_step(button);
-        }
-        if self.legacy_anvil() {
-            return self.legacy_anvil_step(button);
-        }
-        if self.legacy_brewing() {
-            return self.legacy_brew_step(button);
-        }
-        if self.legacy_loom() {
-            return self.legacy_loom_step(button);
-        }
-        if self.legacy_pair().is_some() {
-            return self.legacy_pair_step(button);
-        }
-        if self.legacy_builder().is_some() {
-            return self.legacy_build_step(button);
-        }
+        along
+    }
+
+    /// A step along a crafting or furnace row, or through the selected recipe's variants.
+    fn legacy_recipe_step(&mut self, button: Button) -> bool {
         let Some((len, variants, shown)) = self
             .legacy_current()
             .map(|(row, sel, var)| (row.len(), row.get(sel).map_or(0, |c| c.entries.len()), var))
         else {
-            return;
+            return false;
         };
         let id = self.legacy_tab_id();
         let place = self.pad.legacy.places.entry(id).or_default();
@@ -678,17 +686,20 @@ impl Game<'_> {
             Button::DPadRight if len > 0 => *place = ((place.0 + 1) % len, None),
             Button::DPadUp if variants > 1 => place.1 = Some((shown + variants - 1) % variants),
             Button::DPadDown if variants > 1 => place.1 = Some((shown + 1) % variants),
-            _ => return,
+            _ => return false,
         }
         self.direct_craft_stop();
+        true
     }
 
     fn legacy_turn_tab(&mut self, next: bool) {
-        if self.legacy_cutter() {
-            return self.legacy_cutter_turn(next);
-        }
-        if self.legacy_smith() {
-            return self.legacy_smith_turn();
+        // A tab is a list of recipes: the focus goes back to them, from wherever it was.
+        self.pad.legacy.focus = Area::Row;
+        self.pad.legacy.cursor = 0;
+        match self.legacy_at() {
+            Station::Cutter => return self.legacy_cutter_turn(next),
+            Station::Smith => return self.legacy_smith_turn(),
+            _ => {}
         }
         let n = self.pad.legacy.tabs.len();
         if n == 0 {
@@ -724,33 +735,14 @@ impl Game<'_> {
 
     /// The modes at the panel's left: crafting, then the builders (`legacy_build.rs`).
     fn legacy_modes(&self) -> Vec<ItemStack> {
-        if self.legacy_furnace().is_some() {
-            return vec![self.legacy_furnace_icon()];
+        // A station's own block, its id's item (`legacy_kind`); crafting's modes are its builders.
+        match self.legacy_at() {
+            Station::Crafting => self.legacy_mode_icons(),
+            _ => vec![ItemStack::new(
+                &format!("minecraft:{}", self.legacy_kind()),
+                1,
+            )],
         }
-        if self.legacy_cutter() {
-            return vec![ItemStack::new("minecraft:stonecutter", 1)];
-        }
-        if self.legacy_smith() {
-            return vec![ItemStack::new("minecraft:smithing_table", 1)];
-        }
-        if self.legacy_anvil() {
-            return vec![ItemStack::new("minecraft:anvil", 1)];
-        }
-        if self.legacy_brewing() {
-            return vec![ItemStack::new("minecraft:brewing_stand", 1)];
-        }
-        if self.legacy_loom() {
-            return vec![ItemStack::new("minecraft:loom", 1)];
-        }
-        if let Some(kind) = self.legacy_pair() {
-            let item = if kind == super::super::stations::Kind::Grindstone {
-                "minecraft:grindstone"
-            } else {
-                "minecraft:cartography_table"
-            };
-            return vec![ItemStack::new(item, 1)];
-        }
-        self.legacy_mode_icons()
     }
 
     fn legacy_tab_id(&self) -> String {
@@ -965,8 +957,12 @@ impl Game<'_> {
                 }
             }
             Hit::Variant(i) => self.pad.legacy.places.entry(id).or_default().1 = Some(i),
-            Hit::VariantUp => self.legacy_row_step(Button::DPadUp),
-            Hit::VariantDown => self.legacy_row_step(Button::DPadDown),
+            Hit::VariantUp => {
+                self.legacy_row_step(Button::DPadUp);
+            }
+            Hit::VariantDown => {
+                self.legacy_row_step(Button::DPadDown);
+            }
             Hit::Result => self.legacy_craft(right),
             Hit::Search => self.legacy_type_start(),
             Hit::Inventory(i) => {
@@ -1504,28 +1500,16 @@ impl Game<'_> {
             }
         }
         // A stonecutter: materials for tabs, its cuts along the row.
-        if self.legacy_cutter() {
-            self.legacy_cutter_view(&mut view);
-            return view;
+        match self.legacy_at() {
+            Station::Cutter => self.legacy_cutter_view(&mut view),
+            Station::Smith => self.legacy_smith_view(&mut view),
+            Station::Anvil => self.legacy_anvil_view(&mut view),
+            Station::Brew => self.legacy_brew_view(&mut view),
+            Station::Loom => self.legacy_loom_view(&mut view),
+            Station::Pair(kind) => self.legacy_pair_view(&mut view, kind),
+            Station::Crafting | Station::Furnace(_) => {}
         }
-        if self.legacy_smith() {
-            self.legacy_smith_view(&mut view);
-            return view;
-        }
-        if self.legacy_anvil() {
-            self.legacy_anvil_view(&mut view);
-            return view;
-        }
-        if self.legacy_brewing() {
-            self.legacy_brew_view(&mut view);
-            return view;
-        }
-        if self.legacy_loom() {
-            self.legacy_loom_view(&mut view);
-            return view;
-        }
-        if let Some(kind) = self.legacy_pair() {
-            self.legacy_pair_view(&mut view, kind);
+        if self.legacy_station() {
             return view;
         }
         // A builder: its own row and grid, no category tabs.
@@ -1698,7 +1682,8 @@ fn grid_step(cell: usize, side: usize, button: Button) -> usize {
 }
 
 /// An inventory slot one step that way, as the slots are laid out: three rows of the inventory
-/// (slots 9-35) over the hotbar (0-8). Left and right wrap along a row; up and down stop.
+/// (slots 9-35) over the hotbar (0-8). It stops at the edges, where a fresh press goes on to the
+/// next area.
 fn inventory_step(slot: usize, button: Button) -> usize {
     // Shown row (0-3, the hotbar last) and column.
     let (row, col) = if slot < 9 {
@@ -1707,8 +1692,8 @@ fn inventory_step(slot: usize, button: Button) -> usize {
         ((slot - 9) / 9, (slot - 9) % 9)
     };
     let (row, col) = match button {
-        Button::DPadLeft => (row, (col + 8) % 9),
-        Button::DPadRight => (row, (col + 1) % 9),
+        Button::DPadLeft => (row, col.saturating_sub(1)),
+        Button::DPadRight => (row, (col + 1).min(8)),
         Button::DPadUp => (row.saturating_sub(1), col),
         _ => ((row + 1).min(3), col),
     };
@@ -1726,8 +1711,9 @@ mod tests {
         assert_eq!(inventory_step(27, Button::DPadDown), 0);
         assert_eq!(inventory_step(9, Button::DPadUp), 9);
         assert_eq!(inventory_step(4, Button::DPadDown), 4);
-        assert_eq!(inventory_step(8, Button::DPadRight), 0);
-        assert_eq!(inventory_step(9, Button::DPadLeft), 17);
+        assert_eq!(inventory_step(8, Button::DPadRight), 8);
+        assert_eq!(inventory_step(9, Button::DPadLeft), 9);
+        assert_eq!(inventory_step(10, Button::DPadLeft), 9);
     }
 
     #[test]

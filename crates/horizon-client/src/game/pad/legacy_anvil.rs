@@ -33,6 +33,15 @@ pub(in crate::game) struct Anvil {
     named: Option<ItemStack>,
 }
 
+/// Left or right along a station's row: whether forward. None for any other button.
+pub(super) fn row_way(button: Button) -> Option<bool> {
+    match button {
+        Button::DPadLeft => Some(false),
+        Button::DPadRight => Some(true),
+        _ => None,
+    }
+}
+
 impl Anvil {
     /// The anvil as `pad status` reports it.
     pub(in crate::game) fn status(&self) -> serde_json::Value {
@@ -51,15 +60,7 @@ impl Game<'_> {
 
     /// What the player holds, one of each kind (item and components): the row.
     fn legacy_anvil_items(&self) -> Vec<ItemStack> {
-        let mut out: Vec<ItemStack> = Vec::new();
-        for stack in self.inventory[..36].iter().flatten() {
-            if !out.iter().any(|s| s.same_item_same_components(stack)) {
-                let mut one = stack.clone();
-                one.count = 1;
-                out.push(one);
-            }
-        }
-        out
+        horizon_client::legacy_build::held_kinds(&self.inventory[..36], |_| true)
     }
 
     /// The anvil's answer for an item, an addition and a name.
@@ -133,16 +134,10 @@ impl Game<'_> {
     /// Left and right along the held items.
     pub(in crate::game) fn legacy_anvil_step(&mut self, button: Button) {
         let n = self.legacy_anvil_items().len();
-        if n == 0 {
-            return;
+        if let Some(forward) = row_way(button) {
+            let state = &mut self.pad.legacy.anvil;
+            state.selected = horizon_client::legacy_build::wrap(state.selected, n, forward);
         }
-        let state = &mut self.pad.legacy.anvil;
-        let at = state.selected.min(n - 1);
-        state.selected = match button {
-            Button::DPadLeft => (at + n - 1) % n,
-            Button::DPadRight => (at + 1) % n,
-            _ => return,
-        };
     }
 
     /// A press at the anvil: whether it was the anvil's.
@@ -173,11 +168,7 @@ impl Game<'_> {
         const MOST: usize = 50;
         let name = &mut self.pad.legacy.anvil.name;
         if let Some(text) = text {
-            for c in text.chars() {
-                if name.chars().count() < MOST && !c.is_control() {
-                    name.push(c);
-                }
-            }
+            horizon_client::legacy_build::push_limited(name, text, MOST);
         }
         if backspace {
             name.pop();
@@ -190,25 +181,16 @@ impl Game<'_> {
             return;
         };
         // The second cell is the addition's; the first is the row's item.
-        if self.pad.legacy.cursor != 1 {
-            self.pad_rumble(gamepad::Rumble::RadialNothing);
-            return;
+        let mut choices: Vec<Option<ItemStack>> = Vec::new();
+        if self.pad.legacy.cursor == 1 {
+            choices.push(None);
+            choices.extend(self.legacy_anvil_additions(&item).into_iter().map(Some));
         }
-        let mut choices: Vec<Option<ItemStack>> = vec![None];
-        choices.extend(self.legacy_anvil_additions(&item).into_iter().map(Some));
-        let now = &self.pad.legacy.anvil.addition;
-        let at = choices.iter().position(|c| match (c, now) {
-            (Some(a), Some(b)) => a.same_item_same_components(b),
-            (None, None) => true,
-            _ => false,
-        });
-        let n = choices.len();
-        let to = match (at, next) {
-            (Some(at), true) => (at + 1) % n,
-            (Some(at), false) => (at + n - 1) % n,
-            (None, _) => 0,
-        };
-        self.pad.legacy.anvil.addition = choices[to].clone();
+        let now = self.pad.legacy.anvil.addition.clone();
+        match horizon_client::legacy_build::cycle(&choices, now.as_ref(), next) {
+            Some(to) => self.pad.legacy.anvil.addition = to,
+            None => self.pad_rumble(gamepad::Rumble::RadialNothing),
+        }
     }
 
     /// A: the item and its addition into the anvil, the name, the result out.

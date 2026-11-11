@@ -77,12 +77,8 @@ impl super::legacy_craft::LegacyCraft {
 impl Game<'_> {
     /// The open screen is a station's this screen shows (a stonecutter's, a smithing table's...).
     pub(in crate::game) fn legacy_station(&self) -> bool {
-        self.legacy_cutter()
-            || self.legacy_smith()
-            || self.legacy_anvil()
-            || self.legacy_brewing()
-            || self.legacy_loom()
-            || self.legacy_pair().is_some()
+        use super::legacy_craft::Station;
+        !matches!(self.legacy_at(), Station::Crafting | Station::Furnace(_))
     }
 
     /// The open screen is a stonecutter's.

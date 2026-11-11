@@ -586,9 +586,21 @@ fn row(out: &mut Out, view: &View, x: i32, y: i32, shown: usize, first: usize, f
         // No room for the column: the shown recipe in the row, with the column's arrows just above
         // and below it.
         recipe_slot(out, &view.variants[view.variant], sx, y);
-        out.sprite("transferable_list/move_up", sx - ARROW_X, y - 1 - ARROW_UP_Y - ARROW_H, 32, 32);
+        out.sprite(
+            "transferable_list/move_up",
+            sx - ARROW_X,
+            y - 1 - ARROW_UP_Y - ARROW_H,
+            32,
+            32,
+        );
         out.hit([sx, y - 8, RECIPE, 8], Hit::VariantUp);
-        out.sprite("transferable_list/move_down", sx - ARROW_X, y + RECIPE + 1 - ARROW_DOWN_Y, 32, 32);
+        out.sprite(
+            "transferable_list/move_down",
+            sx - ARROW_X,
+            y + RECIPE + 1 - ARROW_DOWN_Y,
+            32,
+            32,
+        );
         out.hit([sx, y + RECIPE, RECIPE, 8], Hit::VariantDown);
     }
     if !column {
@@ -666,7 +678,15 @@ fn furnace(out: &mut Out, view: &View, f: Furnace, x: i32, y: i32) {
         });
     }
     // The arrow: the crafting table's empty one, then ceil(cook * 24) columns of the burn.
-    out.blit("textures/gui/container/crafting_table.png", x + 31, y + 19, 22, 15, 90.0, 35.0);
+    out.blit(
+        "textures/gui/container/crafting_table.png",
+        x + 31,
+        y + 19,
+        22,
+        15,
+        90.0,
+        35.0,
+    );
     if f.cook > 0.0 {
         let w = (f.cook * 24.0).ceil() as i32;
         out.push(Call::Blit {
@@ -706,7 +726,15 @@ fn cutter(out: &mut Out, view: &View, x: i32, y: i32) {
         }
         out.hit([sx, sy, 18, 18], Hit::Cell(i));
     }
-    out.blit("textures/gui/container/crafting_table.png", x + 31, y + 19, 22, 15, 90.0, 35.0);
+    out.blit(
+        "textures/gui/container/crafting_table.png",
+        x + 31,
+        y + 19,
+        22,
+        15,
+        90.0,
+        35.0,
+    );
 }
 
 /// A smithing table in the grid's place: template, base and material in a row (vanilla's empty
@@ -741,7 +769,15 @@ fn smithing(out: &mut Out, view: &View, x: i32, y: i32) {
         }
         out.hit([sx, sy, 18, 18], Hit::Cell(i));
     }
-    out.blit("textures/gui/container/crafting_table.png", x + 57, y + 19, 22, 15, 90.0, 35.0);
+    out.blit(
+        "textures/gui/container/crafting_table.png",
+        x + 57,
+        y + 19,
+        22,
+        15,
+        90.0,
+        35.0,
+    );
     if let Some(result) = &view.result {
         recipe_slot(out, result, x + 82, y + 14);
         out.hit([x + 82, y + 14, RECIPE, RECIPE], Hit::Result);
@@ -791,7 +827,15 @@ fn anvil(out: &mut Out, view: &View, name: &str, typing: bool, x: i32, y: i32) {
         color: TITLE,
         shadow: false,
     });
-    out.blit("textures/gui/container/crafting_table.png", x + 52, y + 24, 22, 15, 90.0, 35.0);
+    out.blit(
+        "textures/gui/container/crafting_table.png",
+        x + 52,
+        y + 24,
+        22,
+        15,
+        90.0,
+        35.0,
+    );
     if let Some(result) = &view.result {
         recipe_slot(out, result, x + 78, y + 19);
         out.hit([x + 78, y + 19, RECIPE, RECIPE], Hit::Result);
@@ -1076,7 +1120,12 @@ fn compact(view: &View, width: &dyn Fn(&str) -> i32) -> Layout {
     inventory_slots(&mut out, view, inv_x, low);
     let mut areas = vec![(Area::Inventory, [inv_x, low, 162, 76])];
     if view.row.is_empty() {
-        out.text(&view.empty, x + w / 2 - width(&view.empty) / 2, row_y + 9, NOTE);
+        out.text(
+            &view.empty,
+            x + w / 2 - width(&view.empty) / 2,
+            row_y + 9,
+            NOTE,
+        );
     } else {
         let name = if view.variants.len() > 1 {
             format!("{} {}/{}", view.name, view.variant + 1, view.variants.len())
@@ -1090,7 +1139,12 @@ fn compact(view: &View, width: &dyn Fn(&str) -> i32) -> Layout {
         if let Some((note, color)) = &view.note {
             let room = inv_x - grid_x - 4;
             let note = fit(note, room, width);
-            out.text(&note, grid_x + 54 / 2 + 28 - width(&note) / 2, low + 66, *color);
+            out.text(
+                &note,
+                grid_x + 54 / 2 + 28 - width(&note) / 2,
+                low + 66,
+                *color,
+            );
         }
         row(&mut out, view, row_x, row_y, shown_row, first, true);
         let visible = (view.row.len() - first).min(shown_row) as i32;
@@ -1162,7 +1216,14 @@ mod tests {
 
     #[test]
     fn every_place_stays_on_the_view() {
-        for (w, h) in [(427, 240), (480, 270), (320, 240), (320, 360), (320, 180), (640, 360)] {
+        for (w, h) in [
+            (427, 240),
+            (480, 270),
+            (320, 240),
+            (320, 360),
+            (320, 180),
+            (640, 360),
+        ] {
             // Paged tabs and two modes: every control on the view at every size.
             let mut v = view(w, h);
             v.tabs = (0..14).map(|_| stack("minecraft:bricks")).collect();
@@ -1236,15 +1297,36 @@ mod tests {
             [x + w / 2, y + h / 2]
         };
         // Down from a recipe at the row's left: the grid under it; from its right: the inventory.
-        assert_eq!(l.area_toward(Area::Row, centre(Hit::Row(1)), [0, 1]), Some(Area::Grid));
-        assert_eq!(l.area_toward(Area::Row, centre(Hit::Row(10)), [0, 1]), Some(Area::Inventory));
+        assert_eq!(
+            l.area_toward(Area::Row, centre(Hit::Row(1)), [0, 1]),
+            Some(Area::Grid)
+        );
+        assert_eq!(
+            l.area_toward(Area::Row, centre(Hit::Row(10)), [0, 1]),
+            Some(Area::Inventory)
+        );
         // Across the lower half, and back up to the row.
-        assert_eq!(l.area_toward(Area::Grid, centre(Hit::Cell(4)), [1, 0]), Some(Area::Inventory));
-        assert_eq!(l.area_toward(Area::Inventory, centre(Hit::Inventory(13)), [-1, 0]), Some(Area::Grid));
-        assert_eq!(l.area_toward(Area::Inventory, centre(Hit::Inventory(13)), [0, -1]), Some(Area::Row));
+        assert_eq!(
+            l.area_toward(Area::Grid, centre(Hit::Cell(4)), [1, 0]),
+            Some(Area::Inventory)
+        );
+        assert_eq!(
+            l.area_toward(Area::Inventory, centre(Hit::Inventory(13)), [-1, 0]),
+            Some(Area::Grid)
+        );
+        assert_eq!(
+            l.area_toward(Area::Inventory, centre(Hit::Inventory(13)), [0, -1]),
+            Some(Area::Row)
+        );
         // Nothing below the hotbar, nothing left of the grid.
-        assert_eq!(l.area_toward(Area::Inventory, centre(Hit::Inventory(4)), [0, 1]), None);
-        assert_eq!(l.area_toward(Area::Grid, centre(Hit::Cell(3)), [-1, 0]), None);
+        assert_eq!(
+            l.area_toward(Area::Inventory, centre(Hit::Inventory(4)), [0, 1]),
+            None
+        );
+        assert_eq!(
+            l.area_toward(Area::Grid, centre(Hit::Cell(3)), [-1, 0]),
+            None
+        );
     }
 
     #[test]
@@ -1254,7 +1336,9 @@ mod tests {
         assert_eq!(l.nearest_cell(Area::Inventory, [x + 2, y + 30]), Some(0));
         let [x, y, w, _] = l.rect_of(Hit::Row(10)).unwrap();
         // Straight down from the row's right end: the inventory's top row, not the hotbar.
-        let cell = l.nearest_cell(Area::Inventory, [x + w / 2, y + 60]).unwrap();
+        let cell = l
+            .nearest_cell(Area::Inventory, [x + w / 2, y + 60])
+            .unwrap();
         assert!((9..18).contains(&cell), "{cell}");
     }
 
@@ -1262,7 +1346,11 @@ mod tests {
     fn the_compact_layout_keeps_everything_on_one_screen() {
         let l = layout(&view(320, 180), &width);
         assert!(l.compact);
-        let slots: Vec<_> = l.hits.iter().filter(|(_, h)| matches!(h, Hit::Inventory(_))).collect();
+        let slots: Vec<_> = l
+            .hits
+            .iter()
+            .filter(|(_, h)| matches!(h, Hit::Inventory(_)))
+            .collect();
         assert_eq!(slots.len(), 36, "the whole inventory, at full size");
         assert!(slots.iter().all(|(r, _)| r[2] == 18 && r[3] == 18));
         assert!(l.hits.iter().any(|(_, h)| *h == Hit::Cell(8)));
@@ -1271,14 +1359,20 @@ mod tests {
         }
         // The grid beside the inventory, nothing overlapping: right from the grid is the inventory.
         let [x, y, w, h] = l.rect_of(Hit::Cell(4)).unwrap();
-        assert_eq!(l.area_toward(Area::Grid, [x + w / 2, y + h / 2], [1, 0]), Some(Area::Inventory));
+        assert_eq!(
+            l.area_toward(Area::Grid, [x + w / 2, y + h / 2], [1, 0]),
+            Some(Area::Inventory)
+        );
         let [gx, _, gw, _] = l.rect_of(Hit::Cell(2)).unwrap();
         let [ix, ..] = l.rect_of(Hit::Inventory(9)).unwrap();
         assert!(gx + gw < ix);
         // The variant column folds to arrows on the row: nothing below the row but the lower half.
         let [_, ry, _, rh] = l.rect_of(Hit::Row(2)).unwrap();
         let [_, vy, _, vh] = l.rect_of(Hit::VariantDown).unwrap();
-        assert!(vy + vh <= y.min(ry + rh + 8), "the down arrow reaches into the grid");
+        assert!(
+            vy + vh <= y.min(ry + rh + 8),
+            "the down arrow reaches into the grid"
+        );
         let [_, uy, ..] = l.rect_of(Hit::VariantUp).unwrap();
         let panel_top = l.bounds[1] + 28;
         assert!(uy >= panel_top + 13, "the up arrow reaches the title line");
@@ -1291,17 +1385,30 @@ mod tests {
         let mut two = view(427, 240);
         two.modes.push(stack("minecraft:firework_rocket"));
         let l = layout(&two, &width);
-        assert_eq!(l.hits.iter().filter(|(_, h)| matches!(h, Hit::Mode(_))).count(), 2);
+        assert_eq!(
+            l.hits
+                .iter()
+                .filter(|(_, h)| matches!(h, Hit::Mode(_)))
+                .count(),
+            2
+        );
     }
 
     #[test]
     fn a_furnace_shows_its_three_slots_in_the_grids_place() {
         for (w, h) in [(427, 240), (320, 180)] {
             let mut v = view(w, h);
-            v.furnace = Some(Furnace { lit: 0.5, cook: 0.25 });
+            v.furnace = Some(Furnace {
+                lit: 0.5,
+                cook: 0.25,
+            });
             v.cells = vec![None; 3];
             let l = layout(&v, &width);
-            let cells: Vec<_> = l.hits.iter().filter(|(_, h)| matches!(h, Hit::Cell(_))).collect();
+            let cells: Vec<_> = l
+                .hits
+                .iter()
+                .filter(|(_, h)| matches!(h, Hit::Cell(_)))
+                .collect();
             assert_eq!(cells.len(), 3, "at {w}x{h}");
             // The output right of the input and fuel; a flick right from the input reaches it.
             let input = l.rect_of(Hit::Cell(0)).unwrap();

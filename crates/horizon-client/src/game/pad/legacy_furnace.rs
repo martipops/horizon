@@ -9,7 +9,7 @@
 //! slot.
 use super::super::Game;
 use horizon_client::{
-    containers::{BlockEntity, FurnaceKind},
+    containers::BlockEntity,
     gamepad::Button,
     items::ItemStack,
     legacy_craft::CraftTab,
@@ -24,19 +24,6 @@ impl Game<'_> {
     /// The furnace-family book the open screen has: none at a crafting grid.
     pub(in crate::game) fn legacy_furnace(&self) -> Option<BookType> {
         self.active_book().filter(|b| *b != BookType::Crafting)
-    }
-
-    /// The station's icon, for the mode slot.
-    pub(in crate::game) fn legacy_furnace_icon(&self) -> ItemStack {
-        let item = match self.container_kind() {
-            Some(BlockEntity::Furnace(f)) => match f.kind {
-                FurnaceKind::Furnace => "minecraft:furnace",
-                FurnaceKind::BlastFurnace => "minecraft:blast_furnace",
-                FurnaceKind::Smoker => "minecraft:smoker",
-            },
-            _ => "minecraft:furnace",
-        };
-        ItemStack::new(item, 1)
     }
 
     /// The furnace book's tabs: search first, then its categories, each with the recipes the
