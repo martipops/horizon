@@ -120,11 +120,12 @@ impl Game<'_> {
             .is_some_and(|n| n.same_item_same_components(&item));
         if !same {
             let name = horizon_client::stations::hover_name(&self.pack.names, &item);
-            let first = self.legacy_anvil_additions(&item).into_iter().next();
+            // Nothing added until picked: a book merged or a material used up should be the
+            // player's choice, not the default.
             let state = &mut self.pad.legacy.anvil;
             state.name = name;
             state.named = Some(item.clone());
-            state.addition = first;
+            state.addition = None;
         }
         Some(item)
     }

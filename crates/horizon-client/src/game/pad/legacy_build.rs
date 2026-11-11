@@ -341,6 +341,32 @@ impl Game<'_> {
         });
     }
 
+    /// Puts one of each stack into its slot by the same paced clicks, nothing more (a brewing
+    /// stand's ingredient or fuel). Gated as a craft is.
+    pub(in crate::game) fn legacy_run_puts(&mut self, puts: Vec<(ItemStack, usize)>) -> bool {
+        if self.pad.legacy.build.run.is_some()
+            || self.carried.is_some()
+            || !self.direct_craft_allowed()
+        {
+            self.pad_rumble(gamepad::Rumble::RadialNothing);
+            return false;
+        }
+        let menu = self.remote_menu().0;
+        self.pad.legacy.build.run = Some(Run {
+            menu,
+            recipe: String::new(),
+            steps: puts
+                .into_iter()
+                .map(|(stack, cell)| Step::Put { stack, cell })
+                .collect(),
+            next_at: Instant::now(),
+            result: RESULT,
+            inputs: Vec::new(),
+            more: 0,
+        });
+        true
+    }
+
     /// Starts a station's craft by the same clicks: its inputs emptied, each stack put into its
     /// slot, the result quick-moved out, the inputs emptied again. One craft.
     pub(in crate::game) fn legacy_run_slots(

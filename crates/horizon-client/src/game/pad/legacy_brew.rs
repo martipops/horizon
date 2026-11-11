@@ -110,13 +110,11 @@ impl Game<'_> {
                 .as_ref()
                 .is_some_and(|s| s.same_item_same_components(reagent))
         });
-        let (Some(from), true, None) = (from, fits, self.carried.as_ref()) else {
+        let (Some(_), true, None) = (from, fits, self.carried.as_ref()) else {
             self.pad_rumble(gamepad::Rumble::RadialNothing);
             return;
         };
-        self.legacy_slot_click(from, false, false);
-        self.legacy_slot_click(SLOTS[3], true, false);
-        self.legacy_slot_click(from, false, false);
+        self.legacy_run_puts(vec![(reagent.clone(), SLOTS[3])]);
     }
 
     /// The empty bottle places filled from the bottles held: a quick move each, as vanilla's
@@ -152,8 +150,15 @@ impl Game<'_> {
                 .is_some_and(|s| horizon_client::brewing::brewing_fuel(items, s).is_some())
         });
         match (from, self.carried.is_some()) {
+            // One powder, as a right click puts it: a quick move would put the whole stack in.
             (Some(from), false) => {
-                self.legacy_slot_click(from, false, true);
+                let powder = self.inventory[from].clone().map(|mut s| {
+                    s.count = 1;
+                    s
+                });
+                if let Some(powder) = powder {
+                    self.legacy_run_puts(vec![(powder, SLOTS[4])]);
+                }
             }
             _ => self.pad_rumble(gamepad::Rumble::RadialNothing),
         }

@@ -4773,6 +4773,15 @@ def legacy_furnace(game, check):
     game.pad('north')
     slots = menu_slots(game)
     check(slots.get(300) == ('minecraft:raw_iron', 4), f'Y: {slots}')
+    # Logs as the only fuel: X puts them on the fuel slot, not in the input (vanilla's quick move
+    # would send something smeltable there).
+    game.ctl('command', 'clear @s coal')
+    game.ctl('command', 'give @s oak_log 3')
+    time.sleep(SETTLE)
+    slots_before = menu_slots(game)
+    game.pad('west')
+    slots = menu_slots(game)
+    check(slots.get(300) == slots_before.get(300), f'X moved the input: {slots_before} -> {slots}')
     # The furnace's slots take vanilla's clicks: Y on the input quick-moves it back.
     legacy_flick(game, 0, -1)
     check(legacy(game)['focus'] == 'grid', f"down from the row: {legacy(game)['focus']}")
@@ -4872,7 +4881,13 @@ def legacy_anvil(game, check):
     if not shown:
         return
     check(legacy_builder_to(game, 'minecraft:iron_sword', 4), f'no sword: {legacy(game)}')
+    # Nothing's added until picked: down into the anvil, right to its second slot, A on it.
+    check(legacy(game)['anvil']['addition'] is None, f"an addition by default: {legacy(game)['anvil']}")
+    legacy_flick(game, 0, -1)
+    game.pad('right')
+    game.pad('south')
     check(legacy(game)['anvil']['addition'] == 'minecraft:iron_ingot', f"addition: {legacy(game)['anvil']}")
+    game.pad('east')
     # Rename it while repairing: X opens the keyboard on the name; B closes it when it's typed.
     game.pad('west')
     check(legacy(game)['typing'] and game.menu()['keyboard'], 'X did not start the name')
@@ -4907,10 +4922,12 @@ def legacy_brewing(game, check):
         return
     # What the stand takes leaves the inventory (its own slots aren't in the screen's list).
     game.pad('west')
+    legacy_build_ended(game)
     check(not counts(game).get('minecraft:blaze_powder'), f'X put no fuel in: {counts(game)}')
     game.pad('north')
     check(not counts(game).get('minecraft:potion'), f'Y left bottles: {counts(game)}')
     game.pad('south')
+    legacy_build_ended(game)
     check(counts(game).get('minecraft:nether_wart') == 1, f'A: {counts(game)}')
     check(not game.ctl('menu').get('carried'), 'A left something in hand')
 

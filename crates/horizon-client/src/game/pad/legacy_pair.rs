@@ -145,7 +145,12 @@ impl Game<'_> {
             .as_ref()
             .is_some_and(|f| f.same_item_same_components(&item));
         if !same {
-            let first = self.legacy_pair_additions(kind, &item).into_iter().next();
+            // A grindstone grinds the item alone until a second is picked (merging two uses one
+            // up); a cartography table needs its addition, so the first held comes in.
+            let first = match kind {
+                Kind::Grindstone => None,
+                _ => self.legacy_pair_additions(kind, &item).into_iter().next(),
+            };
             let state = &mut self.pad.legacy.pair;
             state.addition = first;
             state.for_item = Some(item.clone());

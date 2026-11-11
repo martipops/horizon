@@ -93,11 +93,17 @@ impl Game<'_> {
                     .is_some_and(|s| Some(&*s.item) != ingredient)
             })
             .or_else(|| slots.first().copied());
-        match pick {
-            Some(slot) => {
-                self.legacy_slot_click(slot, false, true);
+        // Picked up and put on the fuel slot: vanilla's quick move would send a smeltable fuel
+        // (logs) to the input. What doesn't fit, or the fuel it swaps out, goes back.
+        match (pick, self.carried.is_some()) {
+            (Some(slot), false) => {
+                self.legacy_slot_click(slot, false, false);
+                self.legacy_slot_click(SLOTS[1], false, false);
+                if self.carried.is_some() {
+                    self.legacy_slot_click(slot, false, false);
+                }
             }
-            None => self.pad_rumble(horizon_client::gamepad::Rumble::RadialNothing),
+            _ => self.pad_rumble(horizon_client::gamepad::Rumble::RadialNothing),
         }
     }
 

@@ -28,8 +28,9 @@ const RESULT_WAIT: Duration = Duration::from_secs(2);
 /// The stonecutter's state between frames.
 #[derive(Default)]
 pub(in crate::game) struct Cutter {
-    /// The selected material's tab, and each material's selected cut (by item id).
-    tab: usize,
+    /// The selected material (its item id: the list's order changes as the input fills), and each
+    /// material's selected cut (by item id).
+    tab: Option<String>,
     selected: HashMap<String, usize>,
     run: Option<Run>,
 }
@@ -127,7 +128,12 @@ impl Game<'_> {
     fn legacy_cutter_current(&self) -> Option<(Vec<ItemStack>, usize, Vec<usize>, usize)> {
         let materials = self.legacy_materials();
         let state = &self.pad.legacy.cutter;
-        let tab = state.tab.min(materials.len().checked_sub(1)?);
+        materials.len().checked_sub(1)?;
+        let tab = state
+            .tab
+            .as_ref()
+            .and_then(|id| materials.iter().position(|m| &*m.item == id))
+            .unwrap_or(0);
         let cuts = self.legacy_cuts(&materials[tab]);
         let selected = state
             .selected
@@ -140,16 +146,16 @@ impl Game<'_> {
 
     /// LB and RB: the material.
     pub(in crate::game) fn legacy_cutter_turn(&mut self, next: bool) {
-        let n = self.legacy_materials().len();
-        if n == 0 {
+        let Some((materials, tab, ..)) = self.legacy_cutter_current() else {
             return;
-        }
-        let state = &mut self.pad.legacy.cutter;
-        state.tab = if next {
-            (state.tab + 1) % n
-        } else {
-            (state.tab + n - 1) % n
         };
+        let n = materials.len();
+        let to = if next {
+            (tab + 1) % n
+        } else {
+            (tab + n - 1) % n
+        };
+        self.pad.legacy.cutter.tab = Some(materials[to].item.to_string());
     }
 
     /// Left and right along the cuts.
