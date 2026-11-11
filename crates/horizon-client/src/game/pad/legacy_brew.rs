@@ -211,8 +211,10 @@ impl Game<'_> {
             return;
         };
         let made = self.legacy_brews(reagent);
-        let names = |s: &ItemStack| horizon_client::stations::hover_name(&self.pack.names, s);
-        view.name = names(made.as_ref().unwrap_or(reagent));
+        view.name = horizon_client::stations::hover_name(
+            &self.pack.names,
+            made.as_ref().unwrap_or(reagent),
+        );
         let fuelled = fuel > 0.0 || self.slot_view(SLOTS[4]).is_some();
         view.note = Some(if self.carried.is_some() {
             (tr("horizon.legacy_craft.holding"), screen::MISSING)
