@@ -127,6 +127,9 @@ pub struct View {
     /// At a smithing table: the grid's place shows its template, base and material in a row
     /// (`cells` 0-2), the arrow and the result.
     pub smith: bool,
+    /// At an anvil: the name its result gets (and whether it's being typed), over its two inputs
+    /// (`cells` 0-1), the arrow and the result.
+    pub anvil: Option<(String, bool)>,
 }
 
 /// A part of the screen the pad's focus is in: the right stick moves between them, the left stick
@@ -736,8 +739,61 @@ fn smithing(out: &mut Out, view: &View, x: i32, y: i32) {
     }
 }
 
+/// An anvil in the grid's place: its rename box (vanilla's sprite; a click on it types), the
+/// input plus the addition, the arrow and the result.
+fn anvil(out: &mut Out, view: &View, name: &str, typing: bool, x: i32, y: i32) {
+    let field = if typing {
+        "container/anvil/text_field"
+    } else {
+        "container/anvil/text_field_disabled"
+    };
+    out.sprite(field, x, y, 104, 16);
+    out.push(Call::Text {
+        runs: vec![Run::plain(name)],
+        x: x + 4,
+        y: y + 4,
+        color: if typing { -1 } else { 0xFFA0_A0A0_u32 as i32 },
+        shadow: true,
+    });
+    out.hit([x, y, 104, 16], Hit::Search);
+    for (i, sx) in [(0usize, x), (1, x + 30)] {
+        let sy = y + 22;
+        out.sprite("container/slot", sx, sy, 18, 18);
+        let focused = view.focus == Area::Grid && view.cursor == i;
+        if focused {
+            highlight_back(out, sx, sy);
+        }
+        if let Some(Some(cell)) = view.cells.get(i) {
+            if cell.missing {
+                out.fill(sx + 1, sy + 1, 16, 16, MISSING_CELL);
+            }
+            out.item(&cell.stack, sx + 1, sy + 1, false);
+        }
+        if focused {
+            highlight_front(out, sx, sy);
+        }
+        out.hit([sx, sy, 18, 18], Hit::Cell(i));
+    }
+    // Vanilla's anvil draws a plus between them; its arrow, the crafting table's.
+    out.push(Call::Text {
+        runs: vec![Run::plain("+")],
+        x: x + 22,
+        y: y + 27,
+        color: TITLE,
+        shadow: false,
+    });
+    out.blit("textures/gui/container/crafting_table.png", x + 52, y + 24, 22, 15, 90.0, 35.0);
+    if let Some(result) = &view.result {
+        recipe_slot(out, result, x + 78, y + 19);
+        out.hit([x + 78, y + 19, RECIPE, RECIPE], Hit::Result);
+    }
+}
+
 /// The grid preview, the arrow and the result, from the grid's top left.
 fn grid(out: &mut Out, view: &View, x: i32, y: i32) {
+    if let Some((name, typing)) = &view.anvil {
+        return anvil(out, view, name, *typing, x, y);
+    }
     if let Some(f) = view.furnace {
         return furnace(out, view, f, x, y);
     }

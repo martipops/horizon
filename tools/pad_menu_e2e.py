@@ -117,6 +117,7 @@ and prepared resources in .local/horizon-client/26.3. Exit status 0 when every c
 - legacy_stonecutter: a stonecutter the pad opens: held materials are the tabs; A cuts one stone brick, Y the rest.
 - legacy_smithing: a smithing table the pad opens: A turns a diamond sword netherite from the staged template,
   sword and ingot, nothing left in the table.
+- legacy_anvil: an anvil the pad opens: a damaged sword repaired with ingots and renamed by typing, in one go.
 - legacy_compact: a 320x180 view's compact layout has the whole inventory on screen; its cursor takes as usual.
 - legacy_areas: right-stick flicks go row, grid, inventory; the inventory cursor takes, puts and quick-moves as
   vanilla's pointer does; leaving the inventory holding a stack puts it back where it came from; B goes back to the
@@ -4808,6 +4809,8 @@ def legacy_open_station(game, block):
     """A station block in front of the player, opened by a pad player."""
     x, y, z = (int(v // 1) for v in game.ctl('state')['player']['position'])
     game.ctl('command', f'fill {x - 1} {y} {z} {x + 1} {y + 2} {z + 3} minecraft:air')
+    # Ground under it: an anvil falls.
+    game.ctl('command', f'setblock {x} {y - 1} {z + 2} minecraft:stone')
     game.ctl('command', f'setblock {x} {y} {z + 2} minecraft:{block}')
     game.ctl('pad', 'stick', 'left', 0, 0.5)
     time.sleep(0.2)
@@ -4833,6 +4836,42 @@ def legacy_smithing(game, check):
           and not have.get('minecraft:netherite_ingot'), f'smithing: {have}')
     slots = menu_slots(game)
     check(not any(600 <= s < 603 for s in slots), f'left in the table: {slots}')
+
+
+def legacy_held(game, item):
+    """The inventory's stacks of an item, as `inventory` reports them."""
+    inv = game.ctl('inventory')
+    stacks = inv.get('hotbar', []) + inv.get('main', []) + inv.get('slots', [])
+    return [s for s in stacks if s.get('item') == item]
+
+
+@legacy_case
+def legacy_anvil(game, check):
+    legacy_known(game, gives=['iron_sword[damage=200] 1', 'iron_ingot 4'])
+    game.ctl('command', 'xp add @s 30 levels')
+    shown = legacy_open_station(game, 'anvil')
+    check(shown is not None and shown.get('anvil'), f'the anvil is not the crafting screen: {shown}')
+    if not shown:
+        return
+    check(legacy_builder_to(game, 'minecraft:iron_sword', 4), f'no sword: {legacy(game)}')
+    check(legacy(game)['anvil']['addition'] == 'minecraft:iron_ingot', f"addition: {legacy(game)['anvil']}")
+    # Rename it while repairing: X opens the keyboard on the name; B closes it when it's typed.
+    game.pad('west')
+    check(legacy(game)['typing'] and game.menu()['keyboard'], 'X did not start the name')
+    for _ in range(len('Iron Sword')):
+        game.ctl('type-back')
+    game.ctl('type', 'Blade')
+    game.pad('east')
+    time.sleep(SETTLE)
+    check(not game.menu()['keyboard'], 'B left the keyboard open')
+    check(legacy(game)['anvil']['name'] == 'Blade', f"name: {legacy(game)['anvil']}")
+    game.pad('south')
+    legacy_build_ended(game)
+    have = counts(game)
+    check(have.get('minecraft:iron_ingot', 0) < 4, f'no ingot used: {have}')
+    swords = legacy_held(game, 'minecraft:iron_sword')
+    check(swords and swords[0].get('damage', 0) < 200, f'not repaired: {swords}')
+    check(swords and 'Blade' in swords[0].get('components', ''), f'not renamed: {swords}')
 
 CASES = {'idle_a': idle_a, 'idle_b': idle_b, 'idle_x': idle_x, 'release': release, 'move_cancels': move_cancels,
          'pad_release': pad_release, 'pause_y': pause_y, 'settings': settings, 'create_world': create_world,
@@ -4874,6 +4913,7 @@ CASES = {'idle_a': idle_a, 'idle_b': idle_b, 'idle_x': idle_x, 'release': releas
          'legacy_areas': legacy_areas, 'legacy_compact': legacy_compact,
          'legacy_builders': legacy_builders, 'legacy_furnace': legacy_furnace,
          'legacy_stonecutter': legacy_stonecutter, 'legacy_smithing': legacy_smithing,
+         'legacy_anvil': legacy_anvil,
          'extras_shell': extras_shell,
          'extras_shell_edges': extras_shell_edges,
          'graphics_shell': graphics_shell,

@@ -87,6 +87,8 @@
   "horizon.legacy_craft.missing": "Missing: %s",
   "horizon.legacy_craft.missing_some": "Missing items",
   "horizon.legacy_craft.switch": "Console Crafting",
+  "horizon.legacy_craft.use_anvil": "Use Anvil",
+  "horizon.legacy_craft.rename": "Rename",
   "horizon.legacy_craft.smith": "Smith",
   "horizon.legacy_craft.smith_tabs": "Upgrades/Trims",
   "horizon.legacy_craft.upgrades": "Upgrades",

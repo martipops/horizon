@@ -51,7 +51,7 @@ pub(in crate::game) struct LegacyCraft {
     /// The recipes shown only when they can be made (X off the search tab).
     only_craftable: bool,
     query: String,
-    typing: bool,
+    pub(in crate::game) typing: bool,
     /// The tabs as last built, and what they were built from.
     tabs: Vec<CraftTab>,
     tabs_key: Option<(u64, usize, usize, bool)>,
@@ -71,6 +71,8 @@ pub(in crate::game) struct LegacyCraft {
     pub(in crate::game) cutter: super::legacy_cutter::Cutter,
     /// The smithing table's tabs and staging.
     pub(in crate::game) smith: super::legacy_smith::Smith,
+    /// The anvil's selection, addition and name.
+    pub(in crate::game) anvil: super::legacy_anvil::Anvil,
     /// A held direction's start: past a second of it, the row runs faster.
     held_since: Option<Instant>,
     /// A vanilla click the screen passes on to the inventory under it.
@@ -325,6 +327,10 @@ impl Game<'_> {
         if self.legacy_smith() && self.legacy_smith_button(button) {
             return true;
         }
+        // An anvil's: the addition in the grid, the name, A or Y works it.
+        if self.legacy_anvil() && self.legacy_anvil_button(button) {
+            return true;
+        }
         // A stonecutter's: A cuts one, Y all; X and View have nothing to do there.
         if cutter && self.pad.legacy.focus == Area::Row {
             match button {
@@ -542,6 +548,9 @@ impl Game<'_> {
         if self.legacy_smith() {
             return self.legacy_smith_step(button);
         }
+        if self.legacy_anvil() {
+            return self.legacy_anvil_step(button);
+        }
         if self.legacy_builder().is_some() {
             return self.legacy_build_step(button);
         }
@@ -612,6 +621,9 @@ impl Game<'_> {
         }
         if self.legacy_smith() {
             return vec![ItemStack::new("minecraft:smithing_table", 1)];
+        }
+        if self.legacy_anvil() {
+            return vec![ItemStack::new("minecraft:anvil", 1)];
         }
         self.legacy_mode_icons()
     }
@@ -752,6 +764,14 @@ impl Game<'_> {
         backspace: bool,
         enter: bool,
     ) {
+        // At an anvil the box is its name.
+        if self.legacy_anvil() {
+            self.legacy_anvil_text(text, backspace);
+            if enter {
+                self.pad.legacy.typing = false;
+            }
+            return;
+        }
         let state = &mut self.pad.legacy;
         if let Some(text) = text {
             const MOST: usize = 50;
@@ -963,6 +983,7 @@ impl Game<'_> {
             "cutter": self.legacy_cutter(),
             "cutting": self.legacy_cutting(),
             "smith": self.legacy_smith(),
+            "anvil": self.legacy_anvil().then(|| self.pad.legacy.anvil.status()),
             "building": self.legacy_build_running(),
             "cursor": state.cursor,
             "typing": state.typing,
@@ -1003,7 +1024,7 @@ impl Game<'_> {
         let row =
             |jobs: &[MenuJob], key: &str| HintRow::new(jobs.iter().map(|&j| glyph(j)), tr(key));
         // A smithing table stages its cells as a builder does.
-        let builder = self.legacy_builder().is_some() || self.legacy_smith();
+        let builder = self.legacy_builder().is_some() || self.legacy_smith() || self.legacy_anvil();
         let furnace = self.legacy_furnace().is_some();
         let cutter = self.legacy_cutter();
         let (craft, craft_all) = if cutter {
@@ -1141,6 +1162,22 @@ impl Game<'_> {
                 rows.insert(1, (1, tabs));
             }
         }
+        // An anvil: Use Anvil for Craft, X and View rename, no tabs or search.
+        if self.legacy_anvil() {
+            let (craft, all, search) = (
+                tr("horizon.legacy_craft.craft"),
+                tr("horizon.legacy_craft.craft_all"),
+                tr("horizon.legacy_craft.search"),
+            );
+            for (_, r) in &mut rows {
+                if r.caption == craft || r.caption == all {
+                    r.caption = tr("horizon.legacy_craft.use_anvil");
+                } else if r.caption == search {
+                    r.caption = tr("horizon.legacy_craft.rename");
+                }
+            }
+            rows.dedup_by(|a, b| a.1.caption == b.1.caption);
+        }
         // A stonecutter's tabs are its materials; it has no filter and no search.
         if self.legacy_cutter() {
             let (filters, search) = (
@@ -1275,6 +1312,10 @@ impl Game<'_> {
         }
         if self.legacy_smith() {
             self.legacy_smith_view(&mut view);
+            return view;
+        }
+        if self.legacy_anvil() {
+            self.legacy_anvil_view(&mut view);
             return view;
         }
         // A builder: its own row and grid, no category tabs.

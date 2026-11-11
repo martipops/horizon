@@ -81,6 +81,8 @@ enum Step {
     Take,
     /// Whatever stays in the grid, quick-moved back.
     Clear,
+    /// The anvil's rename box set to this name, as typing it there does (`RenameItem`).
+    Rename(String),
 }
 
 impl Game<'_> {
@@ -330,6 +332,7 @@ impl Game<'_> {
         puts: Vec<(ItemStack, usize)>,
         result: usize,
         inputs: Vec<usize>,
+        rename: Option<String>,
     ) -> bool {
         if self.pad.legacy.build.run.is_some()
             || self.carried.is_some()
@@ -343,6 +346,7 @@ impl Game<'_> {
             puts.into_iter()
                 .map(|(stack, cell)| Step::Put { stack, cell }),
         );
+        steps.extend(rename.map(Step::Rename));
         steps.extend([Step::Result { until: None }, Step::Take, Step::Clear]);
         self.pad.legacy.build.run = Some(Run {
             recipe: String::new(),
@@ -466,6 +470,15 @@ impl Game<'_> {
                     self.legacy_slot_click(run.result, false, true);
                     run.next_at = now + gap;
                 }
+            }
+            Step::Rename(name) => {
+                if let Some(s) = self.station.as_mut() {
+                    s.rename.set_value(&name);
+                    s.name.clone_from(&s.rename.value);
+                }
+                self.station_changed();
+                self.remote_anvil_rename();
+                run.next_at = now + gap;
             }
             Step::Clear => {
                 let inputs = run.inputs.clone();

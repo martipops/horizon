@@ -143,6 +143,7 @@ mod capture;
 mod guide;
 #[cfg(feature = "controllers")]
 mod hardware;
+mod legacy_anvil;
 mod legacy_build;
 mod legacy_craft;
 mod legacy_cutter;
