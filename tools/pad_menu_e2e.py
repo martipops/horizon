@@ -114,6 +114,7 @@ and prepared resources in .local/horizon-client/26.3. Exit status 0 when every c
   by vanilla clicks, nothing left in the grid; LT goes back to Crafting.
 - legacy_furnace: a furnace the pad opens is the crafting screen: X fuels it, A puts one smelt in, Y the stack;
   its slots take vanilla's clicks.
+- legacy_stonecutter: a stonecutter the pad opens: held materials are the tabs; A cuts one stone brick, Y the rest.
 - legacy_compact: a 320x180 view's compact layout has the whole inventory on screen; its cursor takes as usual.
 - legacy_areas: right-stick flicks go row, grid, inventory; the inventory cursor takes, puts and quick-moves as
   vanilla's pointer does; leaving the inventory holding a stack puts it back where it came from; B goes back to the
@@ -4763,6 +4764,43 @@ def legacy_furnace(game, check):
     slots = menu_slots(game)
     check(300 not in slots or slots[300][1] < 4, f'Y on the input: {slots}, {have}')
 
+
+def legacy_cut_ended(game):
+    end = time.time() + 30
+    while legacy(game)['cutting']:
+        if time.time() > end:
+            raise RuntimeError('the cut never finished')
+        time.sleep(0.1)
+    time.sleep(SETTLE)
+
+
+@legacy_case
+def legacy_stonecutter(game, check):
+    legacy_known(game, gives=['stone 4', 'cobblestone 2'])
+    x, y, z = (int(v // 1) for v in game.ctl('state')['player']['position'])
+    game.ctl('command', f'fill {x - 1} {y} {z} {x + 1} {y + 2} {z + 3} minecraft:air')
+    game.ctl('command', f'setblock {x} {y} {z + 2} minecraft:stonecutter')
+    game.ctl('pad', 'stick', 'left', 0, 0.5)
+    time.sleep(0.2)
+    game.ctl('pad', 'stick', 'left', 0, 0)
+    time.sleep(SETTLE)
+    game.ctl('interact', x, y, z + 2)
+    time.sleep(1.5)
+    shown = legacy(game)
+    check(shown is not None and shown.get('cutter'), f'the stonecutter is not the crafting screen: {shown}')
+    if not shown:
+        return
+    # The materials held are its tabs: stone and cobblestone.
+    check(legacy_find(game, 'minecraft:stone_bricks'), f'no stone bricks: {legacy(game)}')
+    game.pad('south')
+    legacy_cut_ended(game)
+    have = counts(game)
+    check(have.get('minecraft:stone_bricks') == 1, f'A: {have}')
+    game.pad('north')
+    legacy_cut_ended(game)
+    have = counts(game)
+    check(have.get('minecraft:stone_bricks') == 4 and not have.get('minecraft:stone'), f'Y: {have}')
+
 CASES = {'idle_a': idle_a, 'idle_b': idle_b, 'idle_x': idle_x, 'release': release, 'move_cancels': move_cancels,
          'pad_release': pad_release, 'pause_y': pause_y, 'settings': settings, 'create_world': create_world,
          'world_options': world_options, 'key_row_b': key_row_b, 'lock_question': lock_question,
@@ -4802,6 +4840,7 @@ CASES = {'idle_a': idle_a, 'idle_b': idle_b, 'idle_x': idle_x, 'release': releas
          'legacy_classic_and_paging': legacy_classic_and_paging, 'legacy_creative': legacy_creative,
          'legacy_areas': legacy_areas, 'legacy_compact': legacy_compact,
          'legacy_builders': legacy_builders, 'legacy_furnace': legacy_furnace,
+         'legacy_stonecutter': legacy_stonecutter,
          'extras_shell': extras_shell,
          'extras_shell_edges': extras_shell_edges,
          'graphics_shell': graphics_shell,

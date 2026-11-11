@@ -122,6 +122,8 @@ pub struct View {
     /// At a furnace: the grid's place shows its three slots (input, fuel, output: `cells` 0-2)
     /// with its flame and arrow, instead of a crafting grid.
     pub furnace: Option<Furnace>,
+    /// At a stonecutter: the grid's place shows its input and its result (`cells` 0-1).
+    pub cutter: bool,
 }
 
 /// A part of the screen the pad's focus is in: the right stick moves between them, the left stick
@@ -669,10 +671,39 @@ fn furnace(out: &mut Out, view: &View, f: Furnace, x: i32, y: i32) {
     }
 }
 
+/// Where a stonecutter's two slots sit in the grid's place: input, result (x, y).
+pub const CUTTER_SLOTS: [(i32, i32); 2] = [(4, 18), (64, 18)];
+
+/// A stonecutter in the grid's place: its input, the arrow, its result.
+fn cutter(out: &mut Out, view: &View, x: i32, y: i32) {
+    for (i, (dx, dy)) in CUTTER_SLOTS.iter().enumerate() {
+        let (sx, sy) = (x + dx, y + dy);
+        out.sprite("container/slot", sx, sy, 18, 18);
+        let focused = view.focus == Area::Grid && view.cursor == i;
+        if focused {
+            highlight_back(out, sx, sy);
+        }
+        if let Some(Some(cell)) = view.cells.get(i) {
+            if cell.missing {
+                out.fill(sx + 1, sy + 1, 16, 16, MISSING_CELL);
+            }
+            out.item(&cell.stack, sx + 1, sy + 1, true);
+        }
+        if focused {
+            highlight_front(out, sx, sy);
+        }
+        out.hit([sx, sy, 18, 18], Hit::Cell(i));
+    }
+    out.blit("textures/gui/container/crafting_table.png", x + 31, y + 19, 22, 15, 90.0, 35.0);
+}
+
 /// The grid preview, the arrow and the result, from the grid's top left.
 fn grid(out: &mut Out, view: &View, x: i32, y: i32) {
     if let Some(f) = view.furnace {
         return furnace(out, view, f, x, y);
+    }
+    if view.cutter {
+        return cutter(out, view, x, y);
     }
     let side = view.grid.max(1) as i32;
     // A 2x2 grid sits in the middle of the 3x3 room.

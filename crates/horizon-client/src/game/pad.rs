@@ -145,6 +145,7 @@ mod guide;
 mod hardware;
 mod legacy_build;
 mod legacy_craft;
+mod legacy_cutter;
 mod legacy_furnace;
 #[cfg(test)]
 mod parity_tests;
