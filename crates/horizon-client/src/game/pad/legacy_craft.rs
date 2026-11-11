@@ -69,6 +69,8 @@ pub(in crate::game) struct LegacyCraft {
     pub(in crate::game) build: super::legacy_build::Build,
     /// The stonecutter's materials, cuts and running cut.
     pub(in crate::game) cutter: super::legacy_cutter::Cutter,
+    /// The smithing table's tabs and staging.
+    pub(in crate::game) smith: super::legacy_smith::Smith,
     /// A held direction's start: past a second of it, the row runs faster.
     held_since: Option<Instant>,
     /// A vanilla click the screen passes on to the inventory under it.
@@ -93,7 +95,7 @@ impl Game<'_> {
     fn legacy_fits_menu(&self) -> bool {
         self.screen == Screen::Inventory
             && self.title.is_none()
-            && (self.active_book().is_some() || self.legacy_cutter())
+            && (self.active_book().is_some() || self.legacy_station())
     }
 
     /// The vanilla screen of a crafting grid, with Console Crafting on: the left stick switches to
@@ -160,7 +162,8 @@ impl Game<'_> {
         }
         let menu = self.remote_menu().0;
         // A crafting table's or a furnace's own menu: the screen it opens on, for a pad player.
-        let table = self.craft_size == 3 || self.legacy_furnace().is_some() || self.legacy_cutter();
+        let table =
+            self.craft_size == 3 || self.legacy_furnace().is_some() || self.legacy_station();
         if table
             && !self.pad.legacy.open
             && self.pad.legacy.menu != Some(menu)
@@ -316,6 +319,10 @@ impl Game<'_> {
         }
         // A builder's own presses: crafting its staging, stepping a grid cell's item.
         if self.legacy_build_button(button) {
+            return true;
+        }
+        // A smithing table's: A and X step a cell in the grid; A or Y smiths.
+        if self.legacy_smith() && self.legacy_smith_button(button) {
             return true;
         }
         // A stonecutter's: A cuts one, Y all; X and View have nothing to do there.
@@ -532,6 +539,9 @@ impl Game<'_> {
         if self.legacy_cutter() {
             return self.legacy_cutter_step(button);
         }
+        if self.legacy_smith() {
+            return self.legacy_smith_step(button);
+        }
         if self.legacy_builder().is_some() {
             return self.legacy_build_step(button);
         }
@@ -556,6 +566,9 @@ impl Game<'_> {
     fn legacy_turn_tab(&mut self, next: bool) {
         if self.legacy_cutter() {
             return self.legacy_cutter_turn(next);
+        }
+        if self.legacy_smith() {
+            return self.legacy_smith_turn();
         }
         let n = self.pad.legacy.tabs.len();
         if n == 0 {
@@ -596,6 +609,9 @@ impl Game<'_> {
         }
         if self.legacy_cutter() {
             return vec![ItemStack::new("minecraft:stonecutter", 1)];
+        }
+        if self.legacy_smith() {
+            return vec![ItemStack::new("minecraft:smithing_table", 1)];
         }
         self.legacy_mode_icons()
     }
@@ -946,6 +962,7 @@ impl Game<'_> {
             "furnace": self.legacy_furnace().map(|b| format!("{b:?}")),
             "cutter": self.legacy_cutter(),
             "cutting": self.legacy_cutting(),
+            "smith": self.legacy_smith(),
             "building": self.legacy_build_running(),
             "cursor": state.cursor,
             "typing": state.typing,
@@ -957,7 +974,7 @@ impl Game<'_> {
     /// The display ids of every recipe in the row's slots on screen.
     fn legacy_in_sight(&self, layout: &Layout, stock: &Stacked) -> Vec<i32> {
         // A builder's row, or a stonecutter's, holds no book recipes.
-        if self.legacy_builder().is_some() || self.legacy_cutter() {
+        if self.legacy_builder().is_some() || self.legacy_station() {
             return Vec::new();
         }
         let Some((row, _, _)) = self.legacy_row(stock) else {
@@ -985,7 +1002,8 @@ impl Game<'_> {
         let glyph = |job| self.menu_glyph(job);
         let row =
             |jobs: &[MenuJob], key: &str| HintRow::new(jobs.iter().map(|&j| glyph(j)), tr(key));
-        let builder = self.legacy_builder().is_some();
+        // A smithing table stages its cells as a builder does.
+        let builder = self.legacy_builder().is_some() || self.legacy_smith();
         let furnace = self.legacy_furnace().is_some();
         let cutter = self.legacy_cutter();
         let (craft, craft_all) = if cutter {
@@ -1098,6 +1116,31 @@ impl Game<'_> {
         };
         // LT and RT only with a type to turn to (a furnace has just itself).
         let mut rows = rows;
+        // A smithing table: Smith for Craft, its two tabs on LB and RB, no search.
+        if self.legacy_smith() {
+            let (craft, all, search) = (
+                tr("horizon.legacy_craft.craft"),
+                tr("horizon.legacy_craft.craft_all"),
+                tr("horizon.legacy_craft.search"),
+            );
+            rows.retain(|(_, r)| r.caption != search);
+            for (_, r) in &mut rows {
+                if r.caption == craft || r.caption == all {
+                    r.caption = tr("horizon.legacy_craft.smith");
+                }
+            }
+            rows.dedup_by(|a, b| a.1.caption == b.1.caption);
+            if self.pad.legacy.focus == Area::Row {
+                let tabs = HintRow::new(
+                    [
+                        self.menu_glyph(MenuJob::PagePrev),
+                        self.menu_glyph(MenuJob::PageNext),
+                    ],
+                    tr("horizon.legacy_craft.smith_tabs"),
+                );
+                rows.insert(1, (1, tabs));
+            }
+        }
         // A stonecutter's tabs are its materials; it has no filter and no search.
         if self.legacy_cutter() {
             let (filters, search) = (
@@ -1228,6 +1271,10 @@ impl Game<'_> {
         // A stonecutter: materials for tabs, its cuts along the row.
         if self.legacy_cutter() {
             self.legacy_cutter_view(&mut view);
+            return view;
+        }
+        if self.legacy_smith() {
+            self.legacy_smith_view(&mut view);
             return view;
         }
         // A builder: its own row and grid, no category tabs.

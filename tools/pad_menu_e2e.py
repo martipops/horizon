@@ -115,6 +115,8 @@ and prepared resources in .local/horizon-client/26.3. Exit status 0 when every c
 - legacy_furnace: a furnace the pad opens is the crafting screen: X fuels it, A puts one smelt in, Y the stack;
   its slots take vanilla's clicks.
 - legacy_stonecutter: a stonecutter the pad opens: held materials are the tabs; A cuts one stone brick, Y the rest.
+- legacy_smithing: a smithing table the pad opens: A turns a diamond sword netherite from the staged template,
+  sword and ingot, nothing left in the table.
 - legacy_compact: a 320x180 view's compact layout has the whole inventory on screen; its cursor takes as usual.
 - legacy_areas: right-stick flicks go row, grid, inventory; the inventory cursor takes, puts and quick-moves as
   vanilla's pointer does; leaving the inventory holding a stack puts it back where it came from; B goes back to the
@@ -4801,6 +4803,37 @@ def legacy_stonecutter(game, check):
     have = counts(game)
     check(have.get('minecraft:stone_bricks') == 4 and not have.get('minecraft:stone'), f'Y: {have}')
 
+
+def legacy_open_station(game, block):
+    """A station block in front of the player, opened by a pad player."""
+    x, y, z = (int(v // 1) for v in game.ctl('state')['player']['position'])
+    game.ctl('command', f'fill {x - 1} {y} {z} {x + 1} {y + 2} {z + 3} minecraft:air')
+    game.ctl('command', f'setblock {x} {y} {z + 2} minecraft:{block}')
+    game.ctl('pad', 'stick', 'left', 0, 0.5)
+    time.sleep(0.2)
+    game.ctl('pad', 'stick', 'left', 0, 0)
+    time.sleep(SETTLE)
+    game.ctl('interact', x, y, z + 2)
+    time.sleep(1.5)
+    return legacy(game)
+
+
+@legacy_case
+def legacy_smithing(game, check):
+    legacy_known(game, gives=['netherite_upgrade_smithing_template 1', 'diamond_sword 1', 'netherite_ingot 1'])
+    shown = legacy_open_station(game, 'smithing_table')
+    check(shown is not None and shown.get('smith'), f'the smithing table is not the crafting screen: {shown}')
+    if not shown:
+        return
+    check(legacy_builder_to(game, 'minecraft:netherite_sword', 20), f'no netherite sword: {legacy(game)}')
+    game.pad('south')
+    legacy_build_ended(game)
+    have = counts(game)
+    check(have.get('minecraft:netherite_sword') == 1 and not have.get('minecraft:diamond_sword')
+          and not have.get('minecraft:netherite_ingot'), f'smithing: {have}')
+    slots = menu_slots(game)
+    check(not any(600 <= s < 603 for s in slots), f'left in the table: {slots}')
+
 CASES = {'idle_a': idle_a, 'idle_b': idle_b, 'idle_x': idle_x, 'release': release, 'move_cancels': move_cancels,
          'pad_release': pad_release, 'pause_y': pause_y, 'settings': settings, 'create_world': create_world,
          'world_options': world_options, 'key_row_b': key_row_b, 'lock_question': lock_question,
@@ -4840,7 +4873,7 @@ CASES = {'idle_a': idle_a, 'idle_b': idle_b, 'idle_x': idle_x, 'release': releas
          'legacy_classic_and_paging': legacy_classic_and_paging, 'legacy_creative': legacy_creative,
          'legacy_areas': legacy_areas, 'legacy_compact': legacy_compact,
          'legacy_builders': legacy_builders, 'legacy_furnace': legacy_furnace,
-         'legacy_stonecutter': legacy_stonecutter,
+         'legacy_stonecutter': legacy_stonecutter, 'legacy_smithing': legacy_smithing,
          'extras_shell': extras_shell,
          'extras_shell_edges': extras_shell_edges,
          'graphics_shell': graphics_shell,

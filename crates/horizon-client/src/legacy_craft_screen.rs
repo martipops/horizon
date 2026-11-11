@@ -124,6 +124,9 @@ pub struct View {
     pub furnace: Option<Furnace>,
     /// At a stonecutter: the grid's place shows its input and its result (`cells` 0-1).
     pub cutter: bool,
+    /// At a smithing table: the grid's place shows its template, base and material in a row
+    /// (`cells` 0-2), the arrow and the result.
+    pub smith: bool,
 }
 
 /// A part of the screen the pad's focus is in: the right stick moves between them, the left stick
@@ -697,6 +700,42 @@ fn cutter(out: &mut Out, view: &View, x: i32, y: i32) {
     out.blit("textures/gui/container/crafting_table.png", x + 31, y + 19, 22, 15, 90.0, 35.0);
 }
 
+/// A smithing table in the grid's place: template, base and material in a row (vanilla's empty
+/// slots' hint icons where nothing's staged), the arrow, the result.
+fn smithing(out: &mut Out, view: &View, x: i32, y: i32) {
+    const HINTS: [&str; 3] = [
+        "container/slot/smithing_template_armor_trim",
+        "container/slot/chestplate",
+        "container/slot/ingot",
+    ];
+    for i in 0..3 {
+        let (sx, sy) = (x + i as i32 * 18, y + 18);
+        out.sprite("container/slot", sx, sy, 18, 18);
+        let focused = view.focus == Area::Grid && view.cursor == i;
+        if focused {
+            highlight_back(out, sx, sy);
+        }
+        match view.cells.get(i) {
+            Some(Some(cell)) => {
+                if cell.missing {
+                    out.fill(sx + 1, sy + 1, 16, 16, MISSING_CELL);
+                }
+                out.item(&cell.stack, sx + 1, sy + 1, false);
+            }
+            _ => out.sprite(HINTS[i], sx + 1, sy + 1, 16, 16),
+        }
+        if focused {
+            highlight_front(out, sx, sy);
+        }
+        out.hit([sx, sy, 18, 18], Hit::Cell(i));
+    }
+    out.blit("textures/gui/container/crafting_table.png", x + 57, y + 19, 22, 15, 90.0, 35.0);
+    if let Some(result) = &view.result {
+        recipe_slot(out, result, x + 82, y + 14);
+        out.hit([x + 82, y + 14, RECIPE, RECIPE], Hit::Result);
+    }
+}
+
 /// The grid preview, the arrow and the result, from the grid's top left.
 fn grid(out: &mut Out, view: &View, x: i32, y: i32) {
     if let Some(f) = view.furnace {
@@ -704,6 +743,9 @@ fn grid(out: &mut Out, view: &View, x: i32, y: i32) {
     }
     if view.cutter {
         return cutter(out, view, x, y);
+    }
+    if view.smith {
+        return smithing(out, view, x, y);
     }
     let side = view.grid.max(1) as i32;
     // A 2x2 grid sits in the middle of the 3x3 room.

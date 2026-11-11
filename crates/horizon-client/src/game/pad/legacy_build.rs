@@ -58,6 +58,10 @@ struct Run {
     recipe: String,
     steps: VecDeque<Step>,
     next_at: Instant,
+    /// The menu's result slot, and its input slots (what Clear empties): the crafting grid's,
+    /// or a station's (`legacy_run_slots`).
+    result: usize,
+    inputs: Vec<usize>,
     /// Crafts still asked for after this one.
     more: u32,
 }
@@ -82,7 +86,7 @@ enum Step {
 impl Game<'_> {
     /// The builder the mode tabs have selected: none on Crafting.
     pub(in crate::game) fn legacy_builder(&self) -> Option<Kind> {
-        if self.legacy_furnace().is_some() || self.legacy_cutter() {
+        if self.legacy_furnace().is_some() || self.legacy_station() {
             return None;
         }
         self.pad
@@ -308,12 +312,47 @@ impl Game<'_> {
             self.pad_rumble(gamepad::Rumble::RadialNothing);
             return;
         };
+        let cells = self.craft_size * self.craft_size;
         self.pad.legacy.build.run = Some(Run {
             recipe: template.recipe.clone(),
             steps,
             next_at: Instant::now(),
+            result: RESULT,
+            inputs: (GRID..GRID + cells).collect(),
             more: count - 1,
         });
+    }
+
+    /// Starts a station's craft by the same clicks: its inputs emptied, each stack put into its
+    /// slot, the result quick-moved out, the inputs emptied again. One craft.
+    pub(in crate::game) fn legacy_run_slots(
+        &mut self,
+        puts: Vec<(ItemStack, usize)>,
+        result: usize,
+        inputs: Vec<usize>,
+    ) -> bool {
+        if self.pad.legacy.build.run.is_some()
+            || self.carried.is_some()
+            || !self.direct_craft_allowed()
+        {
+            self.pad_rumble(gamepad::Rumble::RadialNothing);
+            return false;
+        }
+        let mut steps = VecDeque::from([Step::Clear]);
+        steps.extend(
+            puts.into_iter()
+                .map(|(stack, cell)| Step::Put { stack, cell }),
+        );
+        steps.extend([Step::Result { until: None }, Step::Take, Step::Clear]);
+        self.pad.legacy.build.run = Some(Run {
+            recipe: String::new(),
+            steps,
+            next_at: Instant::now(),
+            result,
+            inputs,
+            more: 0,
+        });
+        true
     }
 
     /// One craft's steps: what's in the grid goes back first, then each staged item in.
@@ -412,7 +451,7 @@ impl Game<'_> {
             }
             Step::Result { until } => {
                 let until = until.unwrap_or(now + RESULT_WAIT);
-                if self.slot_view(RESULT).is_none() {
+                if self.slot_view(run.result).is_none() {
                     if now < until {
                         run.steps.push_front(Step::Result { until: Some(until) });
                     } else {
@@ -423,18 +462,18 @@ impl Game<'_> {
                 }
             }
             Step::Take => {
-                if self.slot_view(RESULT).is_some() {
-                    self.legacy_slot_click(RESULT, false, true);
+                if self.slot_view(run.result).is_some() {
+                    self.legacy_slot_click(run.result, false, true);
                     run.next_at = now + gap;
                 }
             }
             Step::Clear => {
-                let cells = self.craft_size * self.craft_size;
-                if let Some(cell) = (0..cells).find(|&c| self.slot_view(GRID + c).is_some()) {
-                    self.legacy_slot_click(GRID + cell, false, true);
+                let inputs = run.inputs.clone();
+                if let Some(slot) = inputs.into_iter().find(|&s| self.slot_view(s).is_some()) {
+                    self.legacy_slot_click(slot, false, true);
                     run.next_at = now + gap;
-                    // Until the grid is empty (a full inventory leaves it: the next look stops).
-                    if self.slot_view(GRID + cell).is_none() {
+                    // Until the inputs are empty (a full inventory leaves one: the next look stops).
+                    if self.slot_view(slot).is_none() {
                         run.steps.push_front(Step::Clear);
                     }
                 }
