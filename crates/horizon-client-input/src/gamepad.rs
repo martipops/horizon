@@ -674,6 +674,11 @@ pub struct PadSettings {
     /// The controller crafting screen puts tiers of one tool or armour piece (wooden to netherite)
     /// in one column, as Legacy Console's did. On by default.
     pub legacy_tiers: bool,
+    /// Which screen each station opens on, as the player last switched it (L3 or the switch
+    /// button): true for the controller crafting screen, false for vanilla's. Keyed by the
+    /// station's kind (`inventory`, `crafting_table`, `furnace`, `stonecutter`...); a station not
+    /// here opens on its default (`legacy_view`).
+    pub legacy_views: BTreeMap<String, bool>,
     pub glyphs: GlyphStyle,
     /// A Nintendo pad's face buttons go by their letters (A confirms and jumps, as on the
     /// Switch's own menus and keyboard) instead of their places (B, at the bottom, does): on
@@ -723,6 +728,7 @@ impl Default for PadSettings {
             craft_on_servers: false,
             legacy_crafting: false,
             legacy_tiers: true,
+            legacy_views: BTreeMap::new(),
             glyphs: GlyphStyle::Auto,
             nintendo_letters: cfg!(target_os = "horizon"),
             keyboard: TextKeyboard::Auto,
@@ -807,6 +813,20 @@ impl PadSettings {
                 "craftOnServers" => s.craft_on_servers = flag(s.craft_on_servers),
                 "legacyCrafting" => s.legacy_crafting = flag(s.legacy_crafting),
                 "legacyTiers" => s.legacy_tiers = flag(s.legacy_tiers),
+                "legacyViews" => {
+                    s.legacy_views = value
+                        .split(',')
+                        .filter_map(|pair| {
+                            let (kind, view) = pair.split_once('=')?;
+                            let console = match view {
+                                "console" => true,
+                                "classic" => false,
+                                _ => return None,
+                            };
+                            Some((kind.to_owned(), console))
+                        })
+                        .collect()
+                }
                 "glyphs" => s.glyphs = GlyphStyle::parse(value),
                 "nintendoLetters" => s.nintendo_letters = flag(s.nintendo_letters),
                 "keyboard" => s.keyboard = TextKeyboard::parse(value),
@@ -935,6 +955,16 @@ impl PadSettings {
             self.guide_detail.name(),
             self.pointer_speed, self.scroll_speed, self.repeat_delay, self.repeat_interval,
         ));
+        if !self.legacy_views.is_empty() {
+            let views: Vec<String> = self
+                .legacy_views
+                .iter()
+                .map(|(kind, console)| {
+                    format!("{kind}={}", if *console { "console" } else { "classic" })
+                })
+                .collect();
+            text.push_str(&format!("legacyViews:{}\n", views.join(",")));
+        }
         for (action, button) in &self.bindings {
             text.push_str(&format!(
                 "bind_{action}:{}\n",
@@ -1027,6 +1057,14 @@ impl PadSettings {
         }
         self.bind("key.swapOffhand", None);
         self.bind(CRAFTING, Some(x));
+    }
+    /// Whether this station opens on the controller crafting screen: the player's last choice
+    /// for it, else the default (every station but the inventory, which Y opens as vanilla's).
+    pub fn legacy_view(&self, kind: &str) -> bool {
+        self.legacy_views
+            .get(kind)
+            .copied()
+            .unwrap_or(kind != "inventory")
     }
     pub fn reset_bindings(&mut self) {
         self.bindings.clear();
@@ -1867,6 +1905,21 @@ mod tests {
         assert_eq!(s.binding(CRAFTING), None);
         assert_eq!(s.binding("key.swapOffhand"), Some(Button::West));
         assert!(s.radial.page(0).slots().contains(&&swap));
+    }
+
+    #[test]
+    fn each_stations_screen_choice_is_kept_in_the_file() {
+        let mut s = PadSettings::default();
+        assert!(s.legacy_view("furnace") && !s.legacy_view("inventory"));
+        s.legacy_views.insert("furnace".into(), false);
+        s.legacy_views.insert("inventory".into(), true);
+        let read = PadSettings::parse(&s.serialize());
+        assert!(!read.legacy_view("furnace"));
+        assert!(read.legacy_view("inventory"));
+        assert!(read.legacy_view("stonecutter"));
+        // A view name this game doesn't know leaves the default.
+        let odd = PadSettings::parse("legacyViews:anvil=sideways,loom=classic\n");
+        assert!(odd.legacy_view("anvil") && !odd.legacy_view("loom"));
     }
 
     #[test]

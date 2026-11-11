@@ -718,7 +718,7 @@ impl Game<'_> {
             && inside(cursor, x, y, w, h)
             && !right
         {
-            self.legacy_start();
+            self.legacy_choose(true);
             self.audio
                 .play("minecraft:ui.button.click", None, 0.25, 1.0);
             return true;

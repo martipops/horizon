@@ -110,6 +110,44 @@ impl Game<'_> {
             && !self.legacy_showing()
     }
 
+    /// The station the open menu is, as its screen choice is kept (`PadSettings::legacy_views`).
+    pub(in crate::game) fn legacy_kind(&self) -> &'static str {
+        use horizon_client::recipe_book::BookType;
+        if self.legacy_cutter() {
+            "stonecutter"
+        } else if self.legacy_smith() {
+            "smithing_table"
+        } else if self.legacy_anvil() {
+            "anvil"
+        } else if self.legacy_brewing() {
+            "brewing_stand"
+        } else {
+            match self.legacy_furnace() {
+                Some(BookType::Furnace) => "furnace",
+                Some(BookType::BlastFurnace) => "blast_furnace",
+                Some(BookType::Smoker) => "smoker",
+                _ if self.craft_size == 3 => "crafting_table",
+                _ => "inventory",
+            }
+        }
+    }
+
+    /// The player switched this station's screen (L3, the switch button): it shows, and the
+    /// station opens on it from now on, kept in the controller settings file.
+    pub(in crate::game) fn legacy_choose(&mut self, console: bool) {
+        let kind = self.legacy_kind().to_owned();
+        self.settings.controller.legacy_views.insert(kind, console);
+        if let Some(dir) = Self::options_path().parent() {
+            self.settings.controller.save(dir);
+        }
+        if console {
+            self.legacy_start();
+        } else {
+            self.pad.legacy.open = false;
+            self.pad.legacy.typing = false;
+        }
+    }
+
     /// The pad's crafting button (`pad.crafting`): the inventory opens as this screen.
     pub(in crate::game) fn legacy_open_crafting(&mut self) -> horizon_client::Result<()> {
         if self.screen != Screen::Playing || self.spectator() {
@@ -166,9 +204,10 @@ impl Game<'_> {
         }
         let menu = self.remote_menu().0;
         // A crafting table's or a furnace's own menu: the screen it opens on, for a pad player.
-        let table =
-            self.craft_size == 3 || self.legacy_furnace().is_some() || self.legacy_station();
-        if table
+        // Each station opens on the screen the player last switched it to (the inventory, opened
+        // with Y, on vanilla's until switched); X opens crafting on this one regardless.
+        let kind = self.legacy_kind();
+        if self.settings.controller.legacy_view(kind)
             && !self.pad.legacy.open
             && self.pad.legacy.menu != Some(menu)
             && self.pad.in_use
@@ -397,10 +436,7 @@ impl Game<'_> {
                 state.places.clear();
             }
             // The left stick: the vanilla screen of the same menu (and back from it, `pad_menu`).
-            Button::LeftStick => {
-                self.pad.legacy.open = false;
-                self.pad.legacy.typing = false;
-            }
+            Button::LeftStick => self.legacy_choose(false),
             // View: straight to the search, typing (it throws in an inventory; here nothing's under
             // a pointer to throw).
             Button::Select => {

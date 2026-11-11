@@ -976,7 +976,7 @@ impl Game<'_> {
             }
             // The left stick over a crafting grid with Console Crafting on: the controller crafting
             // screen, instead of throwing the stack.
-            Button::LeftStick if self.legacy_switch_here() => self.legacy_start(),
+            Button::LeftStick if self.legacy_switch_here() => self.legacy_choose(true),
             // View / left stick in an inventory: throw one / the stack from
             // the slot under focus (Q / Ctrl+Q).
             Button::Select | Button::LeftStick

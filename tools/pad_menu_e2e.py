@@ -119,6 +119,8 @@ and prepared resources in .local/horizon-client/26.3. Exit status 0 when every c
   sword and ingot, nothing left in the table.
 - legacy_anvil: an anvil the pad opens: a damaged sword repaired with ingots and renamed by typing, in one go.
 - legacy_brewing: a brewing stand the pad opens: X fuels it, Y fills its bottles, A puts one nether wart in.
+- legacy_view_memory: a station switched to vanilla's screen opens there again, after a restart too, and back;
+  other stations keep their own choice.
 - legacy_compact: a 320x180 view's compact layout has the whole inventory on screen; its cursor takes as usual.
 - legacy_areas: right-stick flicks go row, grid, inventory; the inventory cursor takes, puts and quick-moves as
   vanilla's pointer does; leaving the inventory holding a stack puts it back where it came from; B goes back to the
@@ -4897,6 +4899,32 @@ def legacy_brewing(game, check):
     check(counts(game).get('minecraft:nether_wart') == 1, f'A: {counts(game)}')
     check(not game.ctl('menu').get('carried'), 'A left something in hand')
 
+
+@legacy_case
+def legacy_view_memory(game, check):
+    def reopen():
+        game.pad('east')
+        time.sleep(SETTLE)
+        return legacy_open_station(game, 'crafting_table')
+
+    legacy_known(game, gives=['oak_planks 8'])
+    check(legacy_open_station(game, 'crafting_table') is not None, 'the table opened as vanilla first')
+    # L3: vanilla's screen, and the table opens on it from now on.
+    game.pad('ls')
+    check(legacy(game) is None, 'L3 kept the crafting screen')
+    check(reopen() is None, 'the table forgot it was switched to vanilla')
+    game.restart()
+    game.ctl('command', 'gamerule send_command_feedback false')
+    check(legacy_open_station(game, 'crafting_table') is None, 'a restart forgot the table was vanilla')
+    # And back: L3 in vanilla's screen returns to the crafting screen, which sticks too.
+    game.pad('ls')
+    check(legacy(game) is not None, 'L3 in the vanilla screen did not switch back')
+    check(reopen() is not None, 'the table forgot it was switched back')
+    # Another station keeps its own choice: a furnace still opens as the crafting screen.
+    game.pad('east')
+    time.sleep(SETTLE)
+    check(legacy_open_station(game, 'furnace') is not None, "the table's choice reached the furnace")
+
 CASES = {'idle_a': idle_a, 'idle_b': idle_b, 'idle_x': idle_x, 'release': release, 'move_cancels': move_cancels,
          'pad_release': pad_release, 'pause_y': pause_y, 'settings': settings, 'create_world': create_world,
          'world_options': world_options, 'key_row_b': key_row_b, 'lock_question': lock_question,
@@ -4938,6 +4966,7 @@ CASES = {'idle_a': idle_a, 'idle_b': idle_b, 'idle_x': idle_x, 'release': releas
          'legacy_builders': legacy_builders, 'legacy_furnace': legacy_furnace,
          'legacy_stonecutter': legacy_stonecutter, 'legacy_smithing': legacy_smithing,
          'legacy_anvil': legacy_anvil, 'legacy_brewing': legacy_brewing,
+         'legacy_view_memory': legacy_view_memory,
          'extras_shell': extras_shell,
          'extras_shell_edges': extras_shell_edges,
          'graphics_shell': graphics_shell,
