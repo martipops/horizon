@@ -75,6 +75,8 @@ pub(in crate::game) struct LegacyCraft {
     pub(in crate::game) anvil: super::legacy_anvil::Anvil,
     /// The brewing stand's selected ingredient.
     pub(in crate::game) brew: super::legacy_brew::Brew,
+    /// The loom's pattern and staging.
+    pub(in crate::game) loom: super::legacy_loom::Loom,
     /// A held direction's start: past a second of it, the row runs faster.
     held_since: Option<Instant>,
     /// A vanilla click the screen passes on to the inventory under it.
@@ -121,6 +123,8 @@ impl Game<'_> {
             "anvil"
         } else if self.legacy_brewing() {
             "brewing_stand"
+        } else if self.legacy_loom() {
+            "loom"
         } else {
             match self.legacy_furnace() {
                 Some(BookType::Furnace) => "furnace",
@@ -375,6 +379,10 @@ impl Game<'_> {
         if self.legacy_brewing() && self.legacy_brew_button(button) {
             return true;
         }
+        // A loom's: A and X step a cell in the grid; A or Y weaves.
+        if self.legacy_loom() && self.legacy_loom_button(button) {
+            return true;
+        }
         // An anvil's: the addition in the grid, the name, A or Y works it.
         if self.legacy_anvil() && self.legacy_anvil_button(button) {
             return true;
@@ -603,6 +611,9 @@ impl Game<'_> {
         if self.legacy_brewing() {
             return self.legacy_brew_step(button);
         }
+        if self.legacy_loom() {
+            return self.legacy_loom_step(button);
+        }
         if self.legacy_builder().is_some() {
             return self.legacy_build_step(button);
         }
@@ -679,6 +690,9 @@ impl Game<'_> {
         }
         if self.legacy_brewing() {
             return vec![ItemStack::new("minecraft:brewing_stand", 1)];
+        }
+        if self.legacy_loom() {
+            return vec![ItemStack::new("minecraft:loom", 1)];
         }
         self.legacy_mode_icons()
     }
@@ -1039,6 +1053,7 @@ impl Game<'_> {
             "cutting": self.legacy_cutting(),
             "smith": self.legacy_smith(),
             "brewing": self.legacy_brewing(),
+            "loom": self.legacy_loom(),
             "anvil": self.legacy_anvil().then(|| self.pad.legacy.anvil.status()),
             "building": self.legacy_build_running(),
             "cursor": state.cursor,
@@ -1080,7 +1095,10 @@ impl Game<'_> {
         let row =
             |jobs: &[MenuJob], key: &str| HintRow::new(jobs.iter().map(|&j| glyph(j)), tr(key));
         // A smithing table stages its cells as a builder does.
-        let builder = self.legacy_builder().is_some() || self.legacy_smith() || self.legacy_anvil();
+        let builder = self.legacy_builder().is_some()
+            || self.legacy_smith()
+            || self.legacy_anvil()
+            || self.legacy_loom();
         let furnace = self.legacy_furnace().is_some();
         let cutter = self.legacy_cutter();
         let (craft, craft_all) = if cutter {
@@ -1196,6 +1214,21 @@ impl Game<'_> {
         };
         // LT and RT only with a type to turn to (a furnace has just itself).
         let mut rows = rows;
+        // A loom: Weave for Craft, no tabs or search.
+        if self.legacy_loom() {
+            let (craft, all, search) = (
+                tr("horizon.legacy_craft.craft"),
+                tr("horizon.legacy_craft.craft_all"),
+                tr("horizon.legacy_craft.search"),
+            );
+            rows.retain(|(_, r)| r.caption != search);
+            for (_, r) in &mut rows {
+                if r.caption == craft || r.caption == all {
+                    r.caption = tr("horizon.legacy_craft.weave");
+                }
+            }
+            rows.dedup_by(|a, b| a.1.caption == b.1.caption);
+        }
         // A smithing table: Smith for Craft, its two tabs on LB and RB, no search.
         if self.legacy_smith() {
             let (craft, all, search) = (
@@ -1416,6 +1449,10 @@ impl Game<'_> {
         }
         if self.legacy_brewing() {
             self.legacy_brew_view(&mut view);
+            return view;
+        }
+        if self.legacy_loom() {
+            self.legacy_loom_view(&mut view);
             return view;
         }
         // A builder: its own row and grid, no category tabs.

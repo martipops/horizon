@@ -228,7 +228,7 @@ impl Game<'_> {
         puts.extend(addition.map(|a| (a, INPUT + 1)));
         let own = horizon_client::stations::hover_name(&self.pack.names, &item);
         let rename = (name != own).then_some(name);
-        self.legacy_run_slots(puts, RESULT, vec![INPUT, INPUT + 1], rename);
+        self.legacy_run_slots(puts, RESULT, vec![INPUT, INPUT + 1], rename, None);
     }
 
     /// The anvil's view: the held items along the row, the anvil itself below.

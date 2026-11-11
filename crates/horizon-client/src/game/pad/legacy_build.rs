@@ -83,6 +83,8 @@ enum Step {
     Clear,
     /// The anvil's rename box set to this name, as typing it there does (`RenameItem`).
     Rename(String),
+    /// The menu's button, as a click on a loom's pattern or a stonecutter's recipe sends it.
+    Button(usize),
 }
 
 impl Game<'_> {
@@ -333,6 +335,7 @@ impl Game<'_> {
         result: usize,
         inputs: Vec<usize>,
         rename: Option<String>,
+        button: Option<usize>,
     ) -> bool {
         if self.pad.legacy.build.run.is_some()
             || self.carried.is_some()
@@ -347,6 +350,7 @@ impl Game<'_> {
                 .map(|(stack, cell)| Step::Put { stack, cell }),
         );
         steps.extend(rename.map(Step::Rename));
+        steps.extend(button.map(Step::Button));
         steps.extend([Step::Result { until: None }, Step::Take, Step::Clear]);
         self.pad.legacy.build.run = Some(Run {
             recipe: String::new(),
@@ -470,6 +474,18 @@ impl Game<'_> {
                     self.legacy_slot_click(run.result, false, true);
                     run.next_at = now + gap;
                 }
+            }
+            Step::Button(index) => {
+                let mut taken = false;
+                let flag = &mut taken;
+                self.menu_session(|menu, env, _| {
+                    *flag = menu.button(env, index as i32);
+                    Some(*flag)
+                });
+                if taken {
+                    self.remote_station_button(index as i32);
+                }
+                run.next_at = now + gap;
             }
             Step::Rename(name) => {
                 if let Some(s) = self.station.as_mut() {

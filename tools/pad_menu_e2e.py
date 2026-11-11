@@ -121,6 +121,7 @@ and prepared resources in .local/horizon-client/26.3. Exit status 0 when every c
 - legacy_brewing: a brewing stand the pad opens: X fuels it, Y fills its bottles, A puts one nether wart in.
 - legacy_view_memory: a station switched to vanilla's screen opens there again, after a restart too, and back;
   other stations keep their own choice.
+- legacy_loom: a loom the pad opens: A weaves the selected pattern in red on a white banner, nothing left in it.
 - legacy_compact: a 320x180 view's compact layout has the whole inventory on screen; its cursor takes as usual.
 - legacy_areas: right-stick flicks go row, grid, inventory; the inventory cursor takes, puts and quick-moves as
   vanilla's pointer does; leaving the inventory holding a stack puts it back where it came from; B goes back to the
@@ -4925,6 +4926,23 @@ def legacy_view_memory(game, check):
     time.sleep(SETTLE)
     check(legacy_open_station(game, 'furnace') is not None, "the table's choice reached the furnace")
 
+
+@legacy_case
+def legacy_loom(game, check):
+    legacy_known(game, gives=['white_banner 1', 'red_dye 2'])
+    shown = legacy_open_station(game, 'loom')
+    check(shown is not None and shown.get('loom'), f'the loom is not the crafting screen: {shown}')
+    if not shown:
+        return
+    game.pad('right')
+    game.pad('south')
+    legacy_build_ended(game)
+    have = counts(game)
+    check(have.get('minecraft:red_dye') == 1, f'no dye used: {have}')
+    banners = legacy_held(game, 'minecraft:white_banner')
+    check(banners and 'banner_patterns' in banners[0].get('components', ''), f'not woven: {banners}')
+    check(not any(600 <= s < 603 for s in menu_slots(game)), 'left in the loom')
+
 CASES = {'idle_a': idle_a, 'idle_b': idle_b, 'idle_x': idle_x, 'release': release, 'move_cancels': move_cancels,
          'pad_release': pad_release, 'pause_y': pause_y, 'settings': settings, 'create_world': create_world,
          'world_options': world_options, 'key_row_b': key_row_b, 'lock_question': lock_question,
@@ -4966,7 +4984,7 @@ CASES = {'idle_a': idle_a, 'idle_b': idle_b, 'idle_x': idle_x, 'release': releas
          'legacy_builders': legacy_builders, 'legacy_furnace': legacy_furnace,
          'legacy_stonecutter': legacy_stonecutter, 'legacy_smithing': legacy_smithing,
          'legacy_anvil': legacy_anvil, 'legacy_brewing': legacy_brewing,
-         'legacy_view_memory': legacy_view_memory,
+         'legacy_view_memory': legacy_view_memory, 'legacy_loom': legacy_loom,
          'extras_shell': extras_shell,
          'extras_shell_edges': extras_shell_edges,
          'graphics_shell': graphics_shell,

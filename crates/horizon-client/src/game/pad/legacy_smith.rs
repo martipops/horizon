@@ -219,7 +219,7 @@ impl Game<'_> {
             .enumerate()
             .filter_map(|(i, s)| s.clone().map(|s| (s, INPUT + i)))
             .collect();
-        self.legacy_run_slots(puts, RESULT, (INPUT..INPUT + 3).collect(), None);
+        self.legacy_run_slots(puts, RESULT, (INPUT..INPUT + 3).collect(), None, None);
     }
 
     /// The smithing table's view: its two tabs, the recipes, the staged cells and the result.

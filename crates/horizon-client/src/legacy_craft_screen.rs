@@ -127,6 +127,9 @@ pub struct View {
     /// At a smithing table: the grid's place shows its template, base and material in a row
     /// (`cells` 0-2), the arrow and the result.
     pub smith: bool,
+    /// The three slots' empty-slot icons (vanilla's `container/slot/...`): the smithing table's
+    /// when none.
+    pub slot_hints: Option<[&'static str; 3]>,
     /// At an anvil: the name its result gets (and whether it's being typed), over its two inputs
     /// (`cells` 0-1), the arrow and the result.
     pub anvil: Option<(String, bool)>,
@@ -709,11 +712,12 @@ fn cutter(out: &mut Out, view: &View, x: i32, y: i32) {
 /// A smithing table in the grid's place: template, base and material in a row (vanilla's empty
 /// slots' hint icons where nothing's staged), the arrow, the result.
 fn smithing(out: &mut Out, view: &View, x: i32, y: i32) {
-    const HINTS: [&str; 3] = [
+    const SMITHING: [&str; 3] = [
         "container/slot/smithing_template_armor_trim",
         "container/slot/chestplate",
         "container/slot/ingot",
     ];
+    let hints = view.slot_hints.unwrap_or(SMITHING);
     for i in 0..3 {
         let (sx, sy) = (x + i as i32 * 18, y + 18);
         out.sprite("container/slot", sx, sy, 18, 18);
@@ -728,7 +732,7 @@ fn smithing(out: &mut Out, view: &View, x: i32, y: i32) {
                 }
                 out.item(&cell.stack, sx + 1, sy + 1, false);
             }
-            _ => out.sprite(HINTS[i], sx + 1, sy + 1, 16, 16),
+            _ => out.sprite(hints[i], sx + 1, sy + 1, 16, 16),
         }
         if focused {
             highlight_front(out, sx, sy);

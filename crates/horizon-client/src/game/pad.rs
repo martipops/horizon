@@ -149,6 +149,7 @@ mod legacy_build;
 mod legacy_craft;
 mod legacy_cutter;
 mod legacy_furnace;
+mod legacy_loom;
 mod legacy_smith;
 #[cfg(test)]
 mod parity_tests;

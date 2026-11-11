@@ -63,7 +63,11 @@ enum Step {
 impl Game<'_> {
     /// The open screen is a station's this screen shows (a stonecutter's, a smithing table's...).
     pub(in crate::game) fn legacy_station(&self) -> bool {
-        self.legacy_cutter() || self.legacy_smith() || self.legacy_anvil() || self.legacy_brewing()
+        self.legacy_cutter()
+            || self.legacy_smith()
+            || self.legacy_anvil()
+            || self.legacy_brewing()
+            || self.legacy_loom()
     }
 
     /// The open screen is a stonecutter's.
