@@ -35,19 +35,6 @@ const STICK_STEP: f32 = 0.55;
 /// Seconds a direction is held along the row before it runs faster (twice that: faster again).
 const ACCELERATE_AFTER: f32 = 1.0;
 
-/// The screen the open menu is shown as.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(in crate::game) enum Station {
-    Crafting,
-    Furnace(horizon_client::recipe_book::BookType),
-    Cutter,
-    Smith,
-    Anvil,
-    Brew,
-    Loom,
-    Pair(super::super::stations::Kind),
-}
-
 /// The screen's state between frames.
 #[derive(Default)]
 pub(in crate::game) struct LegacyCraft {
@@ -80,18 +67,6 @@ pub(in crate::game) struct LegacyCraft {
     pub(in crate::game) cursor: usize,
     /// The builders' templates, staging and running craft.
     pub(in crate::game) build: super::legacy_build::Build,
-    /// The stonecutter's materials, cuts and running cut.
-    pub(in crate::game) cutter: super::legacy_cutter::Cutter,
-    /// The smithing table's tabs and staging.
-    pub(in crate::game) smith: super::legacy_smith::Smith,
-    /// The anvil's selection, addition and name.
-    pub(in crate::game) anvil: super::legacy_anvil::Anvil,
-    /// The brewing stand's selected ingredient.
-    pub(in crate::game) brew: super::legacy_brew::Brew,
-    /// The loom's pattern and staging.
-    pub(in crate::game) loom: super::legacy_loom::Loom,
-    /// A grindstone's or cartography table's selection and addition.
-    pub(in crate::game) pair: super::legacy_pair::Pair,
     /// A held direction's start: past a second of it, the row runs faster.
     held_since: Option<Instant>,
     /// A vanilla click the screen passes on to the inventory under it.
@@ -113,7 +88,7 @@ impl Game<'_> {
     fn legacy_fits_menu(&self) -> bool {
         self.screen == Screen::Inventory
             && self.title.is_none()
-            && (self.active_book().is_some() || self.legacy_station())
+            && self.active_book() == Some(horizon_client::recipe_book::BookType::Crafting)
     }
 
     /// The vanilla screen of a crafting grid, with Console Crafting on: the left stick switches to
@@ -124,48 +99,17 @@ impl Game<'_> {
             && !self.legacy_showing()
     }
 
-    /// The station the open menu is, as its screen choice is kept (`PadSettings::legacy_views`).
+    /// The grid the open menu is, as its screen choice is kept (`PadSettings::legacy_views`).
     pub(in crate::game) fn legacy_kind(&self) -> &'static str {
-        use horizon_client::recipe_book::BookType;
-        match self.legacy_at() {
-            Station::Cutter => "stonecutter",
-            Station::Smith => "smithing_table",
-            Station::Anvil => "anvil",
-            Station::Brew => "brewing_stand",
-            Station::Loom => "loom",
-            Station::Pair(super::super::stations::Kind::Grindstone) => "grindstone",
-            Station::Pair(_) => "cartography_table",
-            Station::Furnace(BookType::BlastFurnace) => "blast_furnace",
-            Station::Furnace(BookType::Smoker) => "smoker",
-            Station::Furnace(_) => "furnace",
-            Station::Crafting if self.craft_size == 3 => "crafting_table",
-            Station::Crafting => "inventory",
+        if self.craft_size == 3 {
+            "crafting_table"
+        } else {
+            "inventory"
         }
     }
 
-    /// Which screen the open menu is, in one place: every per-station dispatch matches on it.
-    pub(in crate::game) fn legacy_at(&self) -> Station {
-        if let Some(book) = self.legacy_furnace() {
-            return Station::Furnace(book);
-        }
-        if self.legacy_brewing() {
-            return Station::Brew;
-        }
-        match self.station.as_ref().map(|s| s.kind) {
-            Some(super::super::stations::Kind::Stonecutter) => Station::Cutter,
-            Some(super::super::stations::Kind::Smithing) => Station::Smith,
-            Some(super::super::stations::Kind::Anvil) => Station::Anvil,
-            Some(super::super::stations::Kind::Loom) => Station::Loom,
-            Some(
-                kind @ (super::super::stations::Kind::Grindstone
-                | super::super::stations::Kind::Cartography),
-            ) => Station::Pair(kind),
-            _ => Station::Crafting,
-        }
-    }
-
-    /// The player switched this station's screen (L3, the switch button): it shows, and the
-    /// station opens on it from now on, kept in the controller settings file.
+    /// The player switched this grid's screen (L3, the switch button): it shows, and the grid
+    /// opens on it from now on, kept in the controller settings file.
     pub(in crate::game) fn legacy_choose(&mut self, console: bool) {
         let kind = self.legacy_kind().to_owned();
         self.settings.controller.legacy_views.insert(kind, console);
@@ -179,7 +123,6 @@ impl Game<'_> {
             self.pad.legacy.typing = false;
             // Vanilla's screen shows what a run left in the slots, for the player to take.
             self.pad.legacy.build.end_run();
-            self.pad.legacy.cutter = Default::default();
         }
     }
 
@@ -209,24 +152,16 @@ impl Game<'_> {
         let menu = self.remote_menu().0;
         let state = &mut self.pad.legacy;
         if state.menu != Some(menu) {
-            // Every recipe: the search tab, before anything's typed; the stations' selections and
-            // stagings start again too (another anvil, another loom).
+            // Every recipe: the search tab, before anything's typed.
             state.tab = 0;
             state.first_tab = 0;
             state.places.clear();
             state.query.clear();
             state.focus = Area::Row;
             state.cursor = 0;
-            state.cutter = Default::default();
-            state.smith = Default::default();
-            state.anvil = Default::default();
-            state.brew = Default::default();
-            state.loom = Default::default();
-            state.pair = Default::default();
         }
         state.open = true;
         if state.menu != Some(menu) {
-            // Crafting or the station: the builders are a crafting grid's.
             state.mode = 0;
         }
         state.menu = Some(menu);
@@ -247,12 +182,11 @@ impl Game<'_> {
             // A run ends with its screen: what it put in stays in the menu, which vanilla returns
             // to the inventory as the menu closes.
             state.build.end_run();
-            state.cutter = Default::default();
             return;
         }
         let menu = self.remote_menu().0;
-        // A crafting table's or a furnace's own menu: the screen it opens on, for a pad player.
-        // Each station opens on the screen the player last switched it to (the inventory, opened
+        // A crafting table's own menu: the screen it opens on, for a pad player.
+        // Each grid opens on the screen the player last switched it to (the inventory, opened
         // with Y, on vanilla's until switched); X opens crafting on this one regardless.
         let kind = self.legacy_kind();
         if self.settings.controller.legacy_view(kind)
@@ -396,23 +330,9 @@ impl Game<'_> {
             }
             return true;
         }
-        // The inventory's cursor does what vanilla's pointer does over a slot, and so does the
-        // furnace's over its own three.
-        let furnace = self.legacy_furnace().is_some();
-        let cutter = self.legacy_cutter();
-        let cutter_slots = [
-            super::super::stations::INPUT,
-            super::super::stations::RESULT,
-        ];
+        // The inventory's cursor does what vanilla's pointer does over a slot.
         let slot_area = match self.pad.legacy.focus {
             Area::Inventory => Some(self.pad.legacy.cursor),
-            Area::Grid if furnace => super::legacy_furnace::SLOTS
-                .get(self.pad.legacy.cursor)
-                .copied(),
-            Area::Grid if cutter => cutter_slots.get(self.pad.legacy.cursor).copied(),
-            Area::Grid if self.legacy_brewing() => super::legacy_brew::SLOTS
-                .get(self.pad.legacy.cursor)
-                .copied(),
             _ => None,
         };
         if let Some(slot) = slot_area {
@@ -427,41 +347,6 @@ impl Game<'_> {
         // A builder's own presses: crafting its staging, stepping a grid cell's item.
         if self.legacy_build_button(button) {
             return true;
-        }
-        // A smithing table's: A and X step a cell in the grid; A or Y smiths.
-        if self.legacy_smith() && self.legacy_smith_button(button) {
-            return true;
-        }
-        // A brewing stand's row: A adds the ingredient, Y fills the bottles, X fuels it.
-        if self.legacy_brewing() && self.legacy_brew_button(button) {
-            return true;
-        }
-        // A grindstone's or cartography table's: the addition in the grid; A or Y works it.
-        if self.legacy_pair_button(button) {
-            return true;
-        }
-        // A loom's: A and X step a cell in the grid; A or Y weaves.
-        if self.legacy_loom() && self.legacy_loom_button(button) {
-            return true;
-        }
-        // An anvil's: the addition in the grid, the name, A or Y works it.
-        if self.legacy_anvil() && self.legacy_anvil_button(button) {
-            return true;
-        }
-        // A stonecutter's: A cuts one, Y all; X and View have nothing to do there.
-        if cutter && self.pad.legacy.focus == Area::Row {
-            match button {
-                Button::South => {
-                    self.legacy_cut(false);
-                    return true;
-                }
-                Button::North => {
-                    self.legacy_cut(true);
-                    return true;
-                }
-                Button::West | Button::Select => return true,
-                _ => {}
-            }
         }
         match button {
             Button::DPadLeft | Button::DPadRight | Button::DPadUp | Button::DPadDown => {
@@ -480,22 +365,6 @@ impl Game<'_> {
             Button::RightTrigger => self.legacy_turn_mode(true),
             Button::South => self.legacy_craft(false),
             Button::North => self.legacy_craft(true),
-            // X at a furnace: fuel in.
-            Button::West if furnace => {
-                let ingredient = self.legacy_selected_entry().and_then(|e| {
-                    let (book, _) = self.crafting_book()?;
-                    let first = book
-                        .entries
-                        .get(e)?
-                        .requirements()
-                        .first()?
-                        .order
-                        .first()?
-                        .clone();
-                    Some(first)
-                });
-                self.legacy_add_fuel(ingredient.as_deref());
-            }
             // X: only what can be made now, or everything again.
             Button::West => {
                 let state = &mut self.pad.legacy;
@@ -533,21 +402,6 @@ impl Game<'_> {
         let before = self.pad.legacy.cursor;
         match self.pad.legacy.focus {
             Area::Row => return self.legacy_row_step(button),
-            Area::Grid if self.legacy_brewing() => {
-                self.pad.legacy.cursor =
-                    super::legacy_brew::brew_step(self.pad.legacy.cursor, button);
-            }
-            Area::Grid if self.legacy_cutter() => {
-                self.pad.legacy.cursor = match button {
-                    Button::DPadLeft => 0,
-                    Button::DPadRight => 1,
-                    _ => self.pad.legacy.cursor.min(1),
-                };
-            }
-            Area::Grid if self.legacy_furnace().is_some() => {
-                self.pad.legacy.cursor =
-                    super::legacy_furnace::furnace_step(self.pad.legacy.cursor, button);
-            }
             Area::Grid => {
                 let side = self.craft_size.max(1);
                 self.pad.legacy.cursor = grid_step(self.pad.legacy.cursor, side, button);
@@ -651,27 +505,15 @@ impl Game<'_> {
     }
 
     /// A step along the row (left and right) or through a recipe's variants (up and down):
-    /// whether it was one. A station's row has no variants: up and down leave it.
+    /// whether it was one.
     fn legacy_row_step(&mut self, button: Button) -> bool {
-        let along = super::legacy_anvil::row_way(button).is_some();
-        match self.legacy_at() {
-            Station::Cutter => self.legacy_cutter_step(button),
-            Station::Smith => self.legacy_smith_step(button),
-            Station::Anvil => self.legacy_anvil_step(button),
-            Station::Brew => self.legacy_brew_step(button),
-            Station::Loom => self.legacy_loom_step(button),
-            Station::Pair(_) => self.legacy_pair_step(button),
-            Station::Crafting | Station::Furnace(_) => {
-                if self.legacy_builder().is_some() {
-                    return self.legacy_build_step(button);
-                }
-                return self.legacy_recipe_step(button);
-            }
+        if self.legacy_builder().is_some() {
+            return self.legacy_build_step(button);
         }
-        along
+        self.legacy_recipe_step(button)
     }
 
-    /// A step along a crafting or furnace row, or through the selected recipe's variants.
+    /// A step along a crafting row, or through the selected recipe's variants.
     fn legacy_recipe_step(&mut self, button: Button) -> bool {
         let Some((len, variants, shown)) = self
             .legacy_current()
@@ -696,11 +538,6 @@ impl Game<'_> {
         // A tab is a list of recipes: the focus goes back to them, from wherever it was.
         self.pad.legacy.focus = Area::Row;
         self.pad.legacy.cursor = 0;
-        match self.legacy_at() {
-            Station::Cutter => return self.legacy_cutter_turn(next),
-            Station::Smith => return self.legacy_smith_turn(),
-            _ => {}
-        }
         let n = self.pad.legacy.tabs.len();
         if n == 0 {
             return;
@@ -735,14 +572,7 @@ impl Game<'_> {
 
     /// The modes at the panel's left: crafting, then the builders (`legacy_build.rs`).
     fn legacy_modes(&self) -> Vec<ItemStack> {
-        // A station's own block, its id's item (`legacy_kind`); crafting's modes are its builders.
-        match self.legacy_at() {
-            Station::Crafting => self.legacy_mode_icons(),
-            _ => vec![ItemStack::new(
-                &format!("minecraft:{}", self.legacy_kind()),
-                1,
-            )],
-        }
+        self.legacy_mode_icons()
     }
 
     fn legacy_tab_id(&self) -> String {
@@ -757,19 +587,13 @@ impl Game<'_> {
     fn legacy_refresh_tabs(&mut self) {
         let version = self.crafting_book_refresh();
         let grouped = self.settings.controller.legacy_tiers;
-        let furnace = self.legacy_furnace();
-        // The book's type in the key: a furnace's tabs aren't a table's.
-        let size = self.craft_size + furnace.map_or(0, |b| 10 * b.index());
-        let key = (version, size, self.creative_screen.tabs.len(), grouped);
+        let key = (
+            version,
+            self.craft_size,
+            self.creative_screen.tabs.len(),
+            grouped,
+        );
         if self.pad.legacy.tabs_key == Some(key) {
-            return;
-        }
-        if let Some(book_type) = furnace {
-            let tabs = self.legacy_furnace_tabs(book_type);
-            let state = &mut self.pad.legacy;
-            state.tab = state.tab.min(tabs.len().saturating_sub(1));
-            state.tabs = tabs;
-            state.tabs_key = Some(key);
             return;
         }
         let Some((book, client)) = self.crafting_book() else {
@@ -846,9 +670,6 @@ impl Game<'_> {
         let Some(entry) = self.legacy_selected_entry() else {
             return;
         };
-        if let Some(book_type) = self.legacy_furnace() {
-            return self.legacy_smelt(book_type, entry, all);
-        }
         let started = if all {
             self.direct_craft_all(entry)
         } else {
@@ -881,14 +702,6 @@ impl Game<'_> {
         backspace: bool,
         enter: bool,
     ) {
-        // At an anvil the box is its name.
-        if self.legacy_anvil() {
-            self.legacy_anvil_text(text, backspace);
-            if enter {
-                self.pad.legacy.typing = false;
-            }
-            return;
-        }
         let state = &mut self.pad.legacy;
         if let Some(text) = text {
             const MOST: usize = 50;
@@ -937,6 +750,9 @@ impl Game<'_> {
             }
             return true;
         };
+        if self.legacy_build_click(hit, right) {
+            return true;
+        }
         let id = self.legacy_tab_id();
         match hit {
             Hit::Tab(i) => {
@@ -983,9 +799,8 @@ impl Game<'_> {
     pub(in crate::game) fn draw_legacy_craft(&mut self, batch: &mut HudBatch) {
         self.render_transparent_background("inventory", batch);
         self.legacy_build_poll();
-        self.legacy_cutter_poll();
         let mut view = self.legacy_view(batch.width as i32, batch.height as i32);
-        // What's selected: the preview's result, or the row's (a furnace has no preview slot).
+        // What's selected: the preview's result, or the row's.
         let selected = view.result.as_ref().or(view.row.get(view.selected));
         self.pad.legacy.shown = (view.row.len(), selected.map(|r| r.stack.item.to_string()));
         self.pad.legacy.shown_selected = view.selected;
@@ -1105,27 +920,28 @@ impl Game<'_> {
             "query": state.query,
             "focus": format!("{:?}", state.focus).to_lowercase(),
             "mode": state.mode,
-            "furnace": self.legacy_furnace().map(|b| format!("{b:?}")),
-            "cutter": self.legacy_cutter(),
-            "cutting": self.legacy_cutting(),
-            "smith": self.legacy_smith(),
-            "brewing": self.legacy_brewing(),
-            "loom": self.legacy_loom(),
-            "pair": self.legacy_pair().map(|k| format!("{k:?}")),
-            "addition": self.pad.legacy.pair_addition(),
-            "anvil": self.legacy_anvil().then(|| self.pad.legacy.anvil.status()),
             "building": self.legacy_build_running(),
             "cursor": state.cursor,
             "typing": state.typing,
             "only_craftable": state.only_craftable,
             "compact": state.layout.as_ref().is_some_and(|l| l.compact),
+            // Where the mouse finds the row, its variants, the grid and the result (GUI pixels).
+            "hits": state.layout.as_ref().map_or_else(Vec::new, |l| {
+                l.hits
+                    .iter()
+                    .filter(|(_, h)| {
+                        matches!(h, Hit::Row(_) | Hit::Variant(_) | Hit::Cell(_) | Hit::Result)
+                    })
+                    .map(|(r, h)| serde_json::json!({ "hit": format!("{h:?}"), "rect": r }))
+                    .collect()
+            }),
         })
     }
 
     /// The display ids of every recipe in the row's slots on screen.
     fn legacy_in_sight(&self, layout: &Layout, stock: &Stacked) -> Vec<i32> {
-        // A builder's row, or a stonecutter's, holds no book recipes.
-        if self.legacy_builder().is_some() || self.legacy_station() {
+        // A builder's row holds no book recipes.
+        if self.legacy_builder().is_some() {
             return Vec::new();
         }
         let Some((row, _, _)) = self.legacy_row(stock) else {
@@ -1153,34 +969,15 @@ impl Game<'_> {
         let glyph = |job| self.menu_glyph(job);
         let row =
             |jobs: &[MenuJob], key: &str| HintRow::new(jobs.iter().map(|&j| glyph(j)), tr(key));
-        // A smithing table stages its cells as a builder does.
-        let builder = self.legacy_builder().is_some()
-            || self.legacy_smith()
-            || self.legacy_anvil()
-            || self.legacy_loom()
-            || self.legacy_pair().is_some();
-        let furnace = self.legacy_furnace().is_some();
-        let cutter = self.legacy_cutter();
-        let (craft, craft_all) = if cutter {
-            ("horizon.legacy_craft.cut", "horizon.legacy_craft.cut_all")
-        } else if furnace {
-            (
-                "horizon.legacy_craft.smelt",
-                "horizon.legacy_craft.smelt_all",
-            )
-        } else {
-            (
-                "horizon.legacy_craft.craft",
-                "horizon.legacy_craft.craft_all",
-            )
-        };
+        let builder = self.legacy_builder().is_some();
+        let (craft, craft_all) = (
+            "horizon.legacy_craft.craft",
+            "horizon.legacy_craft.craft_all",
+        );
         // Each row with how much it's needed: when they don't all fit, the highest number goes.
         let rows: Vec<(u8, HintRow)> = match self.pad.legacy.focus {
-            // Vanilla's slot jobs, as the inventory's guide names them; a furnace's slots too.
-            focus
-                if focus == Area::Inventory
-                    || ((furnace || cutter || self.legacy_brewing()) && focus == Area::Grid) =>
-            {
+            // Vanilla's slot jobs, as the inventory's guide names them.
+            Area::Inventory => {
                 let carrying = self.carried.is_some();
                 let pick = if carrying { "put" } else { "take" };
                 let half = if carrying { "put_one" } else { "take_half" };
@@ -1234,16 +1031,8 @@ impl Game<'_> {
                     (0, row(&[MenuJob::Confirm], craft)),
                     (3, row(&[MenuJob::Extra], craft_all)),
                 ];
-                if furnace {
-                    rows.push((
-                        1,
-                        row(&[MenuJob::Alternate], "horizon.legacy_craft.add_fuel"),
-                    ));
-                }
                 if !builder {
-                    if !furnace {
-                        rows.push((6, row(&[MenuJob::Alternate], filter)));
-                    }
+                    rows.push((6, row(&[MenuJob::Alternate], filter)));
                     rows.push((
                         1,
                         row(
@@ -1269,126 +1058,9 @@ impl Game<'_> {
                 ]);
                 rows
             }
-            // Taken by the slot arm above.
-            Area::Inventory => Vec::new(),
         };
-        // LT and RT only with a type to turn to (a furnace has just itself).
+        // LT and RT only with a type to turn to.
         let mut rows = rows;
-        // A loom: Weave for Craft; a grindstone or cartography table: Use; no tabs or search.
-        if self.legacy_loom() || self.legacy_pair().is_some() {
-            let verb = if self.legacy_loom() {
-                "horizon.legacy_craft.weave"
-            } else {
-                "horizon.legacy_craft.use"
-            };
-            let (craft, all, search) = (
-                tr("horizon.legacy_craft.craft"),
-                tr("horizon.legacy_craft.craft_all"),
-                tr("horizon.legacy_craft.search"),
-            );
-            rows.retain(|(_, r)| r.caption != search);
-            for (_, r) in &mut rows {
-                if r.caption == craft || r.caption == all {
-                    r.caption = tr(verb);
-                }
-            }
-            rows.dedup_by(|a, b| a.1.caption == b.1.caption);
-        }
-        // A smithing table: Smith for Craft, its two tabs on LB and RB, no search.
-        if self.legacy_smith() {
-            let (craft, all, search) = (
-                tr("horizon.legacy_craft.craft"),
-                tr("horizon.legacy_craft.craft_all"),
-                tr("horizon.legacy_craft.search"),
-            );
-            rows.retain(|(_, r)| r.caption != search);
-            for (_, r) in &mut rows {
-                if r.caption == craft || r.caption == all {
-                    r.caption = tr("horizon.legacy_craft.smith");
-                }
-            }
-            rows.dedup_by(|a, b| a.1.caption == b.1.caption);
-            if self.pad.legacy.focus == Area::Row {
-                let tabs = HintRow::new(
-                    [
-                        self.menu_glyph(MenuJob::PagePrev),
-                        self.menu_glyph(MenuJob::PageNext),
-                    ],
-                    tr("horizon.legacy_craft.smith_tabs"),
-                );
-                rows.insert(1, (1, tabs));
-            }
-        }
-        // A brewing stand: Add, Fill Bottles, Add Fuel; no tabs, filter or search.
-        if self.legacy_brewing() && self.pad.legacy.focus == Area::Row {
-            rows = vec![
-                (
-                    0,
-                    HintRow::new(
-                        [self.menu_glyph(MenuJob::Confirm)],
-                        tr("horizon.legacy_craft.add"),
-                    ),
-                ),
-                (
-                    1,
-                    HintRow::new(
-                        [self.menu_glyph(MenuJob::Extra)],
-                        tr("horizon.legacy_craft.fill_bottles"),
-                    ),
-                ),
-                (
-                    2,
-                    HintRow::new(
-                        [self.menu_glyph(MenuJob::Alternate)],
-                        tr("horizon.legacy_craft.add_fuel"),
-                    ),
-                ),
-                (
-                    5,
-                    HintRow::new(
-                        [self.menu_glyph(MenuJob::LeftStick)],
-                        tr("horizon.legacy_craft.classic"),
-                    ),
-                ),
-                (
-                    0,
-                    HintRow::new([self.menu_glyph(MenuJob::Back)], tr("gui.back")),
-                ),
-            ];
-        }
-        // An anvil: Use Anvil for Craft, X and View rename, no tabs or search.
-        if self.legacy_anvil() {
-            let (craft, all, search) = (
-                tr("horizon.legacy_craft.craft"),
-                tr("horizon.legacy_craft.craft_all"),
-                tr("horizon.legacy_craft.search"),
-            );
-            for (_, r) in &mut rows {
-                if r.caption == craft || r.caption == all {
-                    r.caption = tr("horizon.legacy_craft.use_anvil");
-                } else if r.caption == search {
-                    r.caption = tr("horizon.legacy_craft.rename");
-                }
-            }
-            rows.dedup_by(|a, b| a.1.caption == b.1.caption);
-        }
-        // A stonecutter's tabs are its materials; it has no filter and no search.
-        if self.legacy_cutter() {
-            let (filters, search) = (
-                [
-                    tr("gui.recipebook.toggleRecipes.craftable"),
-                    tr("gui.recipebook.toggleRecipes.all"),
-                ],
-                tr("horizon.legacy_craft.search"),
-            );
-            rows.retain(|(_, r)| !filters.contains(&r.caption) && r.caption != search);
-            let category = tr("horizon.legacy_craft.category");
-            for (_, r) in &mut rows {
-                if r.caption == category {
-                    r.caption = tr("horizon.legacy_craft.material");
-                }
-            }
-        }
         if self.legacy_modes().len() <= 1 {
             let types = tr("horizon.legacy_craft.modes");
             rows.retain(|(_, r)| r.caption != types);
@@ -1499,19 +1171,6 @@ impl Game<'_> {
                 view.title = tab.title.clone();
             }
         }
-        // A stonecutter: materials for tabs, its cuts along the row.
-        match self.legacy_at() {
-            Station::Cutter => self.legacy_cutter_view(&mut view),
-            Station::Smith => self.legacy_smith_view(&mut view),
-            Station::Anvil => self.legacy_anvil_view(&mut view),
-            Station::Brew => self.legacy_brew_view(&mut view),
-            Station::Loom => self.legacy_loom_view(&mut view),
-            Station::Pair(kind) => self.legacy_pair_view(&mut view, kind),
-            Station::Crafting | Station::Furnace(_) => {}
-        }
-        if self.legacy_station() {
-            return view;
-        }
         // A builder: its own row and grid, no category tabs.
         if let Some(kind) = self.legacy_builder() {
             view.tab_page = None;
@@ -1571,10 +1230,6 @@ impl Game<'_> {
         let craftable = result.craftable;
         view.name = names(&result.stack);
         view.result = Some(result);
-        if self.legacy_furnace().is_some() {
-            self.legacy_furnace_view(&mut view, craftable);
-            return view;
-        }
         let (cells, missing) = grid_cells(book, entry_index, grid, &stock, cycle);
         view.cells = cells;
         let carrying = self.carried.is_some();

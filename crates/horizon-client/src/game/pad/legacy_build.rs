@@ -13,7 +13,7 @@ use horizon_client::{
     gamepad::{self, Button},
     items::ItemStack,
     legacy_build::{self, Kind, Template},
-    legacy_craft_screen::{self as screen, Area, Cell, RecipeSlot, View},
+    legacy_craft_screen::{self as screen, Area, Cell, Hit, RecipeSlot, View},
 };
 use std::{
     collections::{HashMap, VecDeque},
@@ -67,8 +67,7 @@ struct Run {
     menu: i32,
     steps: VecDeque<Step>,
     next_at: Instant,
-    /// The menu's result slot, and its input slots (what Clear empties): the crafting grid's,
-    /// or a station's (`legacy_run_slots`).
+    /// The menu's result slot, and its input slots (what Clear empties): the crafting grid's.
     result: usize,
     inputs: Vec<usize>,
     /// Crafts still asked for after this one.
@@ -90,10 +89,6 @@ enum Step {
     Take,
     /// Whatever stays in the grid, quick-moved back.
     Clear,
-    /// The anvil's rename box set to this name, as typing it there does (`RenameItem`).
-    Rename(String),
-    /// The menu's button, as a click on a loom's pattern or a stonecutter's recipe sends it.
-    Button(usize),
     /// The inputs are empty, or the run ends here (a full inventory left something in them,
     /// which a Put would swap with what it carries).
     Empty,
@@ -102,9 +97,6 @@ enum Step {
 impl Game<'_> {
     /// The builder the mode tabs have selected: none on Crafting.
     pub(in crate::game) fn legacy_builder(&self) -> Option<Kind> {
-        if self.legacy_furnace().is_some() || self.legacy_station() {
-            return None;
-        }
         self.pad
             .legacy
             .mode
@@ -139,11 +131,16 @@ impl Game<'_> {
     /// afresh from it.
     fn legacy_staged(&mut self, template: &Template) -> Vec<Option<ItemStack>> {
         let inventory = &self.inventory[..36];
-        match self.pad.legacy.build.staged.get(&template.recipe) {
-            Some(s) if legacy_build::available(s, inventory) && s.iter().any(Option::is_some) => {
-                s.clone()
-            }
-            _ => legacy_build::stage(template, inventory),
+        let kept = self.pad.legacy.build.staged.get(&template.recipe);
+        // While a run clicks, its stacks pass through the hand: the staging holds still.
+        if self.pad.legacy.build.run.is_some()
+            && let Some(kept) = kept
+        {
+            return kept.clone();
+        }
+        match kept {
+            Some(kept) => legacy_build::restage(template, kept, inventory),
+            None => legacy_build::stage(template, inventory),
         }
     }
 
@@ -215,8 +212,8 @@ impl Game<'_> {
         })
     }
 
-    /// Left and right along the row's entries, up and down through the entry's variants.
-    /// A step along a builder's row (or through its variants): whether it went anywhere.
+    /// A step along a builder's row (left and right) or through its entry's variants (up and
+    /// down): whether it went anywhere.
     pub(in crate::game) fn legacy_build_step(&mut self, button: Button) -> bool {
         let Some(kind) = self.legacy_builder() else {
             return false;
@@ -252,6 +249,45 @@ impl Game<'_> {
             (Area::Row | Area::Grid, Button::North) => self.legacy_build_start(MOST),
             // X on the row: no craftable filter here.
             (Area::Row, Button::West) => {}
+            _ => return false,
+        }
+        true
+    }
+
+    /// A mouse click in a builder: its own selection and craft, as its buttons make them (the
+    /// recipe book's selection isn't the builder's). Whether it was the builder's.
+    pub(in crate::game) fn legacy_build_click(&mut self, hit: Hit, right: bool) -> bool {
+        let Some(kind) = self.legacy_builder() else {
+            return false;
+        };
+        match hit {
+            // A click on the selected entry crafts it, as A does; on another, selects it.
+            Hit::Row(i) => {
+                self.pad.legacy.focus = Area::Row;
+                let entry = self.legacy_build_current().map(|now| now.entry);
+                if entry == Some(i) && !right {
+                    self.legacy_build_start(1);
+                } else {
+                    self.pad.legacy.build.selected.insert(kind, (Some(i), None));
+                }
+            }
+            Hit::Variant(i) => {
+                if let Some(now) = self.legacy_build_current() {
+                    self.pad
+                        .legacy
+                        .build
+                        .selected
+                        .insert(kind, (Some(now.entry), Some(i)));
+                }
+            }
+            // The result: one craft, or (right click) as many as the items allow, as A and Y.
+            Hit::Result => self.legacy_build_start(if right { MOST } else { 1 }),
+            // A grid cell: its item stepped on (right click: back), as A and X there.
+            Hit::Cell(i) => {
+                self.pad.legacy.focus = Area::Grid;
+                self.pad.legacy.cursor = i;
+                self.legacy_build_cycle(!right);
+            }
             _ => return false,
         }
         true
@@ -341,70 +377,6 @@ impl Game<'_> {
             inputs: (GRID..GRID + cells).collect(),
             more: count - 1,
         });
-    }
-
-    /// Puts one of each stack into its slot by the same paced clicks, nothing more (a brewing
-    /// stand's ingredient or fuel). Gated as a craft is.
-    pub(in crate::game) fn legacy_run_puts(&mut self, puts: Vec<(ItemStack, usize)>) -> bool {
-        if self.pad.legacy.build.run.is_some()
-            || self.carried.is_some()
-            || !self.direct_craft_allowed()
-        {
-            self.pad_rumble(gamepad::Rumble::RadialNothing);
-            return false;
-        }
-        let menu = self.remote_menu().0;
-        self.pad.legacy.build.run = Some(Run {
-            menu,
-            recipe: String::new(),
-            steps: puts
-                .into_iter()
-                .map(|(stack, cell)| Step::Put { stack, cell })
-                .collect(),
-            next_at: Instant::now(),
-            result: RESULT,
-            inputs: Vec::new(),
-            more: 0,
-        });
-        true
-    }
-
-    /// Starts a station's craft by the same clicks: its inputs emptied, each stack put into its
-    /// slot, the result quick-moved out, the inputs emptied again. One craft.
-    pub(in crate::game) fn legacy_run_slots(
-        &mut self,
-        puts: Vec<(ItemStack, usize)>,
-        result: usize,
-        inputs: Vec<usize>,
-        rename: Option<String>,
-        button: Option<usize>,
-    ) -> bool {
-        if self.pad.legacy.build.run.is_some()
-            || self.carried.is_some()
-            || !self.direct_craft_allowed()
-        {
-            self.pad_rumble(gamepad::Rumble::RadialNothing);
-            return false;
-        }
-        let mut steps = VecDeque::from([Step::Clear, Step::Empty]);
-        steps.extend(
-            puts.into_iter()
-                .map(|(stack, cell)| Step::Put { stack, cell }),
-        );
-        steps.extend(rename.map(Step::Rename));
-        steps.extend(button.map(Step::Button));
-        steps.extend([Step::Result { until: None }, Step::Take, Step::Clear]);
-        let menu = self.remote_menu().0;
-        self.pad.legacy.build.run = Some(Run {
-            menu,
-            recipe: String::new(),
-            steps,
-            next_at: Instant::now(),
-            result,
-            inputs,
-            more: 0,
-        });
-        true
     }
 
     /// One craft's steps: what's in the grid goes back first, then each staged item in.
@@ -537,33 +509,34 @@ impl Game<'_> {
                 }
             }
             Step::Take => {
-                if self.slot_view(run.result).is_some() {
-                    self.legacy_slot_click(run.result, false, true);
-                    run.next_at = now + gap;
+                if let Some(result) = self.slot_view(run.result) {
+                    if self.legacy_room_for(&result) >= result.count {
+                        self.legacy_slot_click(run.result, false, true);
+                        run.next_at = now + gap;
+                    } else {
+                        // Not all of it fits: the menu would drop the rest (a crafting result's
+                        // quick move throws what's left). What went in comes back instead.
+                        run.steps = VecDeque::from([Step::Clear]);
+                        run.more = 0;
+                    }
                 }
-            }
-            Step::Button(index) => {
-                let mut taken = false;
-                let flag = &mut taken;
-                self.menu_session(|menu, env, _| {
-                    *flag = menu.button(env, index as i32);
-                    Some(*flag)
-                });
-                if taken {
-                    self.remote_station_button(index as i32);
-                }
-                run.next_at = now + gap;
-            }
-            Step::Rename(name) => {
-                if let Some(s) = self.station.as_mut() {
-                    s.rename.set_value(&name);
-                    s.name.clone_from(&s.rename.value);
-                }
-                self.station_changed();
-                self.remote_anvil_rename();
-                run.next_at = now + gap;
             }
             Step::Clear => {
+                // A stack in hand (a Put cut short between its clicks) goes down first: on its
+                // own kind where there's room, else an empty slot. Nowhere: it stays, and so do
+                // the inputs (a click on one would swap them).
+                if let Some(carried) = self.carried.clone() {
+                    match self.legacy_stow_slot(&carried) {
+                        Some(slot) => {
+                            self.legacy_slot_click(slot, false, false);
+                            run.next_at = now + gap;
+                            run.steps.push_front(Step::Clear);
+                        }
+                        None => run.steps.clear(),
+                    }
+                    self.pad.legacy.build.run = Some(run);
+                    return;
+                }
                 let inputs = run.inputs.clone();
                 if let Some(slot) = inputs.into_iter().find(|&s| self.slot_view(s).is_some()) {
                     self.legacy_slot_click(slot, false, true);
@@ -578,19 +551,44 @@ impl Game<'_> {
         self.pad.legacy.build.run = Some(run);
     }
 
-    /// Whether a click run (a builder's or a station's) or a direct craft is under way: the
+    /// Whether a builder's click run is under way: the
     /// player's own slot clicks, flicks and mode changes wait for it (B ends it).
     pub(in crate::game) fn legacy_busy(&self) -> bool {
-        self.pad.legacy.build.run.is_some() || self.pad.legacy.cutter_running()
+        self.pad.legacy.build.run.is_some()
     }
 
     /// Ends whatever run is under way (B while one runs); what it put in comes back.
+    /// How many of a stack the player's 36 slots can take.
+    fn legacy_room_for(&self, stack: &ItemStack) -> u32 {
+        let max = self.stack_max_size(stack);
+        self.inventory[..36]
+            .iter()
+            .map(|slot| match slot {
+                None => max,
+                Some(s) if s.same_item_same_components(stack) => max.saturating_sub(s.count),
+                Some(_) => 0,
+            })
+            .sum()
+    }
+
+    /// Where a stack in hand goes down: a slot of its kind with room, else an empty one.
+    fn legacy_stow_slot(&self, stack: &ItemStack) -> Option<usize> {
+        let max = self.stack_max_size(stack);
+        let slots = &self.inventory[..36];
+        (0..36)
+            .find(|&s| {
+                slots[s]
+                    .as_ref()
+                    .is_some_and(|i| i.same_item_same_components(stack) && i.count < max)
+            })
+            .or_else(|| (0..36).find(|&s| slots[s].is_none()))
+    }
+
     pub(in crate::game) fn legacy_cancel_run(&mut self) {
         if let Some(run) = self.pad.legacy.build.run.as_mut() {
             run.steps = VecDeque::from([Step::Clear]);
             run.more = 0;
         }
-        self.pad.legacy.cutter_stop();
         self.direct_craft_stop();
     }
 

@@ -662,13 +662,10 @@ impl Game<'_> {
     fn legacy_switch_rect(&self, book: BookType, bx: f32, by: f32) -> Option<[f32; 4]> {
         // Only for a controller player: with none connected it would open a pad screen.
         let pad = self.settings.controller.enabled && self.pad.device_or_virtual().is_some();
-        if !self.settings.controller.legacy_crafting || !pad {
+        if book != BookType::Crafting || !self.settings.controller.legacy_crafting || !pad {
             return None;
         }
-        Some(if book != BookType::Crafting {
-            // A furnace's: under its book button, above the Inventory label.
-            [bx, by + 20.0, 20.0, 18.0]
-        } else if self.craft_size == 2 {
+        Some(if self.craft_size == 2 {
             // Beside the book button, under the 2x2 grid.
             [bx + 22.0, by, 20.0, 18.0]
         } else {
@@ -1034,24 +1031,7 @@ impl Game<'_> {
     }
     /// What the crafting book counts as there to craft with: the inventory and the grid.
     pub(super) fn crafting_stock(&mut self) -> Stacked {
-        let book = self.active_book().unwrap_or(BookType::Crafting);
-        self.book_available(book)
-    }
-    /// Whether a book's entry can be made from what that menu and the inventory hold now.
-    pub(super) fn recipe_craftable_in(&mut self, book_type: BookType, entry_index: usize) -> bool {
-        let available = self.book_available(book_type);
-        self.recipe_ui.book.as_ref().is_some_and(|book| {
-            book.entries
-                .get(entry_index)
-                .is_some_and(|entry| book.can_craft(entry, &available))
-        })
-    }
-    /// Places a book's entry as a click on its button does: one set, or as many as fit (`all`,
-    /// the shift-click's).
-    pub(super) fn recipe_place_in(&mut self, book_type: BookType, entry_index: usize, all: bool) {
-        self.recipe_ui.ghost.clear();
-        self.recipe_ui.overlay = None;
-        self.place_recipe(book_type, entry_index, all);
+        self.book_available(BookType::Crafting)
     }
     /// Whether the crafting book's entry can be crafted from what the menu holds now.
     pub(super) fn recipe_craftable(&mut self, entry_index: usize) -> bool {

@@ -353,7 +353,7 @@ pub fn groups(templates: &[Template]) -> Vec<Vec<usize>> {
 }
 
 /// The stacks of `inventory` that pass `test`, one of each kind (item and components) and one
-/// item each, in the inventory's order: the hotbar first. What every station offers to stage.
+/// item each, in the inventory's order: the hotbar first. What a builder offers to stage.
 pub fn held_kinds(
     inventory: &[Option<ItemStack>],
     test: impl Fn(&ItemStack) -> bool,
@@ -410,16 +410,6 @@ pub fn wrap(at: usize, n: usize, forward: bool) -> usize {
     }
 }
 
-/// `text` added to `to` without control characters, up to `most` characters in all.
-pub fn push_limited(to: &mut String, text: &str, most: usize) {
-    for c in text.chars().filter(|c| !c.is_control()) {
-        if to.chars().count() >= most {
-            break;
-        }
-        to.push(c);
-    }
-}
-
 /// How many of `stack` the inventory holds.
 pub fn held(stack: &ItemStack, inventory: &[Option<ItemStack>]) -> u32 {
     inventory
@@ -446,6 +436,42 @@ pub fn stage(template: &Template, inventory: &[Option<ItemStack>]) -> Vec<Option
                 .count();
             held(c, inventory) as usize > used
         });
+    }
+    staged
+}
+
+/// A kept staging brought up to date with the inventory: each choice still held stays (the
+/// player's picks, optional ones too), a choice no longer held goes, and a required cell left
+/// empty takes the first candidate held, as `stage` would. A required ingredient that came back
+/// (or was only in hand a moment) fills its cell again.
+pub fn restage(
+    template: &Template,
+    kept: &[Option<ItemStack>],
+    inventory: &[Option<ItemStack>],
+) -> Vec<Option<ItemStack>> {
+    let mut staged: Vec<Option<ItemStack>> = vec![None; template.cells.len()];
+    let room = |staged: &[Option<ItemStack>], c: &ItemStack| {
+        let used = staged
+            .iter()
+            .flatten()
+            .filter(|s| s.same_item_same_components(c))
+            .count();
+        held(c, inventory) as usize > used
+    };
+    for (i, choice) in kept.iter().enumerate().take(staged.len()) {
+        if let Some(choice) = choice
+            && room(&staged, choice)
+        {
+            staged[i] = Some(choice.clone());
+        }
+    }
+    for (i, (_, role)) in template.cells.iter().enumerate() {
+        if role.optional || staged[i].is_some() {
+            continue;
+        }
+        staged[i] = candidates(role, inventory)
+            .into_iter()
+            .find(|c| room(&staged, c));
     }
     staged
 }
@@ -534,9 +560,6 @@ mod tests {
         assert_eq!(cycle(&[], None, true), None);
         assert_eq!(wrap(0, 3, false), 2);
         assert_eq!(wrap(7, 3, true), 0);
-        let mut name = String::from("Iron");
-        push_limited(&mut name, " Sword\n!!", 11);
-        assert_eq!(name, "Iron Sword!");
     }
 
     #[test]
@@ -587,6 +610,37 @@ mod tests {
         let mut seen: Vec<usize> = groups.iter().flatten().copied().collect();
         seen.sort();
         assert_eq!(seen, (0..all.len()).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn a_required_cell_emptied_while_its_stack_was_away_fills_again() {
+        let Some(recipes) = recipes() else {
+            return;
+        };
+        let all = templates(&recipes);
+        let rocket = all
+            .iter()
+            .find(|t| &*t.icon.item == "minecraft:firework_rocket")
+            .unwrap();
+        // The gunpowder was in hand (a craft moving it): its cell was staged empty.
+        let without = stacks(&[("minecraft:paper", 3)]);
+        let staged = stage(rocket, &without);
+        assert_eq!(staged.iter().flatten().count(), 1);
+        // Back in the inventory: the cell fills again; the paper choice stays.
+        let inventory = stacks(&[("minecraft:paper", 3), ("minecraft:gunpowder", 5)]);
+        let again = restage(rocket, &staged, &inventory);
+        let items: Vec<&str> = again.iter().flatten().map(|s| &*s.item).collect();
+        assert_eq!(items, ["minecraft:paper", "minecraft:gunpowder"]);
+        let grid = layout(rocket, &again, 2).unwrap();
+        assert!(recipes.craft(&grid, 2).is_some());
+        // A pick no longer held goes; an optional cell left empty stays empty.
+        let gone = restage(rocket, &again, &stacks(&[("minecraft:gunpowder", 5)]));
+        assert!(
+            gone.iter()
+                .flatten()
+                .all(|s| &*s.item == "minecraft:gunpowder")
+        );
+        assert_eq!(gone.iter().flatten().count(), 1);
     }
 
     #[test]
