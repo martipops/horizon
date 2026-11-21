@@ -119,21 +119,31 @@ fn the_pad_acts_on_nothing_while_a_source_drives() {
 #[test]
 #[ignore = "daily"]
 fn the_keyboard_letting_go_keeps_the_sneak_a_source_holds() {
-    playing(|game| {
-        // Hold mode: Shift's release would end the sneak.
-        game.settings.toggle_crouch = false;
-        let script = install(game);
-        script.holds.set(&["key.sneak"]);
-        let shift = KeyCode::ShiftLeft;
-        game.mapped_key(shift, true, false, shift, Source::Keyboard)
-            .unwrap();
-        game.mapped_key(shift, false, false, shift, Source::Keyboard)
-            .unwrap();
-        assert!(game.keys.held(Action::Sneak), "the source still holds it");
-        // The window then reports Shift up.
-        game.update_modifiers(ModifiersState::empty());
-        assert!(game.keys.held(Action::Sneak), "the modifier going up too");
-    });
+    // The pad's Toggle Sneak is the built-in pad's setting: either way, a source's hold counts.
+    for pad_toggle_sneak in [false, true] {
+        playing(|game| {
+            // Hold mode: Shift's release would end the sneak.
+            game.settings.toggle_crouch = false;
+            game.settings.controller.toggle_sneak = pad_toggle_sneak;
+            let script = install(game);
+            script.holds.set(&["key.sneak"]);
+            let shift = KeyCode::ShiftLeft;
+            game.mapped_key(shift, true, false, shift, Source::Keyboard)
+                .unwrap();
+            game.mapped_key(shift, false, false, shift, Source::Keyboard)
+                .unwrap();
+            assert!(
+                game.keys.held(Action::Sneak),
+                "the source still holds it (pad toggle sneak {pad_toggle_sneak})"
+            );
+            // The window then reports Shift up.
+            game.update_modifiers(ModifiersState::empty());
+            assert!(
+                game.keys.held(Action::Sneak),
+                "the modifier going up too (pad toggle sneak {pad_toggle_sneak})"
+            );
+        });
+    }
 }
 
 #[test]
