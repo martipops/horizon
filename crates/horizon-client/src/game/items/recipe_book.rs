@@ -504,6 +504,8 @@ impl Game<'_> {
         // What was kept by the old book's entry indices (the crafting screen's tabs) is stale,
         // even when the new book has as many entries.
         self.recipe_ui.client_version += 1;
+        // The console builders' templates are made of the same recipes.
+        self.pad.legacy.build.forget_recipes();
         self.recipe_ui.custom = mod_screen::ModRecipeUi::default();
         self.recipe_tables.books = None;
         self.invalidate_mod_book_placement_catalogues();

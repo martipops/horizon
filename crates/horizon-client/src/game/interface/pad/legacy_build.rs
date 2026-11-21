@@ -33,7 +33,8 @@ const RESULT: usize = 200;
 /// The builders' state between frames.
 #[derive(Default)]
 pub(in crate::game) struct Build {
-    /// The templates, and the recipe count they were made from.
+    /// The templates, and the recipe count they were made from. Recipes can change without
+    /// their count changing (a datapack reload), so [`Build::forget_recipes`] drops them too.
     templates: Option<(usize, Vec<Template>)>,
     /// What's staged in each template's cells, by recipe id.
     staged: HashMap<String, Vec<Option<ItemStack>>>,
@@ -44,6 +45,14 @@ pub(in crate::game) struct Build {
 }
 
 impl Build {
+    /// The recipes changed (a reload, a server's recipes, a new session): the templates, and
+    /// what was staged and picked from them, are made again when next needed.
+    pub(in crate::game) fn forget_recipes(&mut self) {
+        self.templates = None;
+        self.staged.clear();
+        self.selected.clear();
+    }
+
     /// Ends a running craft where it is: no more clicks go out.
     pub(in crate::game) fn end_run(&mut self) {
         self.run = None;
@@ -712,5 +721,24 @@ impl Game<'_> {
         } else {
             (tr("horizon.legacy_craft.ready"), screen::HAVE)
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::game::game_tests::tests::server_game;
+
+    #[test]
+    #[ignore = "daily"]
+    fn forgetting_the_book_makes_the_builders_templates_again() {
+        let mut resources = None;
+        let mut game = server_game(&mut resources);
+        assert!(!game.legacy_templates().is_empty());
+        // A reload that changes a recipe but not how many there are: what was made of the old
+        // recipes must not stay.
+        let count = game.recipes().crafting.len();
+        game.pad.legacy.build.templates = Some((count, Vec::new()));
+        game.forget_book();
+        assert!(!game.legacy_templates().is_empty());
     }
 }
