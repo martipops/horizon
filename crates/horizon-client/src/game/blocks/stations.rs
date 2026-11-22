@@ -507,7 +507,7 @@ impl Game<'_> {
             return false;
         };
         if self.level.xp_seed == 0 {
-            self.level.xp_seed = self.world.random.next_int();
+            self.level.xp_seed = random_source::entity().next_int();
         }
         self.station = Some(Station::new(kind, pos));
         self.station_changed();
@@ -746,11 +746,10 @@ impl Game<'_> {
         }
         self.station = Some(s);
     }
+    /// `ItemStack.getMaxStackSize` for a station slot: the stack's own
+    /// `max_stack_size` (a removed one being vanilla's 1), else the item's.
     pub(super) fn max_stack(&self, stack: &ItemStack) -> u32 {
-        self.res
-            .items()
-            .get(&stack.item)
-            .map_or(64, |i| i.max_stack)
+        stack.max_stack_size(self.res.items())
     }
     /// `Slot.mayPlace` and `getMaxStackSize` for station slots.
     fn slot_rules(&self, slot: usize, stack: &ItemStack) -> (bool, u32) {
@@ -920,7 +919,7 @@ impl Game<'_> {
             &*name,
             "minecraft:anvil" | "minecraft:chipped_anvil" | "minecraft:damaged_anvil"
         );
-        if !creative && anvil && self.world.random.next_float() < 0.12 {
+        if !creative && anvil && random_source::entity().next_float() < 0.12 {
             match &*name {
                 "minecraft:anvil" => {
                     let _ = self.set_state_named(pos, "minecraft:chipped_anvil", &["facing"]);
@@ -1062,7 +1061,7 @@ impl Game<'_> {
         let pos = s.pos;
         let enchanted_item = enchanted.clone();
         self.enchantment_performed(lapis_needed as i32);
-        self.level.xp_seed = self.world.random.next_int();
+        self.level.xp_seed = random_source::entity().next_int();
         if let Some(s) = self.station.as_mut() {
             s.inputs[0] = Some(enchanted);
             if !self.creative
@@ -1421,7 +1420,7 @@ impl Game<'_> {
             batch.text(atlas, text, x, y, color, false);
             return;
         };
-        let cell = sheet.w / 16;
+        let cell = sheet.texels((atlas.width, atlas.height)).0 / 16;
         let (px, py) = (
             (sheet.u0 * atlas.width as f32) as u32,
             (sheet.v0 * atlas.height as f32) as u32,

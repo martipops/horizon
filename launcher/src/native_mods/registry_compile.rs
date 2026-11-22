@@ -191,7 +191,6 @@ pub(super) fn compile(
                     prebuilt::library_entry(
                         &template,
                         &[&bundle.manifest],
-                        &catalog,
                         sdk.commit(),
                         id,
                         &bundle.manifest.version.to_string(),
@@ -354,15 +353,8 @@ pub(super) fn compile(
         .as_ref()
         .map(|patch| patch.installs.as_slice())
         .unwrap_or(&[]);
-    let mut entry = prebuilt::library_entry(
-        &template,
-        &[],
-        &catalog,
-        sdk.commit(),
-        "horizon_patch",
-        "0",
-        installs,
-    );
+    let mut entry =
+        prebuilt::library_entry(&template, &[], sdk.commit(), "horizon_patch", "0", installs);
     entry.push_str(prebuilt::PATCH_HOST_LINK);
     fs::write(out.join("src/lib.rs"), entry).map_err(|e| e.to_string())?;
     let mut manifest = toml::toml! { [package] name = "horizon_patch" version = "0.0.0" edition = "2024" [lib] crate-type = ["dylib"] [workspace] resolver = "2" };
@@ -407,13 +399,9 @@ pub(super) fn compile(
     plan.fetch_with_patches(rust, out, &patches)?;
     let metadata = super::registry_inventory::read(rust, out)
         .map_err(|error| plan.explain_resolution(error))?;
-    plan.check_mods(&super::registry_lock::RegistryLock::parse(
+    plan.check(&super::registry_lock::RegistryLock::parse(
         &super::read_lock(out)?,
     )?)?;
-    plan.allowed.check_partial_resolution(
-        &super::registry_lock::RegistryLock::parse(&super::read_lock(out)?)?,
-        &plan.game,
-    )?;
     let mut game_names = plan.game.game_package_names();
     for registry in patches.values() {
         for name in registry.as_table().expect("validated SDK patches").keys() {
@@ -722,7 +710,6 @@ mod tests {
         for name in [
             "mod_api",
             "mod_vocab",
-            "mod_points",
             "horizon_mod_package",
             "horizon_mod_host",
         ] {
@@ -769,11 +756,7 @@ mod tests {
             "[package]\nname='registry-game'\nversion='0.0.0'\nedition='2024'\n[workspace]\n",
         )
         .unwrap();
-        fs::write(
-            wrapper.join("src/main.rs"),
-            api::main_rs(&template, &[], &internals::Catalog::default()),
-        )
-        .unwrap();
+        fs::write(wrapper.join("src/main.rs"), api::main_rs(&template, &[])).unwrap();
         let bindings = prebuilt::wrapper_externs(&game.join("deps")).unwrap();
         let mut wrapper_plan = compiler_plan(
             &rust,

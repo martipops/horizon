@@ -5,7 +5,7 @@
 use super::*;
 use crate::block_entity_render::StaticSectionSnapshot;
 use crate::gfx::native_post::trace::space_words;
-use horizon_shader_api::stages::RAY_ENTITY_QUAD;
+use horizon_shader_api::stages::{RAY_ENTITY_QUAD, RAY_LOOKS_BINDING};
 
 #[test]
 fn the_layer_s_quads_are_cut_to_what_its_binding_holds() {
@@ -138,9 +138,14 @@ fn ray_only_quads_lie_past_every_draw_and_before_the_shadow_only_ones() {
 }
 
 /// A device with ray queries, if this machine has one.
-pub(super) fn ray_device() -> Option<(wgpu::Device, wgpu::Queue)> {
+pub(in crate::gfx) fn ray_device() -> Option<(wgpu::Device, wgpu::Queue)> {
     let instance = crate::gfx::test_gpu::instance();
     let adapter = pollster::block_on(instance.request_adapter(&Default::default())).ok()?;
+    ray_device_of(&adapter)
+}
+
+/// A device of `adapter` with ray queries, if it has them.
+pub(super) fn ray_device_of(adapter: &wgpu::Adapter) -> Option<(wgpu::Device, wgpu::Queue)> {
     let features = adapter.features() & wgpu::Features::EXPERIMENTAL_RAY_QUERY;
     if features.is_empty() {
         return None;
@@ -151,7 +156,15 @@ pub(super) fn ray_device() -> Option<(wgpu::Device, wgpu::Queue)> {
         experimental_features: crate::gfx::rt::query::experimental(features),
         ..Default::default()
     };
-    pollster::block_on(adapter.request_device(&descriptor)).ok()
+    Some(
+        pollster::block_on(adapter.request_device(&descriptor)).unwrap_or_else(|error| {
+            let info = adapter.get_info();
+            panic!(
+                "ray-query device creation on {} ({:?}): {error}",
+                info.name, info.backend
+            );
+        }),
+    )
 }
 
 /// A quad of the stream facing +z at depth `z`, from `x` to `x + 1` and 0 to 1 high.
@@ -267,10 +280,31 @@ pub(super) fn empty(device: &wgpu::Device, size: u64) -> wgpu::Buffer {
 /// `encoder`'s builds are done. What it wrote.
 pub(super) fn run_probe(
     (device, queue): (&wgpu::Device, &wgpu::Queue),
-    mut encoder: wgpu::CommandEncoder,
+    encoder: wgpu::CommandEncoder,
     traced: &Traced<'_>,
     (store, layers, sprites): (&wgpu::Buffer, &wgpu::Buffer, &wgpu::TextureView),
     probe: &str,
+    outputs: u64,
+) -> Vec<[f32; 4]> {
+    let source = scene_source(traced.entities.is_some()) + probe;
+    run_scene(
+        (device, queue),
+        encoder,
+        traced,
+        (store, layers, sprites),
+        &source,
+        outputs,
+    )
+}
+
+/// `run_probe` with `source`, the scene's WGSL and the probe after it; the scene's looks bound
+/// where `traced` has them.
+pub(super) fn run_scene(
+    (device, queue): (&wgpu::Device, &wgpu::Queue),
+    mut encoder: wgpu::CommandEncoder,
+    traced: &Traced<'_>,
+    (store, layers, sprites): (&wgpu::Buffer, &wgpu::Buffer, &wgpu::TextureView),
+    source: &str,
     outputs: u64,
 ) -> Vec<[f32; 4]> {
     use wgpu::util::DeviceExt;
@@ -287,7 +321,7 @@ pub(super) fn run_probe(
     });
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: None,
-        source: wgpu::ShaderSource::Wgsl((scene_source(traced.entities.is_some()) + probe).into()),
+        source: wgpu::ShaderSource::Wgsl(source.into()),
     });
     let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
         label: None,
@@ -311,6 +345,9 @@ pub(super) fn run_probe(
             (62, wgpu::BindingResource::Sampler(e.sampler)),
             (63, e.retained.as_entire_binding()),
         ]);
+    }
+    if let Some(looks) = traced.looks {
+        scene.push((RAY_LOOKS_BINDING, looks.as_entire_binding()));
     }
     let group = |index: u32, entries: Vec<(u32, wgpu::BindingResource<'_>)>| {
         let entries: Vec<_> = entries
@@ -387,7 +424,7 @@ fn rays_reach_the_entity_layer_through_its_three_bases() {
     };
     let mut entities = Entities::new(&device, &stream);
     assert!(!entities.fit(&device, &stream));
-    let indices = crate::gfx::rt::query::quad_indices(&device, 5);
+    let indices = crate::gfx::rt::query::quad_indices(&device, 5).expect("quad indices");
     let mut tlas = create_tlas(&device, 1);
     let identity = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0];
     tlas[0] = Some(wgpu::TlasInstance::new(
@@ -406,6 +443,7 @@ fn rays_reach_the_entity_layer_through_its_three_bases() {
         tlas: &tlas,
         solid_instances: 0,
         store: &store,
+        looks: None,
         translucent_instances: 0,
         entities: Some(TracedEntities {
             vertices: buffer.as_entire_buffer_binding(),
@@ -522,7 +560,7 @@ fn rays_reach_retained_block_entities_through_their_sections() {
     };
     let mut entities = Entities::new(&device, &stream);
     entities.fit(&device, &stream);
-    let indices = crate::gfx::rt::query::quad_indices(&device, 4);
+    let indices = crate::gfx::rt::query::quad_indices(&device, 4).expect("quad indices");
     let (store, layers) = (empty(&device, 24), empty(&device, 8));
     // Builds the frame's sections (`update`, `builds`), the stream's instance and theirs after
     // it, and runs the probe.
@@ -554,6 +592,7 @@ fn rays_reach_retained_block_entities_through_their_sections() {
             tlas: &tlas,
             solid_instances: 0,
             store: &store,
+            looks: None,
             translucent_instances: 0,
             entities: Some(TracedEntities {
                 vertices: buffer.as_entire_buffer_binding(),
@@ -663,7 +702,7 @@ fn an_entity_hit_has_vanilla_s_shade_and_says_when_the_ray_met_its_back() {
     };
     let mut entities = Entities::new(&device, &stream);
     assert!(!entities.fit(&device, &stream));
-    let indices = crate::gfx::rt::query::quad_indices(&device, 4);
+    let indices = crate::gfx::rt::query::quad_indices(&device, 4).expect("quad indices");
     let mut tlas = create_tlas(&device, 1);
     let identity = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0];
     tlas[0] = Some(wgpu::TlasInstance::new(
@@ -693,6 +732,7 @@ fn an_entity_hit_has_vanilla_s_shade_and_says_when_the_ray_met_its_back() {
             tlas: &tlas,
             solid_instances: 0,
             store: &store,
+            looks: None,
             translucent_instances: 0,
             entities: Some(TracedEntities {
                 vertices: buffer.as_entire_buffer_binding(),

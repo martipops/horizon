@@ -5,7 +5,7 @@ use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
 use std::{fs, io, path::Path, process::Command};
 
 use crate::run_leases::SOURCE;
-const SLOT: &str = "HORIZON_WINDOWS_RUNTIME_SLOT";
+pub(crate) const SLOT: &str = "HORIZON_WINDOWS_RUNTIME_SLOT";
 
 pub(crate) struct Guard {
     _slot: fs::File,
@@ -259,7 +259,7 @@ mod tests {
             .arg(&resources);
         crate::run_leases::mark(&mut game, &source);
         // What Play does: the launch wrap, then the preparation of the final command.
-        let game = crate::launch::wrap(game, &crate::launch::Launch::default());
+        let game = crate::launch::wrap(game, &crate::launch::Launch::default()).unwrap();
         let (game, runtime) = crate::backend::prepare_command(game).unwrap();
 
         // What the game does at start (`acquire_standalone`): lock each unit, creating none.

@@ -2332,10 +2332,12 @@ const TAG_BUNDLES: [&str; 2] = ["block-tags.json", "worldgen/block_tags.json"];
 const BIOME_TAGS: &str = "worldgen/biome_tags.json";
 /// Worldgen registries a content mod may add to, and the bundle the
 /// worldgen loader reads each from (id → the file's text): what structure
-/// mods hold, and a mod's own biomes (never vanilla's: `worldgen_entry`).
-/// Noise and density functions change the terrain and are not read from mods.
-const WORLDGEN_BUNDLES: [(&str, &str); 7] = [
+/// mods hold, and a mod's own biomes (never vanilla's: `worldgen_entry`) and
+/// the carvers they name. Noise and density functions change the terrain and
+/// are not read from mods.
+const WORLDGEN_BUNDLES: [(&str, &str); 8] = [
     ("biome", BIOMES),
+    ("carver", CARVERS),
     ("structure", "worldgen/structures.json"),
     ("structure_set", "worldgen/structure_sets.json"),
     ("template_pool", "worldgen/template_pools.json"),
@@ -2519,7 +2521,13 @@ fn place_in_biomes(
     let placed: BTreeSet<String> = bundle(placed, PLACED_FEATURES)?.into_keys().collect();
     let feature_tags = bundle(None, FEATURE_TAGS)?;
     let (entity_categories, entity_tags) = modifier_entities(base, overlay, tags)?;
-    let carver_ids = biomes::carver_ids(&base.join(CARVERS))?;
+    // The carvers bundle with the mods' own carvers, written before this
+    // (`WORLDGEN_BUNDLES`), so a modifier may add one of them.
+    let mut carvers = out_path(overlay, CARVERS);
+    if !carvers.exists() {
+        carvers = base.join(CARVERS);
+    }
+    let carver_ids = biomes::carver_ids(&carvers)?;
     let mut saved = SavedModifiers {
         carver_ids,
         carver_tags: modifier_tags(base, overlay, tags, "worldgen/carver")?,
@@ -2880,7 +2888,7 @@ fn link_file(
 mod root_lifetime;
 use root_lifetime::prune_roots;
 
-pub use root_lifetime::retain_root;
+pub use root_lifetime::{RootHold, retain_root};
 mod load_conditions;
 use load_conditions::{TagLayers, TagMerge, merge_tag, tag_list};
 pub use load_conditions::{build_with_conditions, resource_root_with_conditions};
@@ -3126,7 +3134,12 @@ fn load_layers<'a>(jar_store: &Path, mods: &'a [ContentMod]) -> Result<Vec<ModLa
                 if source.is_dir() {
                     crate::packs::Source::Dir(source)
                 } else {
-                    crate::packs::Source::Zip(source)
+                    // Exactly the entries the package's checks read.
+                    crate::packs::Source::Opened(
+                        horizon_assets::resource_source::ResourceSource::opened_archive(
+                            horizon_assets::zip::Zip::open_exact(&source)?,
+                        ),
+                    )
                 },
                 None,
             )?);
@@ -3196,10 +3209,10 @@ pub fn resolved_resources(
     }
     let mut assets_base = base_source.clone();
     if prepared != base {
+        // Held before the first read: a prune in another game can't retire it meanwhile.
+        let generated_source = root_lifetime::retained_source(&prepared);
         let generated: Vec<String> =
             serde_json::from_slice(&fs::read(prepared.join(GENERATED_FILES))?)?;
-        let generated_source = ResourceSource::directory(prepared.clone());
-        root_lifetime::retain_source(&prepared, &generated_source);
         let mut generated_assets = BTreeMap::new();
         for name in generated {
             if !horizon_assets::resource_source::stays_inside(&name) {

@@ -38,7 +38,10 @@ pub struct Kept {
 #[derive(Serialize)]
 pub struct Report {
     pub rows: Vec<Row>,
+    /// Before any clear, each file once: a unit listed under two rows counts once here.
     pub total_bytes: u64,
+    /// What is left, each file once: the Storage total and what Clear all can free at most.
+    pub remaining_bytes: u64,
 }
 
 impl Category {
@@ -98,6 +101,8 @@ struct Entry {
     relative: PathBuf,
     path: PathBuf,
     links: Links,
+    /// The instance folder this unit is in: its delete holds that instance against launches.
+    instance: Option<PathBuf>,
 }
 
 impl Entry {
@@ -121,6 +126,7 @@ impl Entry {
             relative: relative.to_owned(),
             path,
             links: Links::Refused,
+            instance: None,
         })
     }
 
@@ -250,13 +256,16 @@ impl Entry {
         }
     }
 
-    /// The space the entry takes, each file once across `seen`.
+    /// The space the entry takes, each file once across `seen`: a fresh walk, the reference the
+    /// tests hold surveys to.
+    #[cfg(test)]
     fn bytes(&self, seen: &mut HashSet<(u64, u64)>) -> Result<u64, Error> {
         walk(&self.path, seen, self.links)
     }
 
-    fn bytes_alone(&self) -> Result<u64, Error> {
-        self.bytes(&mut HashSet::new())
+    /// Walks the entry once; sums over the result cost no disk access.
+    fn survey(&self) -> Result<Allocated, Error> {
+        survey(&self.path, self.links)
     }
 
     fn clear(&self) -> Result<(), Error> {
@@ -268,9 +277,13 @@ impl Entry {
         };
         let access = self.access()?;
         if matches!(access, Access::LeasedGame) {
-            return crate::cache_cleanup::delete_game_unit_with(&self.path, self.links);
+            return crate::cache_cleanup::delete_game_unit_in(
+                &self.path,
+                self.links,
+                self.instance.as_deref(),
+            );
         }
-        access.check()?;
+        access.check(crate::cache_cleanup::Proof::Lease)?;
         let mut parent = root.try_clone()?;
         for part in self.relative.parent().unwrap_or(Path::new("")).components() {
             parent = parent.open_dir_nofollow(part.as_os_str())?;
@@ -431,6 +444,7 @@ impl Storage {
                 continue;
             }
             let root = Root::configured(&instance.home)?;
+            let start = entries.len();
             old_logs(&mut entries, &root)?;
             unused_jars(&mut entries, &root)?;
             // The game links what a resource pack leaves untouched into the pack's mirror
@@ -441,6 +455,10 @@ impl Storage {
             entries.push(cache);
             for relative in ["wasm-cache", "cache"] {
                 add(&mut entries, &root, relative, Category::OtherCaches)?;
+            }
+            // The instance was idle here; it may start before its units are deleted (#18669).
+            for entry in &mut entries[start..] {
+                entry.instance = Some(root.path.clone());
             }
         }
         // Detached trees can remain beside any managed cache after an interrupted removal.
@@ -537,12 +555,22 @@ impl Storage {
                 Err(_) => unknown_revision = true,
             }
         }
+        // Each folder is walked once here and again only if it was cleared.
+        let mut surveyed = entries
+            .iter()
+            .map(Entry::survey)
+            .collect::<Result<Vec<_>, Error>>()?;
+        let total_bytes = allocated_all(&surveyed);
         let mut seen = HashSet::new();
         let units: Vec<_> = entries
             .iter()
-            .map(|entry| {
+            .enumerate()
+            .map(|(index, entry)| {
                 let last_used = entry.last_used()?;
-                let tier = if entry.relative.starts_with("rust")
+                let tier = if entry.relative == Path::new("native/build.log") {
+                    // It holds the result of the build this cleanup follows (#18469).
+                    Tier::Protected
+                } else if entry.relative.starts_with("rust")
                     && entry.path.file_name().is_some_and(|name| {
                         name.to_string_lossy()
                             .starts_with(crate::rust_toolchain::VERSION)
@@ -566,7 +594,7 @@ impl Storage {
                     let Some(unit_revision) = entry.revision() else {
                         return Ok(Unit {
                             eligible: false,
-                            bytes: entry.bytes(&mut seen)?,
+                            bytes: sum_new(&surveyed[index], &mut seen),
                             last_used,
                             tier: Tier::Protected,
                         });
@@ -596,8 +624,11 @@ impl Storage {
                     Tier::Lru
                 };
                 Ok(Unit {
-                    eligible: entry.access()?.check().is_ok(),
-                    bytes: entry.bytes(&mut seen)?,
+                    eligible: entry
+                        .access()?
+                        .check(crate::cache_cleanup::Proof::Lease)
+                        .is_ok(),
+                    bytes: sum_new(&surveyed[index], &mut seen),
                     last_used,
                     tier,
                 })
@@ -613,7 +644,7 @@ impl Storage {
         );
         let mut report = self.apply_retaining(Vec::new(), None, false, true)?;
         for row in &mut report.rows {
-            row.bytes = allocated(&entries, row.category)?;
+            row.bytes = allocated_of(&entries, &surveyed, row.category);
         }
         for (index, entry) in entries.iter().enumerate() {
             let row = report
@@ -627,18 +658,23 @@ impl Storage {
                 } else {
                     entry.clear()
                 };
+                // Only a unit that was cleared is measured again, with every listing of the
+                // same files (an expired `.trash-*` is listed under two categories).
                 match result {
-                    Ok(()) => {}
+                    Ok(()) => resurvey(&entries, &mut surveyed, index)?,
                     Err(
                         error @ (Error::Busy | Error::UnprovenExclusion | Error::IncompleteUnit),
-                    ) => row.kept.push(Kept {
-                        bytes: entry.bytes_alone()?,
-                        reason: native_mods::cache_error(error),
-                    }),
+                    ) => {
+                        resurvey(&entries, &mut surveyed, index)?;
+                        row.kept.push(Kept {
+                            bytes: sum_new(&surveyed[index], &mut HashSet::new()),
+                            reason: native_mods::cache_error(error),
+                        });
+                    }
                     Err(error) => return Err(error),
                 }
             }
-            let remaining = entry.bytes_alone()?;
+            let remaining = sum_new(&surveyed[index], &mut HashSet::new());
             if !selected.contains(&index) && remaining > 0 {
                 row.kept.push(Kept {
                     bytes: remaining,
@@ -646,7 +682,7 @@ impl Storage {
                         native_mods::cache_error(
                             entry
                                 .access()?
-                                .check()
+                                .check(crate::cache_cleanup::Proof::Lease)
                                 .err()
                                 .unwrap_or(Error::UnprovenExclusion),
                         )
@@ -657,10 +693,11 @@ impl Storage {
             }
         }
         for row in &mut report.rows {
-            row.remaining_bytes = allocated(&entries, row.category)?;
+            row.remaining_bytes = allocated_of(&entries, &surveyed, row.category);
             row.freed_bytes = row.bytes.saturating_sub(row.remaining_bytes);
         }
-        report.total_bytes = report.rows.iter().map(|row| row.bytes).sum();
+        report.total_bytes = total_bytes;
+        report.remaining_bytes = allocated_all(&surveyed);
         Ok(report)
     }
 
@@ -678,7 +715,7 @@ impl Storage {
             )
         );
         // Also refuse an external Cargo holding a target lock before starting a cleanup.
-        self.lease.bytes()?;
+        self.lease.check_target()?;
         if clear.is_some() || all {
             use horizon_platform::mod_package::runtime_leases::{
                 cleanup::Cleanup, Error as LeaseError,
@@ -693,11 +730,15 @@ impl Storage {
             }
         }
         let entries = self.entries()?;
-        let mut report = self.apply_retaining(entries, clear, all, true)?;
+        let (mut report, surveyed) = self.apply_surveyed(&entries, clear, all, true)?;
         if clear.is_none() && !all {
-            for entry in self.entries()? {
-                if let Err(error) = entry.access().and_then(|access| access.check()) {
-                    let bytes = entry.bytes_alone()?;
+            // The walks the rows were summed from: a unit is not walked again for its own size.
+            for (entry, items) in entries.iter().zip(&surveyed) {
+                if let Err(error) = entry
+                    .access()
+                    .and_then(|access| access.check(crate::cache_cleanup::Proof::Lease))
+                {
+                    let bytes = sum_new(items, &mut HashSet::new());
                     if bytes > 0 {
                         report
                             .rows
@@ -733,10 +774,30 @@ impl Storage {
         all: bool,
         retain: bool,
     ) -> Result<Report, Error> {
+        Ok(self.apply_surveyed(&entries, clear, all, retain)?.0)
+    }
+
+    /// [`Self::apply_retaining`], also returning each entry's walk as it is after the clear.
+    fn apply_surveyed(
+        &self,
+        entries: &[Entry],
+        clear: Option<Category>,
+        all: bool,
+        retain: bool,
+    ) -> Result<(Report, Vec<Allocated>), Error> {
         // Validate every descendant before any deletion and deduplicate allocated blocks per row.
+        // Each entry is walked once; after a clear, only the entries sharing files with one it
+        // tried are walked again.
+        let mut surveyed = entries
+            .iter()
+            .map(Entry::survey)
+            .collect::<Result<Vec<_>, Error>>()?;
+        let total_bytes = allocated_all(&surveyed);
+        let mut tried = Vec::new();
+        let mut refused = Vec::new();
         let mut rows = Vec::new();
         for category in Category::ALL {
-            let bytes = allocated(&entries, category)?;
+            let bytes = allocated_of(entries, &surveyed, category);
             rows.push(Row {
                 category,
                 bytes,
@@ -745,8 +806,9 @@ impl Storage {
                 kept: Vec::new(),
             });
         }
-        for entry in &entries {
+        for (index, entry) in entries.iter().enumerate() {
             if all || clear == Some(entry.category) {
+                tried.push(index);
                 let result = if entry.path == self.root.join("native/target") {
                     self.lease.clear().map(|_| ())
                 } else {
@@ -757,14 +819,9 @@ impl Storage {
                     Err(
                         error @ (Error::Busy | Error::UnprovenExclusion | Error::IncompleteUnit),
                     ) if retain => {
-                        let row = rows
-                            .iter_mut()
-                            .find(|row| row.category == entry.category)
-                            .unwrap();
-                        row.kept.push(Kept {
-                            bytes: entry.bytes_alone()?,
-                            reason: native_mods::cache_error(error),
-                        });
+                        // Its size is taken once every clear has ended: a later one may remove
+                        // files it shares (a `.trash-*` listed under two rows).
+                        refused.push((index, native_mods::cache_error(error)));
                         // A busy build may be using subsequent build-tool units too. Stop
                         // this clear attempt rather than deleting more after contention.
                         if matches!(entry.access()?, Access::BuildTools) {
@@ -775,22 +832,35 @@ impl Storage {
                 }
             }
         }
-        for row in &mut rows {
-            if all || clear == Some(row.category) {
-                let remaining = allocated(&entries, row.category)?;
+        resurvey_all(entries, &mut surveyed, &tried)?;
+        for (index, reason) in refused {
+            rows.iter_mut()
+                .find(|row| row.category == entries[index].category)
+                .unwrap()
+                .kept
+                .push(Kept {
+                    bytes: sum_new(&surveyed[index], &mut HashSet::new()),
+                    reason,
+                });
+        }
+        // Every row, not only the cleared one: a unit listed under two rows leaves both.
+        if !tried.is_empty() {
+            for row in &mut rows {
+                let remaining = allocated_of(entries, &surveyed, row.category);
                 row.freed_bytes = row.bytes.saturating_sub(remaining);
                 row.remaining_bytes = remaining;
             }
         }
-        Ok(Report {
-            total_bytes: rows
-                .iter()
-                .fold(0u64, |total, row| total.saturating_add(row.bytes)),
+        let report = Report {
+            total_bytes,
+            remaining_bytes: allocated_all(&surveyed),
             rows,
-        })
+        };
+        Ok((report, surveyed))
     }
 }
 
+#[cfg(test)]
 fn allocated(entries: &[Entry], category: Category) -> Result<u64, Error> {
     let mut seen = HashSet::new();
     entries
@@ -799,6 +869,55 @@ fn allocated(entries: &[Entry], category: Category) -> Result<u64, Error> {
         .try_fold(0u64, |bytes, entry| {
             Ok(bytes.saturating_add(entry.bytes(&mut seen)?))
         })
+}
+
+/// Every entry's walk summed, each file once across all rows.
+fn allocated_all(surveyed: &[Allocated]) -> u64 {
+    let mut seen = HashSet::new();
+    surveyed.iter().fold(0u64, |bytes, items| {
+        bytes.saturating_add(sum_new(items, &mut seen))
+    })
+}
+
+/// `allocated` from walks already made: `surveyed[i]` belongs to `entries[i]`.
+fn allocated_of(entries: &[Entry], surveyed: &[Allocated], category: Category) -> u64 {
+    let mut seen = HashSet::new();
+    entries
+        .iter()
+        .zip(surveyed)
+        .filter(|(entry, _)| entry.category == category)
+        .fold(0u64, |bytes, (_, items)| {
+            bytes.saturating_add(sum_new(items, &mut seen))
+        })
+}
+
+/// Walks again every entry that shares files with the cleared `entries[index]`: the same path,
+/// or one inside or around it.
+fn resurvey(entries: &[Entry], surveyed: &mut [Allocated], index: usize) -> Result<(), Error> {
+    let cleared = &entries[index].path;
+    for (entry, items) in entries.iter().zip(surveyed.iter_mut()) {
+        if entry.path.starts_with(cleared) || cleared.starts_with(&entry.path) {
+            *items = entry.survey()?;
+        }
+    }
+    Ok(())
+}
+
+/// [`resurvey`] for every index in `cleared`, walking each affected entry once.
+fn resurvey_all(
+    entries: &[Entry],
+    surveyed: &mut [Allocated],
+    cleared: &[usize],
+) -> Result<(), Error> {
+    for (entry, items) in entries.iter().zip(surveyed.iter_mut()) {
+        if cleared.iter().any(|&index| {
+            let cleared = &entries[index].path;
+            entry.path.starts_with(cleared) || cleared.starts_with(&entry.path)
+        }) {
+            *items = entry.survey()?;
+        }
+    }
+    Ok(())
 }
 
 fn old_logs(entries: &mut Vec<Entry>, home: &Root) -> Result<(), Error> {
@@ -1004,6 +1123,182 @@ mod eviction_tests {
             .unwrap();
         assert!(row.bytes > 0);
         assert!(atlas.exists());
+    }
+
+    /// An expired `.trash-*` beside prebuilt games is listed under two categories: clearing one
+    /// listing leaves neither counting its bytes, and the folders it doesn't share are not
+    /// walked again.
+    #[test]
+    fn a_cleared_unit_leaves_no_bytes_in_its_other_listings() {
+        let home = crate::storage::tests::Home::new();
+        home.seed("native/prebuilt/.trash-1/payload");
+        home.seed("native/prebuilt/kept/payload");
+        let root = Root::open(&home.0).unwrap();
+        let trash = Path::new("native/prebuilt/.trash-1");
+        let entries = vec![
+            Entry::fixed(&root, trash, Category::PrebuiltGames).unwrap(),
+            Entry::fixed(
+                &root,
+                Path::new("native/prebuilt/kept"),
+                Category::PrebuiltGames,
+            )
+            .unwrap(),
+            Entry::fixed(&root, trash, Category::OtherCaches).unwrap(),
+        ];
+        let mut surveyed: Vec<_> = entries
+            .iter()
+            .map(Entry::survey)
+            .collect::<Result<_, _>>()
+            .unwrap();
+        let kept = sum_new(&surveyed[1], &mut HashSet::new());
+        assert!(allocated_of(&entries, &surveyed, Category::OtherCaches) > 0);
+        fs::remove_dir_all(&entries[2].path).unwrap();
+        crate::storage::SURVEYS.with(|s| s.borrow_mut().clear());
+        resurvey(&entries, &mut surveyed, 2).unwrap();
+        let walked = crate::storage::SURVEYS.with(|s| s.borrow().clone());
+        assert_eq!(walked, [entries[0].path.clone(), entries[2].path.clone()]);
+        assert_eq!(allocated_of(&entries, &surveyed, Category::OtherCaches), 0);
+        assert_eq!(
+            allocated_of(&entries, &surveyed, Category::PrebuiltGames),
+            kept
+        );
+    }
+
+    /// #19481: a count walks each unit once; a unit it can't clear takes its kept size from the
+    /// same walk.
+    #[test]
+    fn a_count_walks_each_unit_once() {
+        let home = crate::storage::tests::Home::new();
+        let revision = "0123456789abcdef0123456789abcdef01234567";
+        home.seed(&format!("native/source/{revision}/lib.rs"));
+        home.seed("rust/toolchain/bin/rustc");
+        let storage = Storage::at(&home.0).unwrap();
+        crate::storage::SURVEYS.with(|s| s.borrow_mut().clear());
+        let report = storage.report(None, false).unwrap();
+        let walked = crate::storage::SURVEYS.with(|s| s.borrow().clone());
+        let mut once = walked.clone();
+        once.sort();
+        once.dedup();
+        assert_eq!(walked.len(), once.len(), "{walked:?}");
+        assert!(walked.contains(&home.0.join("native/source").join(revision)));
+        // Outside the launcher's data folder, nothing can prove the source unused: it is kept.
+        let row = report
+            .rows
+            .iter()
+            .find(|row| row.category == Category::BuildFiles)
+            .unwrap();
+        assert!(row.bytes >= 8192);
+        assert_eq!(
+            row.kept.iter().map(|kept| kept.bytes).sum::<u64>(),
+            row.bytes
+        );
+    }
+
+    /// #19481: a count walks the Cargo target once, through the inventory, not again to check
+    /// its locks.
+    #[test]
+    fn a_count_walks_the_cargo_target_once() {
+        let home = crate::storage::tests::Home::new();
+        home.seed("native/target/release/.cargo-lock");
+        home.seed("native/target/release/deps/libgame.rlib");
+        let storage = Storage::at(&home.0).unwrap();
+        crate::native_cache::SIZED.with(|s| s.borrow_mut().clear());
+        crate::storage::SURVEYS.with(|s| s.borrow_mut().clear());
+        storage.report(None, false).unwrap();
+        let sized = crate::native_cache::SIZED.with(|s| s.borrow().clone());
+        assert!(sized.is_empty(), "{sized:?}");
+        let target = home.0.join("native/target");
+        let walked: Vec<_> = crate::storage::SURVEYS
+            .with(|s| s.borrow().clone())
+            .into_iter()
+            .filter(|path| path.starts_with(&target))
+            .collect();
+        assert_eq!(walked, [target.join("release")]);
+    }
+
+    /// #19481: a `.trash-*` listed under two rows and cleared through one leaves neither row
+    /// counting it.
+    #[test]
+    fn a_clear_through_one_listing_empties_both_rows() {
+        let home = crate::storage::tests::Home::new();
+        home.seed("rust/.trash-1/payload");
+        home.seed("rust/kept/payload");
+        // A clear makes these locks in a unit root, and on NTFS the folder's own allocation grows
+        // once they exist: start from that state so only the payload is freed.
+        for lock in [".cargo-lock", ".package-cache", ".package-cache-mutate"] {
+            fs::write(home.0.join("rust/.trash-1").join(lock), []).unwrap();
+        }
+        let storage = Storage::at(&home.0).unwrap();
+        let root = Root::open(&home.0).unwrap();
+        let trash = Path::new("rust/.trash-1");
+        let entries = || {
+            vec![
+                Entry::fixed(&root, trash, Category::RustCompiler).unwrap(),
+                Entry::fixed(&root, Path::new("rust/kept"), Category::OtherCaches).unwrap(),
+                Entry::fixed(&root, trash, Category::OtherCaches).unwrap(),
+            ]
+        };
+        let payload = allocated_bytes(&home.0.join("rust/.trash-1/payload")).unwrap();
+        let before = storage.apply(entries(), None, false).unwrap();
+        let report = storage
+            .apply(entries(), Some(Category::RustCompiler), false)
+            .unwrap();
+        // A clear removes the files and keeps the folders.
+        assert!(!home.0.join("rust/.trash-1/payload").exists());
+        fn row(report: &Report, category: Category) -> &Row {
+            report
+                .rows
+                .iter()
+                .find(|row| row.category == category)
+                .unwrap()
+        }
+        let before_rust = row(&before, Category::RustCompiler);
+        let after_trash = allocated_bytes(&home.0.join("rust/.trash-1")).unwrap();
+        let (rust, other) = (
+            row(&report, Category::RustCompiler),
+            row(&report, Category::OtherCaches),
+        );
+        assert!(payload > 0);
+        assert_eq!(rust.bytes, before_rust.bytes);
+        assert_eq!(rust.freed_bytes, before_rust.bytes - after_trash);
+        assert_eq!(rust.freed_bytes, payload);
+        assert_eq!(other.freed_bytes, rust.freed_bytes);
+        assert_eq!(other.remaining_bytes, other.bytes - rust.freed_bytes);
+    }
+
+    /// #19481: a `.trash-*` listed under two rows counts once in the total and in what Clear
+    /// all can free, before and after a clear.
+    #[test]
+    fn a_unit_in_two_rows_counts_once_in_the_total() {
+        let home = crate::storage::tests::Home::new();
+        home.seed("rust/.trash-1/payload");
+        home.seed("rust/kept/payload");
+        let storage = Storage::at(&home.0).unwrap();
+        let root = Root::open(&home.0).unwrap();
+        let entries = || {
+            let trash = Path::new("rust/.trash-1");
+            vec![
+                Entry::fixed(&root, trash, Category::RustCompiler).unwrap(),
+                Entry::fixed(&root, Path::new("rust/kept"), Category::RustCompiler).unwrap(),
+                Entry::fixed(&root, trash, Category::OtherCaches).unwrap(),
+            ]
+        };
+        let once = allocated_bytes(&home.0.join("rust/.trash-1")).unwrap()
+            + allocated_bytes(&home.0.join("rust/kept")).unwrap();
+        let counted = storage.apply(entries(), None, false).unwrap();
+        let rows: u64 = counted.rows.iter().map(|row| row.remaining_bytes).sum();
+        assert!(rows > once, "the trash is in two rows");
+        assert_eq!(counted.total_bytes, once);
+        assert_eq!(counted.remaining_bytes, once);
+        let cleared = storage
+            .apply(entries(), Some(Category::RustCompiler), false)
+            .unwrap();
+        assert_eq!(cleared.total_bytes, once);
+        // The folders a clear keeps, each once.
+        let left = allocated_bytes(&home.0.join("rust/.trash-1")).unwrap()
+            + allocated_bytes(&home.0.join("rust/kept")).unwrap();
+        assert!(left < once);
+        assert_eq!(cleared.remaining_bytes, left);
     }
 
     #[test]

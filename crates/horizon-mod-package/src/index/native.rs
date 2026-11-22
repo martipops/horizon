@@ -18,6 +18,72 @@ pub fn holds(path: &Path) -> bool {
     crate::Package::read(path).is_ok_and(|package| package.is_native())
 }
 
+/// The manifest of the native package at `path` (a flat `.hmod` or a project folder), read alone: its code and
+/// resources stay unread. Meant for a bundle whose full read has passed already, such as the caller of a request;
+/// a bundle that is not native is refused.
+pub fn read_manifest(path: &Path) -> Result<crate::Manifest, String> {
+    let mut text = String::new();
+    if path.is_dir() {
+        std::fs::File::open(path.join(crate::manifest::MANIFEST))
+            .map_err(|e| format!("{}: {e}", crate::manifest::MANIFEST))?
+            .take(crate::manifest::MAX_MANIFEST + 1)
+            .read_to_string(&mut text)
+            .map_err(|e| format!("{}: {e}", crate::manifest::MANIFEST))?;
+    } else {
+        let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+        let mut zip = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
+        zip.by_name(crate::manifest::MANIFEST)
+            .map_err(|e| format!("{}: {e}", crate::manifest::MANIFEST))?
+            .take(crate::manifest::MAX_MANIFEST + 1)
+            .read_to_string(&mut text)
+            .map_err(|e| format!("{}: {e}", crate::manifest::MANIFEST))?;
+    }
+    if text.len() as u64 > crate::manifest::MAX_MANIFEST {
+        return Err(format!(
+            "{}: over {} MiB",
+            crate::manifest::MANIFEST,
+            crate::manifest::MAX_MANIFEST >> 20
+        ));
+    }
+    let manifest = crate::Manifest::parse(&text)?;
+    if manifest.native.is_none() {
+        return Err("not a native package".into());
+    }
+    Ok(manifest)
+}
+
+/// Whether the `.hmod` at `path` is a native mod in the format from before the `.hmod` SDK
+/// ([`crate::manifest::LEGACY_PATHS`]): it can't be built until its author makes it again.
+pub fn legacy_format(path: &Path) -> bool {
+    let Ok(file) = std::fs::File::open(path) else {
+        return false;
+    };
+    zip::ZipArchive::new(file).is_ok_and(|zip| {
+        zip.file_names()
+            .any(|name| name.is_ok_and(|name| crate::manifest::legacy_path(&name)))
+    })
+}
+
+/// The manifest id of the flat `.hmod` at `path` when its manifest declares the removed `[[inject]]`
+/// ([`crate::manifest::INJECT_REMOVED`]), which no read of the package accepts any more. It lets
+/// the on/off list, keyed by that id, say whether the player still wants it. An id a manifest could
+/// not have ([`crate::manifest::valid_mod_id`]) gives none: it would be written into that list.
+pub fn retired_inject(path: &Path) -> Option<String> {
+    let mut zip = zip::ZipArchive::new(std::fs::File::open(path).ok()?).ok()?;
+    let mut text = String::new();
+    zip.by_name(crate::manifest::MANIFEST)
+        .ok()?
+        .take(crate::manifest::MAX_MANIFEST + 1)
+        .read_to_string(&mut text)
+        .ok()?;
+    let table = toml::from_str::<toml::Table>(&text).ok()?;
+    if !table.contains_key("inject") {
+        return None;
+    }
+    let id = table.get("id")?.as_str()?;
+    crate::manifest::valid_mod_id(id).then(|| id.to_owned())
+}
+
 /// A flat native mod and its checked, archive-relative files.
 pub struct Bundle {
     pub manifest: crate::Manifest,
@@ -73,6 +139,28 @@ impl Bundle {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn a_retired_inject_gives_only_an_id_a_manifest_could_have() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("listener.hmod");
+        for (id, recovered) in [
+            ("'tick_listener'", Some("tick_listener")),
+            ("\"tick\\nmod.other:true\"", None),
+            ("'Tick'", None),
+        ] {
+            let mut zip = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+            zip.start_file(
+                crate::manifest::MANIFEST,
+                zip::write::SimpleFileOptions::default(),
+            )
+            .unwrap();
+            zip.write_all(format!("id = {id}\n[[inject]]\nid = 'tick'\n").as_bytes())
+                .unwrap();
+            zip.finish().unwrap();
+            assert_eq!(retired_inject(&path).as_deref(), recovered, "{id}");
+        }
+    }
 
     fn manifest() -> String {
         format!(
@@ -166,6 +254,32 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn manifest_is_read_without_the_payload_that_fails_a_full_read() {
+        // A payload file the full read refuses (a blob under src/) leaves the manifest readable alone.
+        let path =
+            std::env::temp_dir().join(format!("native-manifest-only-{}.hmod", std::process::id()));
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+        let options = zip::write::SimpleFileOptions::default();
+        for (name, bytes) in [
+            (crate::manifest::MANIFEST, manifest().into_bytes()),
+            ("Cargo.toml", b"[package]\nname='x'\nversion='1'\n".to_vec()),
+            ("src/lib.rs", b"fn hook() {}".to_vec()),
+            ("src/blob.bin", b"not code".to_vec()),
+        ] {
+            zip.start_file(name, options).unwrap();
+            std::io::Write::write_all(&mut zip, &bytes).unwrap();
+        }
+        zip.finish().unwrap();
+        let manifest = read_manifest(&path);
+        let full = Bundle::read(&path);
+        std::fs::remove_file(&path).unwrap();
+        let manifest = manifest.unwrap();
+        assert_eq!(manifest.id, "veinminer");
+        assert_eq!(manifest.name, "Veinminer");
+        assert!(full.is_err());
     }
 
     #[test]

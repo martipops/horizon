@@ -4,7 +4,7 @@
 use super::external::{
     Capabilities, DisplacementPrepare, EntityLayers, ExternalPipeline, FrameStart, FrameState,
     Near, OpaqueCopy, Refused, ShadowDraws, ShadowView, SkyPass, TerrainLayers, TimingSetup,
-    WorldPost, WorldTargets,
+    WorldOutput, WorldPost, WorldTargets,
 };
 use super::native_pack::{NativePack, install_kept};
 use super::pack_timing::PassTiming;
@@ -37,10 +37,13 @@ impl ExternalPipeline for NativePack {
         debug_assert!(freed.is_ok(), "{freed:?}");
     }
 
-    /// The kept resources start over.
+    /// The kept resources start over, and the light sources with the new world's sections.
     fn world_cleared(&mut self) {
         if let Some(epochs) = &mut self.frame.epochs {
             epochs.note(horizon_shader_api::kept::REASON_WORLD);
+        }
+        if let Some(lights) = &mut self.frame.ray_lights {
+            lights.clear();
         }
     }
 
@@ -138,5 +141,9 @@ impl ExternalPipeline for NativePack {
 
     fn run_post(&mut self, post: WorldPost<'_>) {
         NativePack::run_post(self, post);
+    }
+
+    fn run_output(&mut self, output: WorldOutput<'_>) {
+        NativePack::run_output(self, output);
     }
 }

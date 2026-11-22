@@ -27,7 +27,7 @@ use std::{
 };
 use {
     crate::{lazy_json::LazyJson, native_load_context::LoadContext},
-    horizon_core::nbt::Tag,
+    horizon_core::{identifier::parse_or_keep, nbt::Tag},
 };
 
 /// Raw files a world's data packs add over the game's own data, by
@@ -459,14 +459,20 @@ fn slot_range_equipment(range: &str) -> &'static [&'static str] {
 /// The item a recipe's `result` names. `ItemStackTemplate.CODEC` and `TransmuteResult.CODEC`
 /// read a stack's fields (`id`, `count`, `components`) or, as their alternative, a bare item id
 /// (`Item.CODEC`): `"result": {"id": "mod:item"}` and `"result": "mod:item"` are the same item.
+/// `Item.CODEC` reads the id through `Identifier.CODEC`, which is `Identifier.parse`: an id
+/// written without a namespace (`"stick"`, `":stick"`) names `minecraft:stick`. The id is
+/// canonical here, where the parse boundary is, so everything downstream that compares or sends
+/// it already holds the name the item table knows. An id `Identifier.parse` refuses is returned
+/// as written: whether such a recipe loads is the load's question, not this read's.
 /// None for a stack without an `id` and for anything else, such as the `item` key of older
 /// versions.
-pub fn recipe_result_id(result: &Value) -> Option<&str> {
-    match result {
-        Value::String(id) => Some(id),
-        Value::Object(fields) => fields.get("id")?.as_str(),
-        _ => None,
-    }
+pub fn recipe_result_id(result: &Value) -> Option<String> {
+    let id = match result {
+        Value::String(id) => id,
+        Value::Object(fields) => fields.get("id")?.as_str()?,
+        _ => return None,
+    };
+    Some(parse_or_keep(id))
 }
 /// `LevelBasedValue.calculate`.
 pub fn level_value(v: &Value, level: i32) -> f32 {
@@ -1134,9 +1140,30 @@ impl LootData {
         self.roll_container_with(table, random, ContainerLootContext::default())
             .unwrap_or_default()
     }
+    /// `ItemStack.getMaxStackSize` of a rolled stack: its last `max_stack_size`
+    /// patch, 1 when that patch removes it (`getOrDefault(MAX_STACK_SIZE, 1)`;
+    /// the patch's `"!minecraft:max_stack_size"` key, or a null value), else its
+    /// item's.
+    fn stack_max(&self, stack: &LootStack) -> i32 {
+        const KEY: &str = "minecraft:max_stack_size";
+        let patch = stack
+            .components
+            .iter()
+            .rev()
+            .find(|(id, _)| id.strip_prefix('!').unwrap_or(id) == KEY);
+        match patch {
+            Some((id, _)) if id.starts_with('!') => 1,
+            Some((_, Some(Tag::Byte(n)))) => i32::from(*n),
+            Some((_, Some(Tag::Short(n)))) => i32::from(*n),
+            Some((_, Some(Tag::Int(n)))) => *n,
+            Some((_, None)) => 1,
+            _ => self.facts(&stack.item).max_stack,
+        }
+        .max(1)
+    }
     /// LootTable.createStackSplitter (every item is enabled).
     fn split(&self, stack: LootStack, items: &mut Vec<LootStack>) {
-        let max = self.facts(&stack.item).max_stack.max(1);
+        let max = self.stack_max(&stack);
         if stack.count < max {
             items.push(stack);
         } else {

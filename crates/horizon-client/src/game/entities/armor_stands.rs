@@ -220,7 +220,7 @@ impl ArmorStandAssets {
                 let Ok(v) = v else { continue };
                 let id = format!("{namespace}:{name}");
                 let mut kinds = HashMap::new();
-                for kind in ["humanoid", "humanoid_leggings", "wings"] {
+                for kind in ["humanoid", "humanoid_leggings", "humanoid_baby", "wings"] {
                     // Every layer of the kind: leather's overlay is layer 1.
                     let layers: Vec<(String, Option<u32>)> = v["layers"][kind]
                         .as_array()
@@ -278,6 +278,33 @@ impl ArmorStandAssets {
         TrimTexture::resolve(&self.trims, overrides, material, pattern, kind)
     }
 }
+/// `HumanoidArmorLayer.renderArmorPiece` for a humanoid mob: per slot
+/// (`equipment::ARMOR`'s order) the layers of the worn stack's own `equippable`
+/// asset, in vanilla's layer type for that slot (a baby's `humanoid_baby` for
+/// every slot, leggings' `humanoid_leggings`, else `humanoid`). A stack with no
+/// asset, or worn in another slot, has none: `carved_pumpkin` and a stick in
+/// the chest slot draw no layer (`shouldRender`).
+pub(super) fn worn_equipment_layers<'a>(
+    m: &Mob,
+    items: &horizon_client::items::Items,
+    assets: &'a ArmorStandAssets,
+) -> horizon_client::mobs::render::WornArmor<'a> {
+    use horizon_items::equipment::{ARMOR, LEGS, SLOT_NAMES};
+    ARMOR.map(|slot| {
+        let stack = m.extra.slot_stack(slot)?;
+        let asset = horizon_client::item_sync::equippable(stack, items)
+            .filter(|e| e.slot == SLOT_NAMES[slot])
+            .and_then(|e| e.asset_id)?;
+        let kind = if m.is_baby() {
+            "humanoid_baby"
+        } else if slot == LEGS {
+            "humanoid_leggings"
+        } else {
+            "humanoid"
+        };
+        assets.equipment.get(&asset)?.get(kind).map(Vec::as_slice)
+    })
+}
 impl Game<'_> {
     /// OptiFine CIT: the winning armour or elytra rule (`kind`) of the worn `stack`. No lookup
     /// without CIT rules.
@@ -324,6 +351,10 @@ impl Game<'_> {
             horizon_items::equipment::ARMOR
                 .map(|slot| e.slot_stack(slot).map(|stack| (&*stack.item, Some(stack)))),
         )
+    }
+    /// [`worn_equipment_layers`] on the game's item table and equipment assets.
+    pub(super) fn mob_armor_layers(&self, m: &Mob) -> horizon_client::mobs::render::WornArmor<'_> {
+        worn_equipment_layers(m, self.res.items(), &self.armor_stand_assets)
     }
     /// The layers of the armour items `worn` (with their stacks when known,
     /// for trims and CIT armour rules), head to feet.
@@ -633,20 +664,11 @@ impl Game<'_> {
         }
         best
     }
+    /// `LivingEntity.getEquipmentSlotForItem` through `ArmorStand.canUseSlot`:
+    /// an equippable slot the stand has disabled is replaced by MAINHAND, so
+    /// e.g. a helmet for a head-locked stand goes in its hand.
     fn equipment_slot(&self, stack: &ItemStack) -> usize {
-        match self
-            .res
-            .items()
-            .get(&stack.item)
-            .and_then(|i| i.equip_slot.as_deref())
-        {
-            Some("feet") => 2,
-            Some("legs") => 3,
-            Some("chest") => 4,
-            Some("head") => 5,
-            Some("offhand") => 1,
-            _ => 0,
-        }
+        stand_slot(self.res.items(), stack)
     }
     /// `ArmorStand.interact` for the stand under the crosshair, or for the
     /// stand a guest's interact packet named (its client's click point).
@@ -704,7 +726,7 @@ impl Game<'_> {
         let a = &self.armor_stands[i];
         let slot = match &held {
             Some(h) => {
-                let slot = self.equipment_slot(h);
+                let slot = usable_equipment_slot(a, self.equipment_slot(h));
                 // ArmorStand.interact: a disabled slot, or a hand without
                 // arms, is FAIL.
                 if a.is_disabled(slot) {
@@ -1457,11 +1479,10 @@ impl Game<'_> {
         let Some(i) = self.armor_stands.iter().position(|a| a.id == id) else {
             return false;
         };
-        let registry = &self.motion.health.damage;
+        let registry = &self.health_resources.damage;
         let Some(kind) = registry.id(damage_type) else {
             return false;
         };
-        let tagged = |tag: &str| registry.in_tag(kind, tag);
         if !self
             .ui
             .rules
@@ -1470,7 +1491,7 @@ impl Game<'_> {
         {
             return false;
         }
-        if tagged("minecraft:bypasses_invulnerability") {
+        if registry.in_tag(kind, "minecraft:bypasses_invulnerability") {
             self.kill_target(Target::Stand(id));
             return false;
         }
@@ -1500,6 +1521,8 @@ impl Game<'_> {
             Some(Target::Player | Target::Guest(_) | Target::Mob(_)) => causing,
             _ => None,
         };
+        let registry = &self.health_resources.damage;
+        let tagged = |tag: &str| registry.in_tag(kind, tag);
         let (explosion, ignites, burns) = (
             tagged("minecraft:is_explosion"),
             tagged("minecraft:ignites_armor_stands"),
@@ -2062,65 +2085,147 @@ fn swap_with_equipment_slot(
         to_inventory: current,
     }
 }
+/// `Equippable.swapWithEquipmentSlot`'s armour slot for `stack`: the stack's
+/// own `equippable` component (a saved one, or the server's patch), else its
+/// item's, and only while it is swappable.
+pub(super) fn hand_equip_slot(
+    stack: &ItemStack,
+    items: &crate::items::Items,
+) -> Option<(usize, &'static str)> {
+    let equippable = horizon_client::item_sync::equippable(stack, items)?;
+    let actual = stack
+        .data()
+        .and_then(|data| data.other("minecraft:equippable"));
+    // Only adopt the default-allowed shape here. Restricted or otherwise
+    // shaped overrides keep their existing admission until supported.
+    let supported = actual.is_none_or(|tag| {
+        matches!(tag, horizon_core::nbt::Tag::Compound(map)
+            if map.keys().all(|key| matches!(key.to_string_lossy().as_str(), "slot" | "swappable")))
+            && matches!(tag.get("slot"), Some(horizon_core::nbt::Tag::String(_)))
+            && tag.get("swappable").is_none_or(|flag| {
+                horizon_client::item_data::component_bool(flag).is_some()
+            })
+    });
+    let (slot, swappable) = if supported {
+        (equippable.slot.as_str(), equippable.swappable)
+    } else {
+        let info = items.get(&stack.item)?;
+        (info.equip_slot.as_deref()?, info.swappable)
+    };
+    if !swappable {
+        return None;
+    }
+    Some(match slot {
+        "head" => (0, "head"),
+        "chest" => (1, "chest"),
+        "legs" => (2, "legs"),
+        "feet" => (3, "feet"),
+        _ => return None,
+    })
+}
+
+/// The `ArmorStand.equipment` index `ArmorStand.interact` puts `stack` in:
+/// the stack's own `equippable` slot, else the main hand.
+fn stand_slot(items: &crate::items::Items, stack: &ItemStack) -> usize {
+    match horizon_client::item_sync::equippable_slot(stack, items).as_deref() {
+        Some("feet") => 2,
+        Some("legs") => 3,
+        Some("chest") => 4,
+        Some("head") => 5,
+        Some("offhand") => 1,
+        _ => 0,
+    }
+}
+
+#[cfg(test)]
+mod stack_equip_tests {
+    use super::{hand_equip_slot, stand_slot};
+    use horizon_client::items::{ItemInfo, ItemStack, Items};
+    use horizon_core::nbt::Tag;
+
+    fn with_equippable(fields: Vec<(&str, Tag)>) -> ItemStack {
+        let mut stack = ItemStack::new("minecraft:stick", 1);
+        stack
+            .data_mut()
+            .set_other("minecraft:equippable", Some(Tag::compound(fields)));
+        stack
+    }
+
+    /// A stack's own `equippable` slot, not its item type's, decides where a
+    /// right-click wears it; a removed component wears nowhere.
+    #[test]
+    fn the_hands_armour_slot_comes_from_the_stacks_equippable() {
+        let items = Items::for_tests(Default::default());
+        let helmet = with_equippable(vec![("slot", Tag::String("head".into()))]);
+        assert_eq!(hand_equip_slot(&helmet, &items), Some((0, "head")));
+        assert_eq!(
+            hand_equip_slot(
+                &with_equippable(vec![("slot", Tag::String("chest".into()))]),
+                &items
+            ),
+            Some((1, "chest"))
+        );
+        let unsupported = with_equippable(vec![("slot", Tag::String("mainhand".into()))]);
+        assert_eq!(hand_equip_slot(&unsupported, &items), None);
+        let unswappable = with_equippable(vec![
+            ("slot", Tag::String("head".into())),
+            ("swappable", Tag::Byte(0)),
+        ]);
+        assert_eq!(hand_equip_slot(&unswappable, &items), None);
+
+        // The item's own component answers while the stack removes it.
+        let mut items = Items::for_tests(Default::default());
+        items.items.insert(
+            "minecraft:iron_helmet".into(),
+            ItemInfo {
+                equip_slot: Some("head".into()),
+                ..Default::default()
+            },
+        );
+        let mut removed = ItemStack::new("minecraft:iron_helmet", 1);
+        removed.data_mut().set_other(
+            "!minecraft:equippable",
+            Some(Tag::compound(Vec::<(&str, Tag)>::new())),
+        );
+        assert_eq!(hand_equip_slot(&removed, &items), None);
+    }
+
+    /// `ArmorStand.interact` puts a stack in the slot its `equippable` names,
+    /// not the one its item type names.
+    #[test]
+    fn an_armor_stands_slot_comes_from_the_stacks_equippable() {
+        let items = Items::for_tests(Default::default());
+        assert_eq!(
+            stand_slot(
+                &items,
+                &with_equippable(vec![("slot", Tag::String("feet".into()))])
+            ),
+            2
+        );
+        assert_eq!(
+            stand_slot(
+                &items,
+                &with_equippable(vec![("slot", Tag::String("offhand".into()))])
+            ),
+            1
+        );
+        assert_eq!(stand_slot(&items, &ItemStack::new("minecraft:stick", 1)), 0);
+        let mut removed = ItemStack::new("minecraft:stick", 1);
+        removed.data_mut().set_other(
+            "!minecraft:equippable",
+            Some(Tag::compound(Vec::<(&str, Tag)>::new())),
+        );
+        assert_eq!(stand_slot(&items, &removed), 0);
+    }
+}
 impl Game<'_> {
     /// `Equippable.swapWithEquipmentSlot`: right-clicking armor swaps it into
     /// its slot (the worn piece comes back to the hand). It runs on a client
     /// too (`Item.use`), as the prediction the server's slot packets confirm.
     pub(super) fn equip_from_hand(&mut self, stack: &ItemStack) -> bool {
-        let Some(info) = self.items().get(&stack.item) else {
+        let Some((index, slot)) = hand_equip_slot(stack, self.items()) else {
             return false;
         };
-        let components = self
-            .pack
-            .item_renderer
-            .models
-            .components(&horizon_client::item_render::stack_view(stack));
-        let Some(equippable) = components.get("minecraft:equippable") else {
-            return false;
-        };
-        let actual = stack
-            .data()
-            .and_then(|data| data.other("minecraft:equippable"));
-        // Only adopt the default-allowed shape here. Restricted or otherwise
-        // shaped overrides keep their existing admission until supported.
-        let supported = actual.is_none_or(|tag| {
-            matches!(tag, horizon_core::nbt::Tag::Compound(map)
-                if map.keys().all(|key| matches!(key.to_string_lossy().as_str(), "slot" | "swappable")))
-                && matches!(tag.get("slot"), Some(horizon_core::nbt::Tag::String(_)))
-                && tag.get("swappable").is_none_or(|flag| {
-                    horizon_client::item_data::component_bool(flag).is_some()
-                })
-        });
-        let slot = if supported {
-            equippable.get("slot").and_then(serde_json::Value::as_str)
-        } else {
-            info.equip_slot.as_deref()
-        };
-        let (index, slot) = match slot {
-            Some("head") => (0, "head"),
-            Some("chest") => (1, "chest"),
-            Some("legs") => (2, "legs"),
-            Some("feet") => (3, "feet"),
-            _ => return false,
-        };
-        // The component codec replaces the whole value: an override which
-        // omits swappable uses true, rather than its item's prototype flag.
-        let swappable = if !supported {
-            info.swappable
-        } else if let Some(actual) = actual {
-            actual
-                .get("swappable")
-                .and_then(horizon_client::item_data::component_bool)
-                .unwrap_or(true)
-        } else {
-            equippable
-                .get("swappable")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(true)
-        };
-        if !swappable {
-            return false;
-        }
         let current = self.armor[index].clone();
         // PREVENT_ARMOR_CHANGE (Curse of Binding) outside creative, or the same item.
         if current.as_ref().is_some_and(|c| {
@@ -2331,11 +2436,34 @@ fn broken_armor_stand_equipment(a: ArmorStand) -> ([i32; 3], Vec<ItemStack>) {
         .collect();
     (pos, drops)
 }
+/// `LivingEntity.getEquipmentSlotForItem` through `ArmorStand.canUseSlot`:
+/// a disabled equippable slot is replaced by MAINHAND (index 0).
+fn usable_equipment_slot(stand: &ArmorStand, wanted: usize) -> usize {
+    if wanted != 0 && stand.is_disabled(wanted) {
+        0
+    } else {
+        wanted
+    }
+}
+
 #[cfg(test)]
 mod swap_tests {
     use super::*;
     fn stack(item: &str, count: u32) -> ItemStack {
         ItemStack::new(item, count)
+    }
+    /// A head-locked stand held a helmet would refuse it in vanilla too —
+    /// `getEquipmentSlotForItem` falls back to MAINHAND, so the stand holds it.
+    #[test]
+    fn a_disabled_equippable_slot_falls_back_to_the_hand() {
+        let mut a = ArmorStand::new(1, horizon_core::geometry::Vec3::ZERO, 0.0);
+        a.show_arms = true;
+        a.disabled_slots = 1 << 4; // head
+        assert_eq!(usable_equipment_slot(&a, 5), 0);
+        assert_eq!(usable_equipment_slot(&a, 4), 4);
+        assert_eq!(usable_equipment_slot(&a, 0), 0);
+        a.disabled_slots = 1 << 5; // off hand
+        assert_eq!(usable_equipment_slot(&a, 1), 0);
     }
     #[test]
     fn disabled_slots_lock_by_filter_flag() {
@@ -2567,6 +2695,215 @@ mod layer_color_tests {
         assert_eq!(layer_color(None, Some(&plain)), 0xFFFF_FFFF);
         // A layer that isn't dyeable stays white even on a dyed stack.
         assert_eq!(layer_color(None, Some(&dyed)), 0xFFFF_FFFF);
+    }
+}
+
+/// `HumanoidArmorLayer` for a mob's equipment: the texture comes from the worn
+/// stack's `equippable` asset and the equipment table, never from the item's id.
+#[cfg(test)]
+mod worn_equipment_tests {
+    use super::*;
+    use horizon_client::items::Items;
+    use horizon_client::mobs::{MobType, Species};
+    use horizon_core::nbt::Tag;
+
+    /// The equipment table the tests resolve against, built here: two assets
+    /// with the same layers under different names, iron's three layer types
+    /// and leather's dyeable pair.
+    fn assets() -> ArmorStandAssets {
+        use horizon_assets::resource_source::Resource;
+        let json = |layers: &str| {
+            Resource::bytes(format!(r#"{{"layers":{layers}}}"#).into_bytes())
+        };
+        ArmorStandAssets::load(
+            &horizon_assets::resource_source::ResourceSource::indexed(
+                std::collections::BTreeMap::from([
+                    (
+                        "assets/minecraft/equipment/red.json".into(),
+                        json(r#"{"humanoid":[{"texture":"minecraft:red"}]}"#),
+                    ),
+                    (
+                        "assets/minecraft/equipment/blue.json".into(),
+                        json(r#"{"humanoid":[{"texture":"minecraft:blue"}]}"#),
+                    ),
+                    (
+                        "assets/minecraft/equipment/iron.json".into(),
+                        json(
+                            r#"{"humanoid":[{"texture":"minecraft:iron"}],
+                                "humanoid_leggings":[{"texture":"minecraft:iron"}],
+                                "humanoid_baby":[{"texture":"minecraft:iron"}]}"#,
+                        ),
+                    ),
+                    (
+                        "assets/minecraft/equipment/leather.json".into(),
+                        json(
+                            r#"{"humanoid_baby":[
+                                {"texture":"minecraft:leather",
+                                 "dyeable":{"color_when_undyed":10511680}},
+                                {"texture":"minecraft:leather_overlay"}]}"#,
+                        ),
+                    ),
+                ]),
+            ),
+            None,
+        )
+    }
+    /// A husk built here, without the prepared resources a test machine may not have:
+    /// its own model, and the baby one the renderer picks while it is a baby.
+    fn husk() -> Mob {
+        let model = Arc::new(Part {
+            name: "root".into(),
+            pose: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            polygons: Vec::new(),
+            children: Vec::new(),
+        });
+        let mut kind = MobType {
+            shadow: None,
+            id: "minecraft:husk".into(),
+            species: Species::Husk,
+            width: 0.6,
+            height: 1.95,
+            eye_height: 1.74,
+            category: "monster".into(),
+            max_health: 20.0,
+            speed: 0.23,
+            flying_speed: 0.02,
+            attack_damage: 3.0,
+            attack_knockback: 0.0,
+            follow_range: 16.0,
+            step_height: 0.6,
+            armor: 0.0,
+            armor_toughness: 0.0,
+            knockback_resistance: 0.0,
+            jump_strength: 0.42,
+            attributes: Default::default(),
+            item_stack_limits: Default::default(),
+            attribute_bounds: Default::default(),
+            gravity: 0.08,
+            safe_fall_distance: 3.0,
+            fall_damage_multiplier: 1.0,
+            water_efficiency: 0.0,
+            water_slowdown: 0.8,
+            air_speed: 0.02,
+            baby_scale: 0.5,
+            head_rot_speed: 10.0,
+            max_head_x_rot: 40.0,
+            max_head_y_rot: 75.0,
+            ambient_interval: 120,
+            flags: Default::default(),
+            model: model.clone(),
+            layers: Default::default(),
+            texture: "entity/zombie/husk".into(),
+            brain: horizon_client::mobs::Brain::Passive,
+            anim: horizon_client::mobs::Anim::Humanoid { zombie_arms: true },
+            sounds: ["", "", ""],
+            sound_overrides: Default::default(),
+            food: Default::default(),
+            tempt: Default::default(),
+            passenger_attachments: Default::default(),
+        };
+        kind.layers.insert("husk_baby#main".into(), model);
+        Mob::new(
+            1,
+            Arc::new(kind),
+            horizon_core::geometry::Vec3::ZERO,
+            0.0,
+        )
+    }
+    /// A stack wearing `asset` in `slot` when it has one (`None`: the component
+    /// names the slot but no asset, as `carved_pumpkin`'s does).
+    fn worn(item: &str, slot: &str, asset: Option<&str>) -> ItemStack {
+        let mut stack = ItemStack::new(item, 1);
+        let mut fields = vec![("slot", Tag::String(slot.into()))];
+        if let Some(asset) = asset {
+            fields.push(("asset_id", Tag::String(asset.into())));
+        }
+        stack
+            .data_mut()
+            .set_other("minecraft:equippable", Some(Tag::compound(fields)));
+        stack
+    }
+    /// The textures the renderer draws for `m`'s worn equipment, in draw order.
+    fn textures(m: &Mob, assets: &ArmorStandAssets) -> Vec<String> {
+        let items = Items::for_tests(Default::default());
+        let worn = worn_equipment_layers(m, &items, assets);
+        horizon_client::mobs::render::layers(m, 0.0, &worn)
+            .iter()
+            .map(|layer| layer.texture.to_string())
+            .collect()
+    }
+    /// Two identical iron chestplates draw the asset their stack names, and a
+    /// stack whose `equippable` has no asset draws no layer at all.
+    #[test]
+    fn the_worn_texture_comes_from_the_stacks_equippable_asset() {
+        let assets = assets();
+        use horizon_items::equipment::CHEST;
+        let mut m = husk();
+        let mut red = husk();
+        red.extra
+            .equipment
+            .set(CHEST, Some(worn("minecraft:iron_chestplate", "chest", Some("minecraft:red"))));
+        let mut blue = husk();
+        blue.extra
+            .equipment
+            .set(CHEST, Some(worn("minecraft:iron_chestplate", "chest", Some("minecraft:blue"))));
+        assert_eq!(
+            textures(&red, &assets),
+            ["entity/equipment/humanoid/red"]
+        );
+        assert_eq!(
+            textures(&blue, &assets),
+            ["entity/equipment/humanoid/blue"]
+        );
+        // `HumanoidArmorLayer.shouldRender`: an asset is required.
+        m.extra.equipment.set(
+            CHEST,
+            Some(worn("minecraft:carved_pumpkin", "chest", None)),
+        );
+        assert!(textures(&m, &assets).is_empty());
+    }
+    /// `HumanoidArmorLayer.renderArmorPiece`: a baby wears the `humanoid_baby`
+    /// layers for every slot (leggings included), an adult the leggings' layers
+    /// for its legs (#7302).
+    #[test]
+    fn a_babys_armour_wears_the_humanoid_baby_equipment_layers() {
+        use horizon_items::equipment::{FEET, HEAD, LEGS};
+        let assets = assets();
+        let mut m = husk();
+        m.extra.age = -24000;
+        m.extra.equipment.set(
+            HEAD,
+            Some(worn("minecraft:iron_helmet", "head", Some("minecraft:iron"))),
+        );
+        m.extra.equipment.set(
+            LEGS,
+            Some(worn("minecraft:iron_leggings", "legs", Some("minecraft:iron"))),
+        );
+        m.extra.equipment.set(
+            FEET,
+            Some(worn("minecraft:leather_boots", "feet", Some("minecraft:leather"))),
+        );
+        assert_eq!(
+            textures(&m, &assets),
+            [
+                "entity/equipment/humanoid_baby/iron",
+                "entity/equipment/humanoid_baby/iron",
+                "entity/equipment/humanoid_baby/leather",
+                "entity/equipment/humanoid_baby/leather_overlay",
+            ]
+        );
+        // The leather layer takes the colour it has when undyed, its overlay none.
+        let items = Items::for_tests(Default::default());
+        let worn = worn_equipment_layers(&m, &items, &assets);
+        let layers = horizon_client::mobs::render::layers(&m, 0.0, &worn);
+        assert_eq!(layers[2].color, 0xFF40_65A0);
+        assert_eq!(layers[3].color, 0xFFFF_FFFF);
+        assert_eq!(&*layers[1].model, "husk_baby#leggings");
+        m.extra.age = 0;
+        assert_eq!(
+            textures(&m, &assets)[1],
+            "entity/equipment/humanoid_leggings/iron"
+        );
     }
 }
 
@@ -3050,3 +3387,4 @@ mod postbaseline_lodestone_controls {
         );
     }
 }
+

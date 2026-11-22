@@ -223,8 +223,8 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
   frame, a painting or a leash knot (tying a lead to a fence that has none; `pos` is the fence), once it fits and
   before it is placed or the item used. Set `cancel` and nothing happens; the item stays in the hand. The player's
   state is swapped in, so `PlayerRef::tell` answers them. `/summon` and a lead tied to a mob are not heard.
-- **`hanging_break(player, kind, pos, cancel)`**: an item frame, a glow item frame or a painting (`kind`)
-  hanging in `pos` is about to break: a server player's hit (`player`, whose state is swapped in), a blast, or the
+- **`hanging_break(dimension, player, kind, pos, cancel)`**: an item frame, a glow item frame or a painting (`kind`)
+  hanging in `pos` of the level `dimension` (`&str`, as `entity_join_level` gives it) is about to break: a server player's hit (`player`, whose state is swapped in), a blast, or the
   wall it hangs on gone (`player` None for both), before anything drops or sounds. Set `cancel` and it stays as it
   was. A hit that only takes a frame's item out, the game's own player and `/kill` are not asked.
 - **`bucket_empty(player, name, pos, fluid, cancel)`**: a server player empties a bucket (`fluid` is
@@ -520,7 +520,7 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
   calculated velocity, before it is added to the entity. Replace `knockback_velocity` to change the push;
   `entity` is None for a player, whom `host.players().acting_player` names. The player packet uses the same replacement. Wind bursts are heard too.
 
-- **`fill_bucket(stack, pos, canceled)`** and **`attack_entity(entity, kind, pos, canceled)`**:
+- **`fill_bucket(stack, pos, canceled)`** and **`attack_entity(dimension, entity, kind, pos, canceled)`**:
   a player's bucket at a block, and their blow on an entity, with the acting player swapped in. Canceled, the bucket
   does nothing and the blow does no harm. A fluid or mob bucket also asks about the block beside the clicked face
   whenever that block is not its target, since a block that refuses the fluid passes it there; the fluid may still
@@ -1728,7 +1728,7 @@ still go on each event or registrar.
   sets one off as `Level.explode` does, with an optional source entity, `ExplosionInteraction::None`, `Block`, `Mob`, `Tnt`
   or `Trigger` for what it does to blocks, and `ExplosionSettings` for its damage type, calculator, particles and sound.
 
-- Dispenser behaviours are chosen at `DispenserBlock.getDispenseMethod`, before any vanilla behaviour, for mod or vanilla items, on the authoritative server only (droppers are unaffected). The block the dispenser faces is asked first: `dispense_method` gives its part the dimension, dispenser position, facing, the selected stack and `state`, the block at `pos` moved by `facing` (air included), and the part is asked only for that block. Then, unless that part answered, the item's own part is asked by `dispense_item` with the same dimension, position, facing and stack. Either answer is `Some((remainder, event))`: a `None` remainder empties the slot, `Some(stack)` writes that remainder without consuming again, and `event` is the level event played with the smoke (1000 click, 1001 fail, 0 nothing, as `NOOP`). The first answer wins: the other part is not asked and vanilla's behaviour doesn't run. `host.dispense_default(dimension, pos, facing, stack)` drops one item normally, including items with a special vanilla behaviour: answer its remainder with 1000. Leave the answer `None` to let vanilla decide, as before.
+- Dispenser behaviours are chosen at `DispenserBlock.getDispenseMethod`, before any vanilla behaviour, for mod or vanilla items, on the authoritative server only (droppers are unaffected). The global `dispenser_acts(dimension, pos, facing, stack)` is asked first, once per dispenser action, for a mod that cannot name every item or block at registration; its answer (the same `Some((remainder, event))`) wins and no part is asked. Otherwise the block the dispenser faces is asked: `dispense_method` gives its part the dimension, dispenser position, facing, the selected stack and `state`, the block at `pos` moved by `facing` (air included), and the part is asked only for that block. Then, unless that part answered, the item's own part is asked by `dispense_item` with the same dimension, position, facing and stack. Either answer is `Some((remainder, event))`: a `None` remainder empties the slot, `Some(stack)` writes that remainder without consuming again, and `event` is the level event played with the smoke (1000 click, 1001 fail, 0 nothing, as `NOOP`). The first answer wins: the other part is not asked and vanilla's behaviour doesn't run. `host.dispense_default(dimension, pos, facing, stack)` drops one item normally, including items with a special vanilla behaviour: answer its remainder with 1000. Leave the answer `None` to let vanilla decide, as before.
 
 - Image tooltip components: `tooltip_component(stack, size)` answers finite positive width/height in GUI pixels, and `tooltip_component_draw(stack, batch, origin, size)` draws that component with `native_sprite`, `native_fill` and `native_text`. The stack supplies its data. Space and background are reserved after the text and any vanilla bundle component; the component width participates in tooltip positioning. Neither hook changes ordinary tooltips without an answer. Client-side.
 
@@ -1750,9 +1750,13 @@ still go on each event or registrar.
   drops when a neighbour changes), and wherever else vanilla asks. `state` may not be in the world yet, so decide from
   `state`. `may_place_on(dimension, state, ground, ground_pos, may)` answers `VegetationBlock.mayPlaceOn` for a
   mod plant (a block whose template is a vanilla plant, such as a crop): the blocks it can stand on, which its
-  template's `canSurvive` asks, so it is refused elsewhere and pops off when its ground changes. Answer only for your
-  own blocks and leave the answer empty otherwise; the level is read-only. Both run on every shape update of such a
-  block: keep them short.
+  template's `canSurvive` asks, so it is refused elsewhere and pops off when its ground changes.
+  `can_sustain_plant(dimension, state, ground, ground_pos, sustains)` is the soil's half of that question, asked
+  before the plant's `may_place_on`: an answer there is the plant's. Answer only for your own blocks and leave the
+  answer empty otherwise; the level is read-only. All three run on every shape update of such a block: keep them
+  short. `can_survive_v2`, `may_place_on_v2` and `can_sustain_plant_v2` are the same three questions in world
+  generation: a feature placing a block reads the server's tables instead of a level, and asks the soil before the
+  plant as the live game does.
 
 - Drawing mod block entities on the client. `block_entity_submit(pos, block, state, entity, draw)` runs once a frame
   for each mod block entity in view, as vanilla's `BlockEntityRenderer.submit` does (within its view distance, 64 blocks
@@ -2665,7 +2669,7 @@ registration path.
 
 - A player releases a bow: `arrow_loose(stack, has_ammo, charge, canceled)` may change held-tick `charge` or cancel the shot; negative charge also prevents it. Unlike `living_entity_use_item_stop`, it does not skip the whole item release; `entity_shoot_bow` reports the spawned arrow afterward with read-only force. Fires on the Game running the bow release, including LAN guests; a remote client's own release path, crossbows, and ArrowNockEvent are not covered.
 
-- An item frame or painting about to break: `hanging_break(player, kind, pos, cancel)` is heard before a server player's hit, a blast or the loss of its wall breaks an item frame, a glow item frame or a painting, with the hitting player (None for a blast or a lost wall). A mod sets `cancel` and it stays. The hitting player's state is swapped in. A hit that only takes a frame's item out, the game's own player and `/kill` are not asked.
+- An item frame or painting about to break: `hanging_break(dimension, player, kind, pos, cancel)` is heard before a server player's hit, a blast or the loss of its wall breaks an item frame, a glow item frame or a painting, with the hitting player (None for a blast or a lost wall). A mod sets `cancel` and it stays. The hitting player's state is swapped in. A hit that only takes a frame's item out, the game's own player and `/kill` are not asked.
 
 - A criterion of a server player's advancement was granted or revoked after its progress changed and before any completion rewards, except the `minecraft:tick` criteria granted on a network player's first tick or a reload, which are heard after that tick's rewards and packets; `advancement` is its identifier, such as `minecraft:story/mine_stone`, `criterion` the criterion name and `progress_type` is `ProgressType::Grant` or `ProgressType::Revoke`. A grant or revoke that changes nothing is not heard.
 

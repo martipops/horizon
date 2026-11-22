@@ -30,10 +30,14 @@ fn open_error(error: &str) -> String {
 
 pub(super) fn startup_note() -> Option<String> {
     env_value("HORIZON_RELOCATION_BACKUP").map(|paths| {
-        trf(
+        let note = trf(
             "Data moved. Old folders still use disk space: {paths}. Verify your worlds and instances before removing them yourself.",
             &[("paths", &paths)],
-        )
+        );
+        match env_value("HORIZON_RELOCATION_KEPT") {
+            Some(kept) => format!("{note} {kept}."),
+            None => note,
+        }
     })
 }
 
@@ -100,18 +104,17 @@ impl Launcher {
                 this.location_error = this.location_blocked();
                 if this.location_error.is_none() {
                     match result {
-                        Ok(Some(path)) => match std::fs::read_dir(&path) {
-                            Ok(mut entries) => match entries.next() {
-                                None => this.location_target = Some(path),
-                                Some(Ok(_)) => {
+                        Ok(Some(path)) => {
+                            match horizon_launcher::data_location::reusable_destination(&path) {
+                                Ok(true) => this.location_target = Some(path),
+                                Ok(false) => {
                                     this.location_error = Some(
                                         tr("Choose an empty folder for Horizon's data.").into(),
                                     );
                                 }
-                                Some(Err(error)) => this.location_picker_error(error.to_string()),
-                            },
-                            Err(error) => this.location_picker_error(error.to_string()),
-                        },
+                                Err(error) => this.location_picker_error(error.to_string()),
+                            }
+                        }
                         Ok(None) => {}
                         Err(error) => this.location_picker_error(error),
                     }
@@ -236,6 +239,20 @@ impl Launcher {
             .children(self.location_error.as_ref().map(|message| {
                 text(theme::CAPTION).px(px(if t.glass { 14. } else { 0. })).text_color(t.danger).child(message.clone())
             }));
+        if cfg!(windows) {
+            body = body.child(text(theme::CAPTION).px(px(if t.glass { 14. } else { 0. })).text_color(t.muted).child(tr(
+                "On Windows, folders with spaces or non-English characters use a separate build folder. The chosen drive is preferred; otherwise the previous build drive is used. Allow enough free space in both locations.",
+            ).to_string()));
+        }
+        body = body.child(
+            text(theme::CAPTION)
+                .px(px(if t.glass { 14. } else { 0. }))
+                .text_color(t.muted)
+                .child(trf(
+                    "Build data: {path}",
+                    &[("path", &backend::build_dir().display().to_string())],
+                )),
+        );
         if horizon_launcher::data_location::startup_error().is_some() {
             body = body.child(
                 div()

@@ -24,10 +24,24 @@ pub(crate) enum Links {
     GameMade,
 }
 
+/// What a caller can prove excluding the programs that read a unit: the leases its own builds
+/// take, or its own check that no program runs from it.
+#[derive(Clone, Copy)]
+pub(crate) enum Proof {
+    /// Runtime leases, which every build of this unit takes while it reads the unit.
+    Lease,
+    /// The caller's check that no program runs from this installed unit.
+    Process,
+}
+
 /// Classification belongs to the fixed-path inventory, never a process snapshot.
 pub(crate) enum Access {
     BuildTools,
+    /// A shared unit: any installed build may read it, a build without leases included.
     UninstrumentedGame,
+    /// An installed unit whose own executable predates runtime leases, so it takes none and no
+    /// update of the launcher, the completion marker or the registry can make it take one.
+    UnleasedGame,
     LeasedGame,
     IncompleteGame,
 }
@@ -76,10 +90,14 @@ impl Access {
             if let Ok(relative) = path.strip_prefix(root) {
                 if let Some(unit) = relative.components().next() {
                     let image = root.join(unit).join(binary);
+                    // This unit's own executable and a native build naming it as its base read
+                    // this folder; the caller refuses the second before asking for a removal. Its
+                    // own build without the marker holds no lease: a fact about the image, not
+                    // about exclusion.
                     return Ok(if capable_image(&image, &data)? {
                         Self::LeasedGame
                     } else {
-                        Self::UninstrumentedGame
+                        Self::UnleasedGame
                     });
                 }
             }
@@ -148,10 +166,18 @@ impl Access {
         Ok(Self::LeasedGame)
     }
 
-    pub(crate) fn check(self) -> Result<(), Error> {
+    /// A build that takes no lease needs the caller's own proof that nothing runs from its unit.
+    pub(crate) fn check(self, proof: Proof) -> Result<(), Error> {
         match self {
             Self::BuildTools | Self::LeasedGame => Ok(()),
+            // Leases are the only evidence the unit itself can offer, and this build never takes
+            // one: only a process check of the folder excludes its users.
+            Self::UnleasedGame => match proof {
+                Proof::Process => Ok(()),
+                Proof::Lease => Err(Error::UnprovenExclusion),
+            },
             Self::IncompleteGame => Err(Error::IncompleteUnit),
+            // A shared unit holds other builds' executables too, and one of them takes no lease.
             Self::UninstrumentedGame => Err(Error::UnprovenExclusion),
         }
     }
@@ -360,19 +386,69 @@ pub(crate) fn delete_game_unit(path: &Path) -> Result<(), Error> {
 
 /// [`delete_game_unit`] for a unit whose links are `links`.
 pub(crate) fn delete_game_unit_with(path: &Path, links: Links) -> Result<(), Error> {
-    delete_unit(path, links, || {})
+    delete_unit(path, links, Proof::Lease, no_veto, || {})
+}
+
+/// [`delete_game_unit_with`] for a unit in the instance folder `instance`. A launch claims its
+/// instance's folder before the game starts and holds it while the game runs
+/// (`run_leases::shared`), but the inventory that chose this unit saw the instance idle and it
+/// may have started since (#18669). The instance is claimed exclusively through the delete: a
+/// game started meanwhile keeps the unit (busy), and a launch while the unit is detached is
+/// refused as busy until the delete ends. The claim is the launch's own cross-process lock.
+pub(crate) fn delete_game_unit_in(
+    path: &Path,
+    links: Links,
+    instance: Option<&Path>,
+) -> Result<(), Error> {
+    let _instance = instance
+        .filter(|home| home.is_dir())
+        .map(claim_instance)
+        .transpose()?;
+    delete_game_unit_with(path, links)
+}
+
+/// An exclusive claim on the instance folder `home`, refused as busy while a launch holds it.
+fn claim_instance(home: &Path) -> Result<crate::run_leases::Claim, Error> {
+    let directory = Dir::open_ambient_dir(home, cap_std::ambient_authority())?;
+    crate::run_leases::Registry::open()?
+        .lock(&directory, LockMode::Exclusive)
+        .map_err(|error| error.on(home))
 }
 
 pub(crate) fn delete_game_unit_observed(
     path: &Path,
     after_classification: impl FnOnce(),
 ) -> Result<(), Error> {
-    delete_unit(path, Links::Refused, after_classification)
+    delete_unit(
+        path,
+        Links::Refused,
+        Proof::Lease,
+        no_veto,
+        after_classification,
+    )
+}
+
+fn no_veto() -> Result<(), Error> {
+    Ok(())
+}
+
+/// An installed unit whose own build predates runtime leases: it holds none and never can, so
+/// the caller's check that no program runs from it is the exclusion ([`Proof::Process`]). A
+/// shared unit stays refused: another installed build reads it without any lease. `veto` runs
+/// with the registry's exclusive publication lock held and the unit's identity rechecked, so a
+/// caller that another launcher's publish could race sees the result instead of the race.
+pub(crate) fn delete_unleased_game_unit(
+    path: &Path,
+    veto: impl FnOnce() -> Result<(), Error>,
+) -> Result<(), Error> {
+    delete_unit(path, Links::Refused, Proof::Process, veto, || {})
 }
 
 fn delete_unit(
     path: &Path,
     links: Links,
+    proof: Proof,
+    veto: impl FnOnce() -> Result<(), Error>,
     after_classification: impl FnOnce(),
 ) -> Result<(), Error> {
     use horizon_platform::mod_package::{locks::Release, runtime_leases::Registry};
@@ -387,9 +463,11 @@ fn delete_unit(
         .filter(|_| data != real_data)
         .map(|relative| real_data.join(relative));
     let path = rebased.as_deref().unwrap_or(path);
-    let registry = Registry::with_release(&real_data, Release::Close)?;
+    let registry = Registry::with_release(&real_data, Release::Close)
+        .map_err(|error| Error::from(error).on(&data))?;
     registry.remove_unit(path, |directory, is_directory| {
-        Access::for_unit(path)?.check()?;
+        Access::for_unit(path)?.check(proof)?;
+        veto()?;
         after_classification();
         if is_directory && contains_operational_locks(directory, links)? {
             return Err(Error::IncompleteUnit);

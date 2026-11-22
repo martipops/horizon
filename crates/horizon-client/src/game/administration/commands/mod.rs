@@ -251,33 +251,33 @@ impl Game<'_> {
     /// Commands.performCommand for a line without its slash. A client mod's
     /// `command` hook is the caller's: this also runs on a server.
     pub(super) fn run_command(&mut self, command: &str) -> bool {
-        let d = self.ui.dispatcher.0.clone();
-        let parse = d.parse(command, &self.ui.registries);
-        let result = match parse.executable() {
-            Err(e) => {
-                self.syntax_failure(&e, command);
-                return false;
+        self.with_command_frame(|game| {
+            let d = game.ui.dispatcher.0.clone();
+            let parse = d.parse(command, &game.ui.registries);
+            let (ctx, id) = match parse.executable() {
+                Ok(executable) => executable,
+                Err(error) => {
+                    game.syntax_failure(&error, command);
+                    return false;
+                }
+            };
+            let ctx = ctx.clone();
+            game.exec.native_command_input = (id == "native_mod_command").then_some(parse.input);
+            let result = game.run_chain(&parse.context, &ctx);
+            let ok = result.is_ok();
+            if let Err(e) = result {
+                if e.input.is_some() {
+                    game.syntax_failure(&e, command);
+                } else {
+                    game.command_failure(e.message);
+                }
             }
-            Ok((ctx, _)) => {
-                let ctx = ctx.clone();
-                let root = parse.context.clone();
-                self.exec = Default::default();
-                self.run_chain(&root, &ctx)
+            // InventoryChangeTrigger fires as slots change, not on the next tick.
+            if game.player.is_some() {
+                game.check_inventory_trigger();
             }
-        };
-        let ok = result.is_ok();
-        if let Err(e) = result {
-            if e.input.is_some() {
-                self.syntax_failure(&e, command);
-            } else {
-                self.command_failure(e.message);
-            }
-        }
-        // InventoryChangeTrigger fires as slots change, not on the next tick.
-        if self.player.is_some() {
-            self.check_inventory_trigger();
-        }
-        ok
+            ok
+        })
     }
     /// `run_command` with its output suppressed
     /// (`CommandSourceStack.withSuppressedOutput`): the player's own source,
@@ -287,10 +287,7 @@ impl Game<'_> {
             silent: true,
             ..self.player_source()
         };
-        let outer = self.command_source.replace(quiet);
-        let ok = self.run_command(command);
-        self.command_source = outer;
-        ok
+        self.with_source(quiet, |game| game.run_command(command))
     }
     pub(in crate::game) fn syntax_failure(&mut self, e: &CommandError, command: &str) {
         self.command_failure(e.message.clone());
@@ -301,14 +298,10 @@ impl Game<'_> {
             ..Style::default()
         };
         let mut context = Text::empty();
-        if cursor > 10 {
+        if horizon_client::command::java_index(input, cursor) > 10 {
             context.push("...");
         }
-        let start = (0..=cursor.saturating_sub(10))
-            .rev()
-            .find(|&i| input.is_char_boundary(i))
-            .unwrap_or(0);
-        context.push(&input[start..cursor]);
+        context.push(&input[horizon_client::command::context_start(input, cursor)..cursor]);
         if cursor < input.len() {
             context.push(
                 Text::literal(&input[cursor..])
@@ -643,7 +636,10 @@ impl Game<'_> {
             if dim == source_dim {
                 candidates.append(&mut source_candidates);
             }
-            if s.kind != 's' {
+            // EntitySelector.findEntities: a selector without entities (`@a`, `@p`, `@r`, a
+            // players-only token) reads the player list alone, which `player_candidates` gave;
+            // the level's entities would only be typed one by one and dropped.
+            if s.kind != 's' && s.include_entities {
                 if s.kind == 'e' && matches!(s.sort, Sort::Arbitrary) && !s.world_limited() {
                     candidates.extend(self.global_selector_candidates());
                 } else {
@@ -1043,6 +1039,7 @@ impl Game<'_> {
             id if id.starts_with("whitelist.") => self.cmd_whitelist(id, ctx),
             "setidletimeout" => self.cmd_setidle_timeout(ctx),
             "stop" => self.cmd_stop(),
+            "restart" => self.cmd_restart(),
             "save-all" => self.cmd_save_all(),
             "save-off" | "save-on" => self.cmd_auto_save(id == "save-on"),
             "transfer" => self.cmd_transfer(ctx),
@@ -1212,11 +1209,12 @@ impl Game<'_> {
         {
             // `CompassItem.getName`: a lodestone tracker names it, over `item_name`.
             Text::translate("item.minecraft.lodestone_compass", &[])
-        } else if let Some(name) = s.data().and_then(|d| d.other("minecraft:item_name")) {
+        } else if let Some(name) = s.item_name_text() {
             // `ItemStack.getItemName`: the `item_name` component wins over the
             // item's own name (`Item.getName`), so a datapack's or a server's
-            // renaming shows here as it does on the tooltip's first line.
-            horizon_client::component::name_text(name)
+            // renaming shows here as it does on the tooltip's first line, and
+            // a content mod's default name for its item as well.
+            name
         } else if let Some(title) = s
             .data()
             .and_then(|d| d.written.as_ref())
@@ -1282,9 +1280,7 @@ impl Game<'_> {
             .as_deref()
             .map(horizon_client::item_data::command_components)
         {
-            Some(Ok(tag)) => {
-                horizon_client::item_data::decode_components_for_item(&id, Some(&tag))
-            }
+            Some(Ok(tag)) => horizon_client::item_data::decode_components_for_item(&id, Some(&tag)),
             Some(Err(e)) => return Err(CommandError::new(Text::literal(e))),
             None => (0, None),
         };
@@ -1407,6 +1403,23 @@ impl Game<'_> {
                 e.set_on_ground(true);
             });
         });
+    }
+    /// Writes `rotation` to the saved compound of an entity whose model has no slot for it (a cloud, a
+    /// cushion's pitch): where `/data get` and the save read it.
+    fn write_raw_rotation(&mut self, id: u32, rotation: [f32; 2]) {
+        use horizon_core::nbt::{Compound, JavaString, Tag};
+        let float = |v: f32| Tag::Float(if v == 0.0 { 0 } else { v.to_bits() });
+        if let Tag::Compound(raw) = self
+            .persist
+            .raw
+            .entry(id)
+            .or_insert_with(|| Tag::Compound(Compound::new()))
+        {
+            raw.insert(
+                JavaString::from("Rotation"),
+                Tag::List(vec![float(rotation[0]), float(rotation[1])]),
+            );
+        }
     }
     pub(in crate::game) fn teleport_to(
         &mut self,
@@ -1569,7 +1582,7 @@ impl Game<'_> {
             }
             Target::Orb(id) => {
                 if let Some(o) = self.orbs.iter_mut().find(|o| o.id == id) {
-                    o.position = v;
+                    o.set_position(v);
                     o.previous = v;
                     if let Some(r) = rotation {
                         Entity::set_rotation(o, r);
@@ -1675,6 +1688,8 @@ impl Game<'_> {
                     c.pos = [v.x.floor() as i32, v.y.floor() as i32, v.z.floor() as i32];
                     if let Some(r) = rotation {
                         c.yaw = r[0];
+                        // The cushion keeps its pitch in its saved compound, which a save writes back.
+                        self.write_raw_rotation(id, r);
                     }
                 }
             }
@@ -1719,6 +1734,11 @@ impl Game<'_> {
                     self.breath_clouds.update(i, |c| {
                         c.at = pos;
                     });
+                    // The cloud keeps its rotation in its saved compound: a teleport that sets one
+                    // writes it there, where `/data get` and the save read it.
+                    if let Some(r) = rotation {
+                        self.write_raw_rotation(id, r);
+                    }
                 }
             }
             // Wall-mounted entities do not move; a hook follows its own tick and a
@@ -2203,6 +2223,27 @@ impl Game<'_> {
     /// `SummonCommand.createEntity`: Peaceful admission uses the entity-type
     /// policy for both forms, independently of the mob category.
     fn cmd_summon(&mut self, ctx: &Context) -> R<i32> {
+        /// The CustomName an NBT argument gives the entity (`Entity.load`
+        /// reads it with `ComponentSerialization.CODEC`: a string, a non-empty
+        /// list or a compound with one of the content types' fields; anything
+        /// else loads no name).
+        fn summon_custom_name(nbt: &str) -> Option<Text> {
+            use horizon_core::nbt::Tag;
+            const CONTENTS: [&str; 9] = [
+                "type", "text", "translate", "keybind", "score", "selector", "nbt", "sprite",
+                "player",
+            ];
+            let (tag, _) = horizon_core::nbt::parse_snbt(nbt).ok()?;
+            let name = horizon_client_core::block_entity_nbt::component(tag.get("CustomName")?)
+                .filter(|n| match n {
+                    Tag::List(l) => !l.is_empty(),
+                    Tag::Compound(c) => CONTENTS.iter().any(|k| c.contains_key(&(*k).into())),
+                    _ => true,
+                })?;
+            Some(horizon_client::scoreboard::comp_text(
+                &horizon_client::scoreboard::tag_to_json(&name),
+            ))
+        }
         let Some(Arg::Resource(kind)) = ctx.get("entity").cloned() else {
             return Ok(0);
         };
@@ -2217,9 +2258,12 @@ impl Game<'_> {
             let before = self.spawned_mark();
             let name = match self.summon_with_nbt(&kind, pos, &nbt)? {
                 Some(target) => self.target_name(target),
-                // Spawned as a kind no command target stands for (primed
-                // TNT, falling blocks, projectiles): its type's name.
-                None if self.spawned_mark() != before => data::summon_type_name(&kind),
+                // Spawned as a kind no command target stands for (evoker
+                // fangs, area effect clouds, experience orbs):
+                // `Entity.getDisplayName`, its loaded CustomName, else its type's name.
+                None if self.spawned_mark() != before => {
+                    summon_custom_name(&nbt).unwrap_or_else(|| data::summon_type_name(&kind))
+                }
                 None => return Err(err("commands.summon.failed", &[])),
             };
             self.feedback(Text::translate("commands.summon.success", &[name]));
@@ -4862,20 +4906,25 @@ mod forced_respawn_tests {
         with_game(|game| {
             game.build_registries();
             game.set_allow_commands(true);
-            for pos in [[1_000_000, 1024, -1_000_000], [-29_999_999, -1024, 29_999_999]] {
+            for pos in [
+                [1_000_000, 1024, -1_000_000],
+                [-29_999_999, -1024, 29_999_999],
+            ] {
                 assert!(!game.world.chunks.contains_key(&(pos[0] >> 4, pos[2] >> 4)));
-                assert!(game.run_command(&format!(
-                    "setworldspawn {} {} {}",
-                    pos[0], pos[1], pos[2]
-                )));
+                assert!(
+                    game.run_command(&format!("setworldspawn {} {} {}", pos[0], pos[1], pos[2]))
+                );
                 assert_eq!(game.level.world_spawn, Some(pos));
             }
             let previous = game.level.world_spawn;
-            for pos in [[30_000_000, 64, 0], [0, 20_000_000, 0], [0, 64, -30_000_001]] {
-                assert!(!game.run_command(&format!(
-                    "setworldspawn {} {} {}",
-                    pos[0], pos[1], pos[2]
-                )));
+            for pos in [
+                [30_000_000, 64, 0],
+                [0, 20_000_000, 0],
+                [0, 64, -30_000_001],
+            ] {
+                assert!(
+                    !game.run_command(&format!("setworldspawn {} {} {}", pos[0], pos[1], pos[2]))
+                );
                 assert_eq!(game.level.world_spawn, previous);
             }
         });

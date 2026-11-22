@@ -72,8 +72,6 @@ pub enum H {
     Preset,
     LodDistance,
     FarDetail,
-    BlueMapAutoDetect,
-    BlueMapRadius,
     CaveCulling,
     GpuCulling,
     EntityCulling,
@@ -115,6 +113,7 @@ pub enum H {
     HdrPeak,
     HdrPaperWhite,
     HdrUiBrightness,
+    HdrColorBoost,
     HdrLook,
     BatteryMode,
     ShadowCache,
@@ -203,16 +202,6 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                             "Coarse distant terrain in local worlds. Integrated GPUs stop at 128 chunks.",
                         ),
                         h(H::FarDetail, Medium, far),
-                        h(
-                            H::BlueMapAutoDetect,
-                            None,
-                            "On servers, finds their BlueMap web map for far terrain. Next join.",
-                        ),
-                        h(
-                            H::BlueMapRadius,
-                            None,
-                            "How far around you BlueMap tiles are downloaded. Next join.",
-                        ),
                         v(
                             Opt::SimulationDistance,
                             Medium,
@@ -386,7 +375,7 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                         h(
                             H::Antialiasing,
                             Medium,
-                            "Smooths jagged edges. FXAA: softer. TAA: smoothest, moving things may trail.",
+                            "FXAA: softer. TAA: may trail. 4x MSAA: terrain and foliage, more GPU memory.",
                         ),
                         h(
                             H::Upscaling,
@@ -633,6 +622,11 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                             "How bright the HUD and menus are. Auto: at paper white.",
                         ),
                         h(
+                            H::HdrColorBoost,
+                            None,
+                            "0%: exact colours. More: stretched to your display's range, as SDR often is.",
+                        ),
+                        h(
                             H::HdrLook,
                             None,
                             "Horizon: light sources and the sun shine past white. Vanilla: just as SDR.",
@@ -665,8 +659,6 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
     pages
 }
 
-/// BlueMap download radii, in chunks.
-const BLUE_MAP_RADII: [u32; 5] = [16, 32, 64, 128, 256];
 const UPLOAD_STEPS: [u32; 8] = [0, 256, 512, 1024, 2048, 4096, 8192, 16384];
 /// What the LOD Distance slider stops at, in chunks: off, fine steps up to 256
 /// for a short ring of far terrain past a small render distance (a phone or an
@@ -706,6 +698,15 @@ fn setup(s: &Settings, out: &EffectiveOutput) -> Setup {
 /// What the HDR page says while HDR output is held back on this window's graphics driver
 /// (`EffectiveOutput::held`): picking a mode tries again (`H::cycle`).
 const HDR_HELD: &str = "HDR output stopped the game the last time it started with this graphics driver. Choose a mode to try again.";
+/// The same, held by a graphics device loss (`gfx::safe_start`).
+fn hdr_held(s: &Settings) -> &'static str {
+    match s.horizon.safe_start {
+        Some(_) => {
+            "An earlier start lost the graphics device, so HDR stays off. Choose a mode to try again."
+        }
+        None => HDR_HELD,
+    }
+}
 
 /// The description beside `item` where it depends on [`setup`]; `text` otherwise.
 fn description(
@@ -715,7 +716,7 @@ fn description(
     text: &'static str,
 ) -> &'static str {
     match (item, setup(s, out)) {
-        (Item::Horizon(H::Hdr), _) if out.held => HDR_HELD,
+        (Item::Horizon(H::Hdr), _) if out.held => hdr_held(s),
         (Item::Horizon(H::HdrCalibrate), Setup::Unknown) => {
             "Your display didn't say how bright it gets: calibrate to set it up."
         }
@@ -829,6 +830,7 @@ impl H {
                 n => (1.0 + crate::graphics::peak_step_of(n as f32)) / PEAK_POSITIONS as f32,
             }),
             H::HdrBlackLevel => Some(g.hdr_black_level as f32 / 100.0),
+            H::HdrColorBoost => Some(g.hdr_color_boost as f32 / 100.0),
             _ => None,
         }
     }
@@ -844,6 +846,8 @@ impl H {
             H::HdrPaperWhite | H::HdrUiBrightness => Some(crate::graphics::NITS_STEPS),
             H::HdrPeak => Some(PEAK_POSITIONS),
             H::HdrBlackLevel => Some(100),
+            // 0..100% by 5.
+            H::HdrColorBoost => Some(20),
             _ => None,
         }
     }
@@ -870,11 +874,6 @@ impl H {
                 n => labelled("LOD Distance", lang::tr("%s chunks", &[&n])),
             },
             H::FarDetail => labelled("Far Detail", g.far_detail.label()),
-            H::BlueMapAutoDetect => labelled("Find BlueMap", on_off(g.blue_map.auto_detect)),
-            H::BlueMapRadius => labelled(
-                "BlueMap Radius",
-                lang::tr("%s chunks", &[&g.blue_map.radius_chunks()]),
-            ),
             H::CaveCulling => labelled("Cave Culling", on_off(g.cave_culling)),
             // Greyed out where it isn't offered (`Item::blocked`): Off, as it is there, while
             // the saved value waits.
@@ -944,10 +943,11 @@ impl H {
             H::TargetFps => labelled("Target FPS", g.target_fps),
             H::Antialiasing => labelled(
                 "Anti-aliasing",
-                match (g.fxaa, g.taa) {
-                    (_, true) => "TAA",
-                    (true, false) => "FXAA",
-                    (false, false) => "Off",
+                match (g.msaa4x && out.msaa, g.fxaa, g.taa) {
+                    (true, _, _) => "4x MSAA",
+                    (_, _, true) => "TAA",
+                    (_, true, false) => "FXAA",
+                    (_, false, false) => "Off",
                 },
             ),
             H::Upscaling => labelled("Upscaling", g.upscaling.label()),
@@ -972,6 +972,7 @@ impl H {
                 "Black Level",
                 lang::tr("%s nits", &[&format!("{:.2}", g.black_level_nits())]),
             ),
+            H::HdrColorBoost => labelled_percent("Color Boost", g.hdr_color_boost),
             // Under a shader pack the look is the pack's: its name, greyed (`Item::blocked`).
             H::HdrLook => Text::option_name_value(
                 Text::literal(lang::get_or("horizon.hdr.look", "Look")),
@@ -1029,6 +1030,7 @@ impl H {
                 }
             }
             H::HdrBlackLevel => g.hdr_black_level = (v * 100.0).round() as u32,
+            H::HdrColorBoost => g.hdr_color_boost = (v * 20.0).round() as u32 * 5,
             _ => {}
         }
     }
@@ -1048,10 +1050,6 @@ impl H {
         match self {
             H::FarDetail => {
                 g.far_detail = step(&[FarDetail::Full, FarDetail::Reduced], g.far_detail, back)
-            }
-            H::BlueMapAutoDetect => g.blue_map.auto_detect = !g.blue_map.auto_detect,
-            H::BlueMapRadius => {
-                g.blue_map.radius = step(&BLUE_MAP_RADII, g.blue_map.radius_chunks(), back)
             }
             H::CaveCulling => g.cave_culling = !g.cave_culling,
             H::GpuCulling => g.gpu_culling = step(&GpuCullingMode::ALL, g.gpu_culling, back),
@@ -1084,11 +1082,18 @@ impl H {
             H::DynamicResolution => g.dynamic_resolution = !g.dynamic_resolution,
             H::DitherCutoutMips => g.dither_cutout_mips = !g.dither_cutout_mips,
             H::PresentMode => g.present_mode = step(&PresentMode::ALL, g.present_mode, back),
-            // Off, FXAA, TAA.
+            // Off, FXAA, TAA, and 4x MSAA where the renderer can draw it.
             H::Antialiasing => {
-                let i = if g.taa { 2 } else { usize::from(g.fxaa) };
-                let i = (i + if back { 2 } else { 1 }) % 3;
-                (g.fxaa, g.taa) = (i == 1, i == 2);
+                let modes = if out.msaa { 4 } else { 3 };
+                let i = if g.msaa4x {
+                    3
+                } else if g.taa {
+                    2
+                } else {
+                    usize::from(g.fxaa)
+                };
+                let i = (i + if back { modes - 1 } else { 1 }) % modes;
+                (g.fxaa, g.taa, g.msaa4x) = (i == 1, i == 2, i == 3);
                 if !g.taa {
                     g.upscaling = Upscaling::Native;
                 }
@@ -1098,6 +1103,7 @@ impl H {
                 g.upscaling = step(&Upscaling::ALL, g.upscaling, back);
                 if g.upscaling != Upscaling::Native {
                     (g.fxaa, g.taa) = (false, true);
+                    g.msaa4x = false;
                 }
             }
             H::ScreenshotQuality => {
@@ -1113,6 +1119,7 @@ impl H {
             // Any choice tries HDR output again on a driver a start failed on.
             H::Hdr => {
                 g.hdr_failed_start = None;
+                g.safe_start = None;
                 g.hdr = step(&HdrMode::ALL, g.hdr, back);
                 if g.hdr == HdrMode::On && !out.hdr_offered() {
                     g.hdr = step(&HdrMode::ALL, g.hdr, back);
@@ -1121,7 +1128,11 @@ impl H {
             H::HdrLook => g.hdr_look = step(&HdrLook::ALL, g.hdr_look, back),
             H::BatteryMode => g.battery = !g.battery,
             H::ShadowCache => g.shadow_cache = !g.shadow_cache,
-            H::GraphicsApi => g.api = step(GraphicsApi::choices(), g.api, back),
+            H::GraphicsApi => {
+                g.api = step(GraphicsApi::choices(), g.api, back);
+                g.watchdog_api = None;
+                g.watchdog_driver = None;
+            }
             H::TranslucentBatching => g.translucent_batching = !g.translucent_batching,
             H::Pacing => {
                 g.pacing = match g.pacing {
@@ -1141,7 +1152,7 @@ impl H {
     }
 }
 fn max_workers() -> u32 {
-    std::thread::available_parallelism().map_or(8, |n| n.get() as u32)
+    horizon_threads::available_parallelism().map_or(8, |n| n.get() as u32)
 }
 
 impl Item {
@@ -1170,6 +1181,7 @@ impl Item {
                 | H::HdrPeak
                 | H::HdrPaperWhite
                 | H::HdrUiBrightness
+                | H::HdrColorBoost
                 | H::HdrLook,
             ) if !out.hdr_frame_supported => Some("Your GPU or graphics API doesn't support it."),
             Item::Horizon(
@@ -1178,6 +1190,7 @@ impl Item {
                 | H::HdrPeak
                 | H::HdrPaperWhite
                 | H::HdrUiBrightness
+                | H::HdrColorBoost
                 | H::HdrLook,
             ) if !out.hdr_offered() => Some("Your display or system doesn't offer HDR output."),
             Item::Horizon(
@@ -1186,15 +1199,19 @@ impl Item {
                 | H::HdrPeak
                 | H::HdrPaperWhite
                 | H::HdrUiBrightness
+                | H::HdrColorBoost
                 | H::HdrLook,
             ) if !out.requests_hdr(s.horizon.hdr) => Some(if out.held {
-                HDR_HELD
+                hdr_held(s)
             } else {
                 "Turn HDR on to use it."
             }),
             // HDR output without the HUD's layer: a `shaders/` pack's frame (`FrameRequest`).
             Item::Horizon(H::HdrUiBrightness) if out.hdr_on() && !out.frame.hud_layer => {
                 Some("The shader pack's picture is shown at Paper White.")
+            }
+            Item::Horizon(H::HdrColorBoost) if out.compositor_stretches() => {
+                Some("In scRGB, your desktop's own color setting applies.")
             }
             Item::Horizon(H::HdrLook) if out.pack_lights => {
                 Some(if out.hdr_on() && !out.frame.hud_layer {
@@ -1234,7 +1251,6 @@ impl Item {
     pub fn switch(self, s: &Settings) -> Option<bool> {
         let g = &s.horizon;
         Some(match self {
-            Item::Horizon(H::BlueMapAutoDetect) => g.blue_map.auto_detect,
             Item::Horizon(H::CaveCulling) => g.cave_culling,
             Item::Horizon(H::OpaqueIce) => g.opaque_ice,
             Item::Horizon(H::CacheShulkerBoxes) => g.cache_shulker_boxes,
@@ -1322,8 +1338,6 @@ impl Item {
             Item::Extra(_)
                 | Item::Horizon(
                     H::Preset
-                        | H::BlueMapAutoDetect
-                        | H::BlueMapRadius
                         | H::Overlay
                         | H::ScreenshotQuality
                         | H::Pacing
@@ -1503,6 +1517,7 @@ impl Screen for GraphicsScreen {
             id: page,
             name: lang::get(page.name()),
             about: lang::get(page.about()),
+            warning: None,
             groups: groups
                 .into_iter()
                 .map(|(name, settings)| Group {
@@ -2247,34 +2262,6 @@ mod tests {
     }
 
     #[test]
-    fn blue_map_settings_sit_with_far_terrain() {
-        let mut s = Settings::default();
-        let find = Item::Horizon(H::BlueMapAutoDetect);
-        let radius = Item::Horizon(H::BlueMapRadius);
-        let distance: Vec<Item> = rows()
-            .into_iter()
-            .flat_map(|(_, groups)| groups)
-            .find(|(name, _)| *name == "Distance")
-            .unwrap()
-            .1
-            .iter()
-            .map(|r| r.item)
-            .collect();
-        assert!(distance.contains(&find) && distance.contains(&radius));
-        assert!(distance.contains(&Item::Horizon(H::FarDetail)));
-        assert_eq!(find.switch(&s), Some(false), "off by default");
-        assert_eq!(radius.label(&s, &NONE).plain(), "BlueMap Radius: 64 chunks");
-        find.cycle(&mut s, false, FB, &NONE);
-        assert!(s.horizon.blue_map.auto_detect);
-        radius.cycle(&mut s, false, FB, &NONE);
-        assert_eq!(s.horizon.blue_map.radius, 128);
-        radius.cycle(&mut s, true, FB, &NONE);
-        radius.cycle(&mut s, true, FB, &NONE);
-        assert_eq!(radius.label(&s, &NONE).plain(), "BlueMap Radius: 32 chunks");
-        assert_eq!(s.horizon.preset, Preset::Custom);
-    }
-
-    #[test]
     fn presets_set_vanilla_and_horizon_options() {
         let mut s = Settings::default();
         Item::Horizon(H::Preset).cycle(&mut s, false, [854, 480], &NONE);
@@ -2333,27 +2320,34 @@ mod tests {
     }
 
     #[test]
-    fn antialiasing_cycles_off_fxaa_taa() {
+    fn antialiasing_cycles_spatial_temporal_and_multisampled_modes() {
         let mut s = Settings::default();
         let item = Item::Horizon(H::Antialiasing);
-        for label in ["FXAA", "TAA", "Off"] {
-            item.cycle(&mut s, false, [854, 480], &NONE);
+        let msaa = EffectiveOutput { msaa: true, ..NONE };
+        for label in ["FXAA", "TAA", "4x MSAA", "Off"] {
+            item.cycle(&mut s, false, [854, 480], &msaa);
             assert_eq!(
-                item.label(&s, &NONE).plain(),
+                item.label(&s, &msaa).plain(),
                 format!("Anti-aliasing: {label}")
             );
         }
-        item.cycle(&mut s, true, [854, 480], &NONE);
-        assert_eq!((s.horizon.fxaa, s.horizon.taa), (false, true));
+        item.cycle(&mut s, true, [854, 480], &msaa);
+        assert_eq!(
+            (s.horizon.fxaa, s.horizon.taa, s.horizon.msaa4x),
+            (false, false, true)
+        );
 
         // Upscaling needs TAA: a ratio turns it on, leaving TAA goes back to Native.
         s.horizon.taa = false;
+        s.horizon.msaa4x = false;
         let upscaling = Item::Horizon(H::Upscaling);
         upscaling.cycle(&mut s, false, [854, 480], &NONE);
         assert_eq!(upscaling.label(&s, &NONE).plain(), "Upscaling: Quality");
         assert!(s.horizon.taa);
+        // A renderer that can't draw 4x MSAA goes from TAA to Off.
         item.cycle(&mut s, false, [854, 480], &NONE);
         assert_eq!(s.horizon.upscaling, Upscaling::Native);
+        assert_eq!(item.label(&s, &NONE).plain(), "Anti-aliasing: Off");
 
         // The Upscaling row is only on the screen while TAA is on.
         assert!(!shown(upscaling, &s));
@@ -2804,6 +2798,7 @@ mod tests {
             H::HdrPeak,
             H::HdrBlackLevel,
             H::HdrUiBrightness,
+            H::HdrColorBoost,
         ];
         for h in options {
             let item = Item::Horizon(h);

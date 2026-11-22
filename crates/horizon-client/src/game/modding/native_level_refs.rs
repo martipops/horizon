@@ -185,6 +185,32 @@ impl Game<'_> {
             .map(|(structure, position)| mod_api::StructureSearchResult::new(structure, position))
     }
 
+    /// `StructureManager.getStructureAt` and `getStructureWithPieceAt`: the starts the chunk
+    /// at `pos` refers to whose box holds it, through the read the location predicate uses.
+    pub(super) fn level_structures_at(
+        &self,
+        level: LevelRef,
+        pos: [i32; 3],
+    ) -> Option<Vec<mod_api::StructureAt>> {
+        let world = self.native_level_world(level)?;
+        // The starts behind the chunk's references come from the terrain that locates them, and
+        // only from those it holds: a mod's read loads no chunk and builds no start. A level that
+        // can't resolve a reference can't say which structures are there, which isn't "none".
+        let locator = || {
+            if level.dimension() == self.dim.key() {
+                self.end.locator()
+            } else {
+                self.levels.parked_locator_of(level.dimension_id())
+            }
+        };
+        Some(
+            super::structures::cached_structures_reaching_in(world, &locator, pos)?
+                .into_iter()
+                .map(|reach| mod_api::StructureAt::new(reach.name, reach.in_box, reach.in_piece))
+                .collect(),
+        )
+    }
+
     /// `LevelReader.getBiome`: the noise cell selected by this level's BiomeManager zoom.
     /// Unlike a generating server query, an absent selected column returns None.
     fn native_read_biome(&self, level: LevelRef, pos: [i32; 3]) -> Option<String> {
@@ -471,12 +497,6 @@ impl Game<'_> {
         forced: bool,
         natural_spawning: bool,
     ) -> bool {
-        if !calling_mod_owns(controller) {
-            return false;
-        }
-        if self.native_level_streaming(chunk.level()).is_none() || !chunk_in_world(chunk.pos()) {
-            return false;
-        }
         let [x, z] = chunk.pos();
         let ticket = ModTicket {
             controller: controller.slot(),
@@ -484,16 +504,53 @@ impl Game<'_> {
             chunk: (x, z),
             natural_spawning,
         };
-        let dimension = chunk.level().dimension_id();
-        let streaming = if dimension == self.dim.id() {
-            &mut self.streaming
-        } else if let Some(streaming) = self.levels.parked_streaming_of_mut(dimension) {
-            streaming
-        } else {
-            return false;
-        };
-        streaming.set_mod_forced(ticket, forced)
+        self.mod_ticket_streaming(chunk, controller)
+            .is_some_and(|streaming| streaming.set_mod_forced(ticket, forced))
     }
+    /// A runtime-only ticket of `controller` for `operation` on `chunk`, as
+    /// `chunk_set_mod_forced` holds a saved one, with the same refusals. Kept
+    /// apart from the saved tickets: never written, never validated, never
+    /// listed by `level_mod_forced_chunks`, and gone when its level closes.
+    pub(super) fn chunk_set_transient_forced(
+        &mut self,
+        chunk: ChunkRef,
+        controller: TicketController,
+        operation: u128,
+        forced: bool,
+        natural_spawning: bool,
+    ) -> bool {
+        let [x, z] = chunk.pos();
+        let ticket = horizon_client::mod_chunk_tickets::TransientTicket {
+            controller: controller.slot(),
+            operation,
+            chunk: (x, z),
+            natural_spawning,
+        };
+        self.mod_ticket_streaming(chunk, controller)
+            .is_some_and(|streaming| streaming.set_transient_forced(ticket, forced))
+    }
+    /// The streaming of `chunk`'s level for a ticket of `controller`: None
+    /// outside the calling mod's own controller, for a chunk outside the
+    /// world and for a level the server has not opened.
+    fn mod_ticket_streaming(
+        &mut self,
+        chunk: ChunkRef,
+        controller: TicketController,
+    ) -> Option<&mut Streaming> {
+        if !calling_mod_owns(controller) {
+            return None;
+        }
+        if self.native_level_streaming(chunk.level()).is_none() || !chunk_in_world(chunk.pos()) {
+            return None;
+        }
+        let dimension = chunk.level().dimension_id();
+        if dimension == self.dim.id() {
+            Some(&mut self.streaming)
+        } else {
+            self.levels.parked_streaming_of_mut(dimension)
+        }
+    }
+
     /// The chunk tickets `controller` holds in the level, as (owner, chunk
     /// position, natural_spawning), in order. None for a stale handle, on a
     /// client, outside a mod's hook and for another mod's controller.
@@ -699,6 +756,17 @@ impl Game<'_> {
     pub(super) fn level_has_neighbor_signal(&self, level: LevelRef, pos: [i32; 3]) -> bool {
         self.native_level_signals(level, |s| s.has_neighbor_signal(block_pos(pos)))
             .unwrap_or(false)
+    }
+    /// `BlockState.isRedstoneConductor(level, pos)` for the block at `pos`, through the redstone
+    /// engine's own query so the two never disagree. None for a position that isn't loaded, and
+    /// as for `signal`.
+    pub(super) fn level_is_redstone_conductor(
+        &self,
+        level: LevelRef,
+        pos: [i32; 3],
+    ) -> Option<bool> {
+        let state = self.level_block_state(level, pos)?;
+        self.native_level_signals(level, |s| s.is_redstone_conductor(state, block_pos(pos)))
     }
     /// Whether `pos` is inside the world's height and its chunk is loaded
     /// (`Level.isLoaded`, which is false outside `isInValidBounds`): a block
@@ -2930,6 +2998,14 @@ mod environment_read_tests {
                 Some(11),
                 "parked level keeps its dimension's sky"
             );
+            // The End's own branch of Game::sky_darken: the vanilla vectors record 0 at every time.
+            game.enter_level(Dim::End).unwrap();
+            for time in [0, 1234, 6000, 12500, 18000] {
+                game.world.day_time = time;
+                assert_eq!(game.sky_darken(), 0, "the End at {time}");
+            }
+            game.enter_level(Dim::Overworld).unwrap();
+            game.world.day_time = 6000;
             let stale = LevelRef::new(
                 WorldEpoch::new(overworld.epoch().get() + 1),
                 overworld.dimension(),
@@ -3160,6 +3236,98 @@ mod environment_read_tests {
             assert_eq!(
                 stale.find_nearest_structure(game, "minecraft:stronghold", search),
                 None
+            );
+        });
+    }
+
+    /// A village start's box is its pieces' union grown by 12 for its terrain adaptation, so
+    /// its corner is in the box and in no piece, and a piece's corner is in both.
+    #[test]
+    #[ignore = "daily"]
+    fn structures_at_names_the_starts_whose_box_holds_a_position() {
+        use horizon_client::vanillagen::{TerrainResources, VanillaTerrain};
+        use mod_api::{StructureAt, StructureSearch};
+
+        with_game(|game| {
+            let directory = game.options.resources.join("worldgen");
+            let terrain = VanillaTerrain::for_dimension(
+                TerrainResources {
+                    data: Some(&game.pack.data_changes),
+                    dir: &directory,
+                    registry: game.pack.assets.registry,
+                    biomes: world_biomes!(game),
+                    item_data: &game.res.core.item_data,
+                },
+                12345,
+                "minecraft:overworld",
+            )
+            .unwrap();
+            let terrain = Arc::new(terrain);
+            game.end.set_locator(Some(terrain.clone()));
+            let overworld = game.level("minecraft:overworld").unwrap();
+            let village = "minecraft:village_plains";
+            let found = overworld
+                .find_nearest_structure(game, village, StructureSearch::new([0, 64, 0], 100))
+                .expect("seed 12345 has a plains village");
+            let home = (found.position[0] >> 4, found.position[2] >> 4);
+            let start = terrain
+                .starts_at(home.0, home.1)
+                .into_iter()
+                .find(|start| start.name == village)
+                .expect("the located chunk owns the start");
+            let in_piece = start.pieces[0].bounding_box().min;
+            let in_box = start.bounding_box.min;
+            assert!(
+                !start.pieces.iter().any(|p| p.bounding_box().is_inside(in_box)),
+                "the box's corner is outside every piece"
+            );
+            let refer = |game: &mut crate::game::Game<'_>, pos: [i32; 3]| {
+                let mut chunk = Chunk::empty(pos[0] >> 4, pos[2] >> 4);
+                chunk.structure_refs = vec![(Arc::from(village), home)];
+                game.world
+                    .chunks
+                    .insert((pos[0] >> 4, pos[2] >> 4), Arc::new(chunk));
+            };
+            let unloaded = [in_box[0], in_box[1], in_box[2]];
+            assert_eq!(overworld.structures_at(game, unloaded), None);
+
+            refer(game, in_piece);
+            refer(game, in_box);
+            assert_eq!(
+                overworld.structures_at(game, in_piece),
+                Some(vec![StructureAt::new(village.to_owned(), true, true)])
+            );
+            assert_eq!(
+                overworld.structures_at(game, in_box),
+                Some(vec![StructureAt::new(village.to_owned(), true, false)])
+            );
+            let above = [in_box[0], start.bounding_box.max[1] + 1, in_box[2]];
+            assert_eq!(overworld.structures_at(game, above), Some(Vec::new()));
+            let stale = LevelRef::new(
+                WorldEpoch::new(overworld.epoch().get() + 1),
+                overworld.dimension(),
+            );
+            assert_eq!(stale.structures_at(game, in_piece), None);
+
+            // A reference to starts the generator doesn't hold: unknown, and nothing is built.
+            let far = (home.0 + 4000, home.1);
+            let mut chunk = Chunk::empty(in_box[0] >> 4, in_box[2] >> 4);
+            chunk.structure_refs = vec![(Arc::from(village), far)];
+            game.world
+                .chunks
+                .insert((in_box[0] >> 4, in_box[2] >> 4), Arc::new(chunk));
+            assert!(terrain.cached_starts_at(far.0, far.1).is_none());
+            assert_eq!(overworld.structures_at(game, in_box), None);
+            assert!(
+                terrain.cached_starts_at(far.0, far.1).is_none(),
+                "the read built no start"
+            );
+
+            game.end.set_locator(None);
+            assert_eq!(
+                overworld.structures_at(game, in_piece),
+                None,
+                "references nothing locates are unknown"
             );
         });
     }

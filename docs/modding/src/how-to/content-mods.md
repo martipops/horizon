@@ -113,7 +113,7 @@ characters; the others are plain text. The screen has no switch: a mod runs or n
 
 Unknown keys are refused, so a typo is an error, not a silently ignored permission. The shared manifest
 uses exactly `api = "0.2"` and `capabilities = ["registries"]`, with `side = "client"` (the default), `"both"` or `"server"`.
-Code mods add `[native]` for exact build pins and optional raw injections ([Injections](../concepts/injections.md)); their id and version come only
+Code mods add `[native]` for exact build pins; their id and version come only
 from this manifest, not Cargo metadata ([Native mods](native-mods/02-the-package.md)). Both content and code mods support `[dependencies]`: use `base = "^1.2"` for a required dependency or
 `extra = { version = "^2", optional = true }` for an optional one. Missing required dependencies, incompatible installed versions and cycles refuse startup. Content layers load after their dependencies; an absent optional dependency is ignored. Both kinds may include a fixed-name `icon.png` at the top level, with no
 manifest key: a valid square PNG, at most 512 × 512 pixels and 256 KiB encoded ([Mod files](../reference/manifest.md)).
@@ -802,7 +802,8 @@ are public server collect hooks with identical native and wasm behavior.
 The fence: files go in the mod's own namespaces (`assets/<id>/`,
 `data/<id>/`, and those its manifest lists), plus additions to vanilla tags
 (`data/minecraft/tags/`), to the convention tags NeoForge and Fabric mods
-share (`data/c/tags/`), and sources added to vanilla's atlases
+share (`data/c/tags/`), to the blocks villagers of each job also work at
+(`data/horizon/tags/block/villager_secondary_poi/<job>.json`), and sources added to vanilla's atlases
 (`assets/minecraft/atlases/`), which follow vanilla's own as a reload appends them.
 Templates and `sounds` name vanilla blocks; unknown keys are refused.
 
@@ -888,7 +889,10 @@ generation `step` of every biome in `biomes`; `remove_features` takes them out o
 none); `none` does nothing. `biomes` and `features` are an id, a `#tag` or a list of ids; `biomes` may also be
 NeoForge's `any`, `or`, `and` or `not`. Every addition comes before every removal, each in mod and file order, and a
 feature already in the step is not added twice. Configured features use 26.3's `worldgen/feature/` directory
-(registry `minecraft:worldgen/feature`).
+(registry `minecraft:worldgen/feature`). A mod's own carvers (`data/<ns>/worldgen/carver/`, 26.3's name for
+`configured_carver`) join the root's carvers the same way, so its biomes and carver modifiers can name them. One of a
+type the world can't decode, or whose `neoforge:conditions` fail, is left out; a biome naming it drops it once the
+world's data packs are in, unless one of them supplies a carver under that id.
 
 Spawn modifiers also apply to those biomes: `add_spawns` appends `spawners` (one object or a list with `type`,
 `weight`, `minCount` and `maxCount`) to each entity type's category, converting the count range to 26.3's `count`;
@@ -897,9 +901,9 @@ Spawn modifiers also apply to those biomes: `add_spawns` appends `spawners` (one
 accept an id, `#tag`, list of ids, or NeoForge's `any`, `or`, `and` or `not`.
 
 Carver modifiers edit the biome's `carvers`: `add_carvers` appends `carvers` (an id or a list of ids) that it lacks, and
-`remove_carvers` takes them out. They read the root's `worldgen/carvers.json` for the ids that exist, so a carver a
-data pack adds is not known to them, and carver tags are not read. NeoForge's docs call these legacy carvers: noise
-caves are not carvers.
+`remove_carvers` takes them out. `carvers` may also be a `#tag`. They see the root's carvers and carver tags with the
+world's data packs over them, so a carver or tag a pack adds is known to them. NeoForge's docs call these legacy
+carvers: noise caves are not carvers.
 
 NeoForge calls a modifier once in each of five phases (`BEFORE_EVERYTHING`, `ADD`, `REMOVE`, `MODIFY`,
 `AFTER_EVERYTHING`, in that order; its public biome modifier documentation). Horizon applies every addition, then every

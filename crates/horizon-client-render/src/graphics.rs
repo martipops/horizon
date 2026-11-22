@@ -320,12 +320,15 @@ impl GraphicsApi {
             .into_iter()
             .find(|api| api.name().eq_ignore_ascii_case(s.trim()))
     }
-    /// `HORIZON_GRAPHICS_API` (auto, vulkan, dx12 or opengl) if set, else the setting.
-    pub fn with_env(self) -> Self {
+    /// `HORIZON_GRAPHICS_API` (auto, vulkan, dx12 or opengl) if set, else `None`.
+    pub fn from_env() -> Option<Self> {
         std::env::var("HORIZON_GRAPHICS_API")
             .ok()
             .and_then(|v| Self::from_name(&v))
-            .unwrap_or(self)
+    }
+    /// `HORIZON_GRAPHICS_API` (auto, vulkan, dx12 or opengl) if set, else the setting.
+    pub fn with_env(self) -> Self {
+        Self::from_env().unwrap_or(self)
     }
 }
 
@@ -833,9 +836,6 @@ pub struct Graphics {
     pub lod_distance: u32,
     /// How finely far terrain is drawn; Full unless the player picks Reduced.
     pub far_detail: FarDetail,
-    /// Far terrain from servers' BlueMap web maps; no server has one unless
-    /// the player names it (`blueMap:` lines) or turns on auto-detect.
-    pub blue_map: crate::bluemap::Settings,
     /// Skip sections hidden behind closed ones (vanilla's occlusion graph).
     pub cave_culling: bool,
     /// Near solid terrain culled, and its draws listed, on the GPU (`gfx::gpu_culling`), where it
@@ -903,6 +903,8 @@ pub struct Graphics {
     pub fxaa: bool,
     /// TAA over the world (FXAA is off while it is on).
     pub taa: bool,
+    /// 4x MSAA on opaque and cutout terrain (FXAA and TAA are off while it is on).
+    pub msaa4x: bool,
     /// TAA upscaling; anything but `Native` comes with `taa` on.
     pub upscaling: Upscaling,
     /// How much the upscaled picture is sharpened, 0..=100 (percent of the most).
@@ -925,6 +927,11 @@ pub struct Graphics {
     /// HDR brightness of the HUD and menus, in nits; 0 is Auto: at paper white
     /// ([`Graphics::ui_nits`]). The first-person hand stays at the world's.
     pub hdr_ui_nits: u32,
+    /// HDR Color Boost, 0..=100 percent: how far HDR output stretches the picture's BT.709
+    /// colours toward the display's own primaries (`gfx::hdr::gamut`), as wide-gamut displays
+    /// often show SDR. 0, the default, shows the colours exactly. scRGB output on Wayland is left
+    /// unboosted (`EffectiveOutput::compositor_stretches`).
+    pub hdr_color_boost: u32,
     /// HDR's look with no shader pack running.
     pub hdr_look: HdrLook,
     /// The graphics driver whose last start ended before HDR output showed a frame (the
@@ -932,9 +939,15 @@ pub struct Graphics {
     /// mode is changed or the window starts on another driver ([`Graphics::hdr_held`]).
     /// Empty for a marker that named no driver: the first one seen holds it.
     pub hdr_failed_start: Option<String>,
+    /// The graphics driver whose last start lost the graphics device with HDR output on
+    /// (`gfx::safe_start`): HDR output is held back on it like [`Graphics::hdr_failed_start`].
+    pub safe_start: Option<String>,
     /// Battery mode: at most 60 frames per second in a world and 30 in menus
-    /// or behind other windows, and half the worker threads. Off by default;
-    /// it changes when frames are drawn, never what they show or the ticks.
+    /// or behind other windows, and half the automatic size of the pools the
+    /// client starts — chunk building, the tick's helpers, chunk decoding, saves,
+    /// network and chunk encoding — which they take at the next start; the frame
+    /// cap applies at once. Off by default; it changes when frames are drawn and
+    /// how many threads run, never what they show or the ticks.
     pub battery: bool,
     /// Reuse the shader pack's last shadow map when sun, view, scene revision and
     /// pack uniforms still match. Off by default: vanilla loaders redraw every frame
@@ -942,6 +955,12 @@ pub struct Graphics {
     pub shadow_cache: bool,
     /// The graphics API (Windows only; see `GraphicsApi`).
     pub api: GraphicsApi,
+    /// Backend hold after a GPU search watchdog timeout (`gfx::safe_start`): applied in memory
+    /// without overwriting [`Graphics::api`] (`graphicsApi`) in `horizon-graphics.txt`, and
+    /// dropped when the graphics driver changes (`watchdog_driver`) or `api` is changed.
+    pub watchdog_api: Option<GraphicsApi>,
+    /// Graphics driver on which [`Graphics::watchdog_api`] settled (`watchdogDriver`).
+    pub watchdog_driver: Option<String>,
     /// Translucent quads in vertex buffers of their own (`gfx`'s translucent arena), so their
     /// back-to-front draws go out in a few calls, for a little more video memory. On by
     /// default (Translucent Batching, Advanced graphics); read when a renderer is made (start,
@@ -960,7 +979,6 @@ impl Default for Graphics {
             preset: Preset::Custom,
             lod_distance: 0,
             far_detail: FarDetail::Full,
-            blue_map: crate::bluemap::Settings::default(),
             cave_culling: true,
             gpu_culling: GpuCullingMode::Off,
             entity_culling: EntityCullingMode::Off,
@@ -994,6 +1012,7 @@ impl Default for Graphics {
             target_fps: 60,
             fxaa: false,
             taa: false,
+            msaa4x: false,
             upscaling: Upscaling::Native,
             upscaling_sharpness: 85,
             screenshot_quality: 1,
@@ -1003,11 +1022,15 @@ impl Default for Graphics {
             hdr_peak: 0,
             hdr_black_level: 0,
             hdr_ui_nits: 0,
+            hdr_color_boost: 0,
             hdr_look: HdrLook::Horizon,
             hdr_failed_start: None,
+            safe_start: None,
             battery: false,
             shadow_cache: false,
             api: GraphicsApi::Auto,
+            watchdog_api: None,
+            watchdog_driver: None,
             translucent_batching: true,
             shader_pack: String::new(),
         }
@@ -1021,14 +1044,6 @@ impl Graphics {
         let mut g: Self = fs::read_to_string(dir.join(FILE))
             .map(|t| Self::parse(&t))
             .unwrap_or_default();
-        g.blue_map.servers = match fs::read_to_string(dir.join(crate::bluemap::SERVERS_FILE)) {
-            Ok(text) => crate::bluemap::Settings::parse_servers(&text),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-            Err(e) => {
-                log::warn!("{}: {e}; no BlueMap is named", crate::bluemap::SERVERS_FILE);
-                Vec::new()
-            }
-        };
         let marker = dir.join(HDR_MARKER);
         if let Ok(text) = fs::read_to_string(&marker)
             && fs::remove_file(&marker).is_ok()
@@ -1044,22 +1059,31 @@ impl Graphics {
     }
     /// Whether HDR output is held back on a window whose graphics driver is `driver`
     /// (`gfx::output::window_driver`): the last start on it ended before HDR output
-    /// showed a frame ([`Graphics::hdr_failed_start`]).
+    /// showed a frame ([`Graphics::hdr_failed_start`]), or lost the graphics device
+    /// ([`Graphics::safe_start`]).
     pub fn hdr_held(&self, driver: &str) -> bool {
         self.hdr_failed_start
             .as_deref()
             .is_some_and(|failed| failed.is_empty() || failed == driver)
+            || self.safe_start_holds_hdr(driver)
     }
     /// The window's renderer runs on `driver`: a failed start that named no driver is this
     /// one's now, and another driver's (a driver update, another GPU) is dropped, so HDR output
-    /// is tried again. True when it changed.
+    /// is tried again; the device-loss hold settles too (`settle_safe_start`). True when it
+    /// changed.
     pub fn settle_failed_start(&mut self, driver: &str) -> bool {
+        let lost = self.settle_safe_start(driver);
         match self.hdr_failed_start.as_deref() {
             Some("") => self.hdr_failed_start = Some(driver.to_owned()),
             Some(failed) if failed != driver => self.hdr_failed_start = None,
-            _ => return false,
+            _ => return lost,
         }
         true
+    }
+    /// The graphics API to start the renderer with: any active watchdog step-down hold
+    /// ([`Graphics::watchdog_api`]), else the player's configured [`Graphics::api`].
+    pub fn effective_api(&self) -> GraphicsApi {
+        self.watchdog_api.unwrap_or(self.api)
     }
     /// `before`, as Undo brings it back, but never the hold on a driver HDR output failed to
     /// start on: that stays as it is now, and goes when Undo changes the mode, as any change of
@@ -1070,6 +1094,12 @@ impl Graphics {
                 .hdr_failed_start
                 .clone()
                 .filter(|_| self.hdr == before.hdr),
+            safe_start: self.safe_start.clone().filter(|_| self.hdr == before.hdr),
+            watchdog_api: self.watchdog_api.filter(|_| self.api == before.api),
+            watchdog_driver: self
+                .watchdog_driver
+                .clone()
+                .filter(|_| self.api == before.api),
             ..before.clone()
         }
     }
@@ -1096,12 +1126,6 @@ impl Graphics {
                     g.lod_distance = number(g.lod_distance).min(crate::lod::MAX_CHUNKS)
                 }
                 "farDetail" => g.far_detail = FarDetail::parse(value),
-                "blueMapRadius" => {
-                    if let Some(radius) = crate::bluemap::Settings::parse_radius(value) {
-                        g.blue_map.radius = radius;
-                    }
-                }
-                "blueMapAutoDetect" => g.blue_map.auto_detect = flag(g.blue_map.auto_detect),
                 "caveCulling" => g.cave_culling = flag(g.cave_culling),
                 "gpuCulling" => g.gpu_culling = GpuCullingMode::parse(value, g.gpu_culling),
                 "entityCulling" => g.entity_culling = EntityCullingMode::parse(value),
@@ -1159,6 +1183,7 @@ impl Graphics {
                 "targetFps" => g.target_fps = number(g.target_fps).clamp(30, 240),
                 "fxaa" => g.fxaa = flag(g.fxaa),
                 "taa" => g.taa = flag(g.taa),
+                "msaa4x" => g.msaa4x = flag(g.msaa4x),
                 "upscaling" => g.upscaling = Upscaling::parse(value),
                 "upscalingSharpness" => {
                     g.upscaling_sharpness = number(g.upscaling_sharpness).min(100)
@@ -1182,11 +1207,15 @@ impl Graphics {
                     }
                 }
                 "hdrBlackLevel" => g.hdr_black_level = number(g.hdr_black_level).min(100),
+                "hdrColorBoost" => g.hdr_color_boost = number(g.hdr_color_boost).min(100),
                 "hdrFailedStart" => g.hdr_failed_start = Some(value.to_owned()),
+                "safeStart" => g.safe_start = Some(value.to_owned()),
                 "batteryMode" => g.battery = flag(g.battery),
                 "shadowCache" => g.shadow_cache = flag(g.shadow_cache),
                 "batchTranslucent" => g.translucent_batching = flag(g.translucent_batching),
                 "graphicsApi" => g.api = GraphicsApi::from_name(value).unwrap_or_default(),
+                "watchdogApi" => g.watchdog_api = GraphicsApi::from_name(value),
+                "watchdogDriver" => g.watchdog_driver = Some(value.to_owned()),
                 "pickedShaderPack" => g.shader_pack = value.to_owned(),
                 "overlay" => {
                     g.overlay = match value {
@@ -1211,11 +1240,16 @@ impl Graphics {
             Some(false) => HdrLook::Vanilla,
             _ => HdrLook::Horizon,
         });
+        // 4x MSAA replaces FXAA and TAA, and TAA's upscaling with it: a file naming them too
+        // (edited by hand) keeps it, as the Anti-aliasing button would.
+        if g.msaa4x {
+            (g.fxaa, g.taa, g.upscaling) = (false, false, Upscaling::Native);
+        }
         g
     }
     pub fn serialize(&self) -> String {
         let mut text = format!(
-            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nentityCullingPrecheck:{}\nparticleCulling:{}\nleafCulling:{}\nopaqueIce:{}\nblockEntityCacheShulkerBoxes:{}\nblockEntityCacheSigns:{}\nblockEntityCacheDecoratedPots:{}\nblockEntityCacheBells:{}\nblockEntityCacheChests:{}\nblockEntityCacheBanners:{}\nblockEntityCacheCopperGolemStatues:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\ntextureBudgetMiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\nditherCutoutMips:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\ndynamicResolution:{}\ntargetFps:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nupscalingSharpness:{}\nscreenshotQuality:{}\nframeGeneration:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiNits:{}\nhdrLook:{}\nbatteryMode:{}\nshadowCache:{}\ngraphicsApi:{}\npickedShaderPack:{}\nbatchTranslucent:{}\ngpuCulling:{}\nparallelTick:{}\n",
+            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nentityCullingPrecheck:{}\nparticleCulling:{}\nleafCulling:{}\nopaqueIce:{}\nblockEntityCacheShulkerBoxes:{}\nblockEntityCacheSigns:{}\nblockEntityCacheDecoratedPots:{}\nblockEntityCacheBells:{}\nblockEntityCacheChests:{}\nblockEntityCacheBanners:{}\nblockEntityCacheCopperGolemStatues:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\ntextureBudgetMiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\nditherCutoutMips:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\ndynamicResolution:{}\ntargetFps:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nupscalingSharpness:{}\nscreenshotQuality:{}\nframeGeneration:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiNits:{}\nhdrColorBoost:{}\nhdrLook:{}\nbatteryMode:{}\nshadowCache:{}\ngraphicsApi:{}\npickedShaderPack:{}\nbatchTranslucent:{}\ngpuCulling:{}\nparallelTick:{}\n",
             self.preset.name(),
             self.lod_distance,
             self.far_detail.name(),
@@ -1265,6 +1299,7 @@ impl Graphics {
             self.hdr_peak,
             self.hdr_black_level,
             self.hdr_ui_nits,
+            self.hdr_color_boost,
             self.hdr_look.name(),
             bool_text(self.battery),
             bool_text(self.shadow_cache),
@@ -1277,7 +1312,16 @@ impl Graphics {
         if let Some(driver) = &self.hdr_failed_start {
             text += &format!("hdrFailedStart:{driver}\n");
         }
-        text += &self.blue_map.serialize();
+        if let Some(driver) = &self.safe_start {
+            text += &format!("safeStart:{driver}\n");
+        }
+        if let Some(api) = self.watchdog_api {
+            text += &format!("watchdogApi:{}\n", api.name());
+        }
+        if let Some(driver) = &self.watchdog_driver {
+            text += &format!("watchdogDriver:{driver}\n");
+        }
+        text += &format!("msaa4x:{}\n", bool_text(self.msaa4x));
         text
     }
     pub fn save(&self, dir: &Path) {
@@ -1320,7 +1364,9 @@ impl Graphics {
     pub fn black_level_nits(&self) -> f32 {
         self.hdr_black_level as f32 / 100.0
     }
-    /// Worker threads for chunk generation and meshing.
+    /// Worker threads for chunk generation and meshing: the player's own count, or
+    /// the automatic one, which Battery Mode halves (`horizon_threads::sizing`). The
+    /// pools take their size when they start.
     pub fn worker_threads(&self) -> usize {
         if self.workers > 0 {
             return self.workers as usize;
@@ -1335,8 +1381,7 @@ impl Graphics {
         // raises its server thread). Leaving two idled a core of a 4-thread
         // laptop while a world loaded: a teleport there took ~15% longer. On Apple
         // silicon only the performance cores count (horizon_threads::default_workers).
-        let auto = horizon_threads::jobs::default_threads();
-        if self.battery { auto.div_ceil(2) } else { auto }
+        horizon_threads::sizing::for_pool_with(self.battery, horizon_threads::sizing::Pool::Jobs)
     }
     /// The frame cap battery mode adds: 60 in a world, 30 in menus without a
     /// world or while another window has focus.
@@ -1407,6 +1452,27 @@ mod tests {
         assert_eq!(g.ui_nits(reported), 120);
         g.hdr_ui_nits = 400;
         assert_eq!((g.ui_nits(None), g.ui_nits(reported)), (400, 400));
+    }
+
+    /// Color Boost is saved as its percentage, 0 when the file has none, kept within 0..=100.
+    #[test]
+    fn color_boost_round_trips_through_the_file() {
+        for (file, boost) in [
+            ("", 0),
+            ("hdrColorBoost:35\n", 35),
+            ("hdrColorBoost:100\n", 100),
+            ("hdrColorBoost:250\n", 100),
+            ("hdrColorBoost:x\n", 0),
+        ] {
+            let g = Graphics::parse(file);
+            assert_eq!(g.hdr_color_boost, boost, "{file}");
+            let saved = g.serialize();
+            assert!(
+                saved.contains(&format!("\nhdrColorBoost:{boost}\n")),
+                "{file}"
+            );
+            assert_eq!(Graphics::parse(&saved), g, "{file}");
+        }
     }
 
     /// HDR Lighting's On and Off became the looks Horizon and Vanilla: an older file keeps its
@@ -1589,12 +1655,6 @@ mod tests {
             preset: Preset::Balanced,
             lod_distance: 256,
             far_detail: FarDetail::Reduced,
-            blue_map: crate::bluemap::Settings {
-                radius: 40,
-                auto_detect: true,
-                // In their own file (`bluemap::SERVERS_FILE`).
-                servers: Vec::new(),
-            },
             cave_culling: false,
             gpu_culling: GpuCullingMode::On,
             entity_culling: EntityCullingMode::Synchronous,
@@ -1627,6 +1687,7 @@ mod tests {
             target_fps: 60,
             fxaa: true,
             taa: true,
+            msaa4x: false,
             upscaling: Upscaling::Balanced,
             upscaling_sharpness: 40,
             screenshot_quality: 4,
@@ -1636,17 +1697,27 @@ mod tests {
             hdr_peak: 1400,
             hdr_black_level: 12,
             hdr_ui_nits: 160,
+            hdr_color_boost: 35,
             hdr_look: HdrLook::Vanilla,
             hdr_failed_start: Some(
                 "Vulkan 10de:2684 NVIDIA GeForce RTX 4090; NVIDIA; 581.57".into(),
             ),
+            safe_start: Some("Dx12 10de:25a9 NVIDIA GeForce RTX 2050; ; 32.0.16.2124".into()),
             battery: true,
             shadow_cache: true,
             api: GraphicsApi::Dx12,
+            watchdog_api: Some(GraphicsApi::OpenGl),
+            watchdog_driver: Some("Dx12 10de:25a9 NVIDIA GeForce RTX 2050; ; 32.0.16.2124".into()),
             translucent_batching: false,
             shader_pack: "Golden Hour".into(),
         };
         assert_eq!(Graphics::parse(&g.serialize()), g);
+        // 4x MSAA replaces FXAA, TAA and its upscaling, in a file that names them too.
+        let msaa = Graphics::parse(&Graphics { msaa4x: true, ..g }.serialize());
+        assert_eq!(
+            (msaa.msaa4x, msaa.fxaa, msaa.taa, msaa.upscaling),
+            (true, false, false, Upscaling::Native)
+        );
         // A legacy marker's hold, which names no driver, round-trips too; none writes no line.
         for failed in [Some(String::new()), None] {
             let graphics = Graphics {
@@ -1680,13 +1751,6 @@ mod tests {
         assert_eq!(
             Graphics::parse("entityCulling:false\n").entity_culling,
             EntityCullingMode::Off
-        );
-        // A map named here (a shared instance's, a pack's) is no map.
-        assert!(
-            Graphics::parse("blueMap:play.example.net https://map.example.net\n")
-                .blue_map
-                .servers
-                .is_empty()
         );
         assert_eq!(Graphics::parse(""), Graphics::default());
         // Translucent Batching is on, in files from before it too; only false turns it off,
@@ -1969,6 +2033,22 @@ mod tests {
             let mut s = crate::settings::Settings::default();
             apply_preset(preset, &mut s);
             assert_eq!(s.horizon.far_detail, FarDetail::Full, "{preset:?}");
+        }
+    }
+
+    #[test]
+    fn a_preset_picks_one_anti_aliasing_mode() {
+        // 4x MSAA left on beside a preset's FXAA ran both, FXAA blurring the resolved frame.
+        for preset in Preset::ALL {
+            let mut s = crate::settings::Settings::default();
+            s.horizon.msaa4x = true;
+            apply_preset(preset, &mut s);
+            let g = &s.horizon;
+            let modes = [g.fxaa, g.taa, g.msaa4x]
+                .into_iter()
+                .filter(|on| *on)
+                .count();
+            assert!(modes <= 1, "{preset:?} left {modes} anti-aliasing modes on");
         }
     }
 
