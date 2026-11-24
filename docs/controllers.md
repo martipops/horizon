@@ -598,9 +598,12 @@ Done (Menu, or the keyboard's Done key) closes the keyboard, and on the way:
 On a Steam Deck under Steam (`SteamDeck=1`), A asks Steam for its own
 keyboard instead (`steam://open/keyboard`), which types like a real keyboard;
 Steam + X opens it at any time. "On-Screen Keyboard: Auto / Horizon / Steam"
-(`keyboard:`) picks one. Steam's keyboard needs Steam to have started the game
-(`SteamGameId` or `SteamAppId` set, a non-Steam shortcut's too): otherwise
-nothing may answer the link, so Steam falls back to Horizon's keyboard.
+(`keyboard:`) picks one. Steam's keyboard is asked for only when Steam seems
+to have started the game (`SteamGameId` or `SteamAppId` set, a non-Steam
+shortcut's too; a heuristic, as another program can pass them on), and Horizon's
+opens otherwise. When `xdg-open` reports that nothing took the link, Horizon's
+keyboard opens over the same screen. A link that went through can't say whether
+Steam showed its keyboard.
 
 ### Screens covered
 

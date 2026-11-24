@@ -166,6 +166,9 @@ pub(super) struct MenuCursor {
     pub(super) trigger: Option<HeldTrigger>,
     /// The keyboard was closed on this screen (it doesn't open by itself again).
     osk_dismissed: bool,
+    /// Steam's keyboard asked for over this screen: the `xdg-open` still dispatching the link.
+    /// If it fails, Horizon's keyboard opens instead (`pad_steam_keyboard_answer`).
+    steam_keyboard: Option<(std::process::Child, Screen)>,
     /// The keyboard drives the focus (`key_focus`: Tab, the arrows, Enter):
     /// focus mode whatever the screen, the OS pointer shown.
     pub(super) keyboard: bool,
@@ -1626,6 +1629,7 @@ impl Game<'_> {
                 self.pad_step(event_loop, button);
             }
         }
+        self.pad_steam_keyboard_answer();
         self.pad_auto_keyboard();
         // Vanilla's keyboard focus leaves the mouse pointer alone.
         self.pad_show_os_pointer(self.pad.menu.pos.is_none() || self.pad.menu.keyboard);
@@ -2077,16 +2081,43 @@ impl Game<'_> {
     fn pad_open_keyboard(&mut self) {
         // Without xdg-open (macOS, Windows), Horizon's keyboard instead.
         if gamepad::steam_keyboard(self.settings.controller.keyboard)
-            && std::process::Command::new("xdg-open")
+            && let Ok(child) = std::process::Command::new("xdg-open")
                 .arg("steam://open/keyboard")
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
                 .spawn()
-                .is_ok()
         {
+            self.pad.menu.steam_keyboard = Some((child, self.screen));
             return;
         }
+        self.pad_open_horizon_keyboard();
+    }
+
+    /// Each poll: the link to Steam's keyboard came back. When nothing took it (`xdg-open`
+    /// failed), Horizon's keyboard opens over the same screen. A link that went through can't
+    /// tell whether Steam showed its keyboard.
+    fn pad_steam_keyboard_answer(&mut self) {
+        let Some((child, screen)) = &mut self.pad.menu.steam_keyboard else {
+            return;
+        };
+        let screen = *screen;
+        let failed = match child.try_wait() {
+            Ok(None) => return,
+            Ok(Some(status)) => !status.success(),
+            Err(_) => true,
+        };
+        self.pad.menu.steam_keyboard = None;
+        if failed {
+            log::warn!("Controllers: Steam's keyboard didn't open; Horizon's opens instead");
+            if self.screen == screen && self.pad.menu.osk.is_none() {
+                self.pad_open_horizon_keyboard();
+            }
+        }
+    }
+
+    /// Horizon's own keyboard over the focused field.
+    fn pad_open_horizon_keyboard(&mut self) {
         let suggests = self.screen == Screen::Chat && self.title.is_none() && !self.dialog_open();
         self.pad.menu.osk = Some(Keyboard::new(self.pad_enter_keeps_typing(), suggests));
     }

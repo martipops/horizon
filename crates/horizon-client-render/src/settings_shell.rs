@@ -724,7 +724,7 @@ fn pad_row(batch: &mut HudBatch, atlas: &HudAtlas, cols: &Columns, y: f32, view:
     // The chip: the button's art, or its name where there is no art or nothing is bound.
     let art = glyph.filter(|g| pad_glyph::art(atlas, *g).is_some());
     let text = match glyph {
-        Some(g) => g.label().to_owned(),
+        Some(g) => g.text().into_owned(),
         None => lang::get(NOT_BOUND),
     };
     let inner = match art {

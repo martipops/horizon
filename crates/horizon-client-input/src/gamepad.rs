@@ -639,7 +639,9 @@ pub fn steam_keyboard(choice: TextKeyboard) -> bool {
 
 /// [`steam_keyboard`] with the environment given.
 fn steam_keyboard_in(choice: TextKeyboard, var: impl Fn(&str) -> Option<String>) -> bool {
-    // Steam sets these for every game it starts, a non-Steam shortcut's too.
+    // Steam sets these for the games it starts, a non-Steam shortcut's too. A heuristic: a
+    // game started some other way can inherit them, so `pad_steam_keyboard_answer` still falls
+    // back to Horizon's keyboard when the link fails.
     let under_steam = ["SteamGameId", "SteamAppId"]
         .iter()
         .any(|name| var(name).is_some_and(|v| !v.is_empty()));
