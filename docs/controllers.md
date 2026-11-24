@@ -459,7 +459,9 @@ for the pad, the screens draw their highlight from the pointer, so the focus
 puts Horizon's pointer (not the OS one, which stays where the mouse left it
 and stays visible) on the focused widget, and Enter is a click there. Moving
 the mouse hands the pointer back; a click or a scroll first puts it back
-where the mouse is.
+where the mouse is. A pointer event that names the place the mouse was
+already at (the window telling it again) is no move: the pad or the keyboard
+keeps the pointer and its focus.
 
 Approximations:
 
@@ -488,6 +490,10 @@ Approximations:
   at the edge of the slots it is on; a fresh press crosses.
 - A = left click, X = right click, Y = quick move, B = back; View and the left
   stick click throw, as in focus mode.
+- While the mouse has the pointer (it moved, or the screen was opened from the
+  keyboard), the first of those presses only lands the crosshair, as the D-pad's
+  first step does: nothing is picked up, moved or thrown from a slot the
+  crosshair wasn't shown on.
 - LB / RB switch tabs (creative, Statistics, Advancements); with the recipe book
   open they turn its pages, stopping at the ends, and LT / RT change its
   category. Right stick scrolls.
@@ -495,7 +501,7 @@ Approximations:
 - **The recipe book's categories**: RT changes to the next category as it goes down. LT changes to the previous one
   as it goes down on a furnace's, smoker's or blast furnace's book; on the crafting book (the inventory's and the
   crafting table's), where LT + A crafts, it changes it as it's let go instead, however long it was held, unless A
-  was pressed meanwhile.
+  was pressed meanwhile. A pad that goes away with LT held (unplugged, or another pad taking over) changes nothing.
 - **Direct crafting**: LT + A on a recipe crafts it once into the inventory.
   With both still held past the repeat delay it keeps crafting until either is
   let go, the items run out or the inventory is full. It's the recipe book's
@@ -582,6 +588,11 @@ LAN screen's port and its game rules, a server dialog's inputs, command blocks, 
 edit screens, Player Social's search and Debug Options' search. The one exception is a native mod's
 own screen (`Screen::Mod`), which takes its input through the screen hooks: the keyboard types nothing
 there.
+
+The keyboard is the pad's and belongs to the screen it opened over. When the mouse or a real keyboard
+takes over it closes, so Tab and the arrows move the focus again; over chat or a sign it opens again once
+the pad is back. When another screen comes up under it (dying with chat open, a screen the server opens)
+it closes too. What was typed stays in the field either way.
 
 Done (Menu, or the keyboard's Done key) closes the keyboard, and on the way:
 

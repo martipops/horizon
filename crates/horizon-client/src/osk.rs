@@ -346,6 +346,15 @@ impl Keyboard {
             ch.to_string()
         }
     }
+    /// Shift, by its key or its button: once for the next letter, again to lock capitals, a
+    /// third time to let go.
+    fn shift_step(&mut self) {
+        (self.shift, self.caps) = match (self.shift, self.caps) {
+            (false, false) => (true, false),
+            (true, false) => (false, true),
+            _ => (false, false),
+        };
+    }
     /// A pressed: the focused key's output (Shift and the symbols switch only
     /// change the keyboard).
     pub fn press(&mut self) -> Option<Output> {
@@ -356,12 +365,7 @@ impl Keyboard {
                 Some(Output::Text(text))
             }
             Key::Shift => {
-                // Shift, then Shift again locks capitals; a third press lets go.
-                (self.shift, self.caps) = match (self.shift, self.caps) {
-                    (false, false) => (true, false),
-                    (true, false) => (false, true),
-                    _ => (false, false),
-                };
+                self.shift_step();
                 None
             }
             Key::Layer => {
@@ -386,8 +390,9 @@ impl Keyboard {
             Some(MenuJob::Start) => Some(Output::Done),
             Some(MenuJob::GroupNext) if self.suggests => Some(Output::Complete),
             Some(MenuJob::Back) => Some(Output::Close),
+            // The Shift key's own steps, so twice is caps lock from the button too.
             Some(MenuJob::LeftStick | MenuJob::GroupPrev) => {
-                self.shift = !self.shift;
+                self.shift_step();
                 None
             }
             Some(MenuJob::PageNext | MenuJob::PagePrev) => {
@@ -578,6 +583,26 @@ mod tests {
         // No suggestions here: RT and the right stick do nothing.
         assert_eq!(k.button(Button::RightTrigger), None);
         assert_eq!(k.stick(1.0), None);
+    }
+
+    #[test]
+    fn the_shift_button_twice_locks_capitals_as_its_key_does() {
+        let mut k = Keyboard::default();
+        k.button(Button::LeftTrigger);
+        k.button(Button::LeftTrigger);
+        assert_eq!(k.press(), Some(Output::Text("Q".into())));
+        assert_eq!(k.press(), Some(Output::Text("Q".into())), "locked");
+        // A third press lets go, and the button and the key count the same presses.
+        k.button(Button::LeftTrigger);
+        assert_eq!(k.press(), Some(Output::Text("q".into())));
+        k.button(Button::LeftStick);
+        k.row = 4;
+        k.col = 0;
+        assert_eq!(k.key(), Key::Shift);
+        k.press();
+        k.row = 1;
+        assert_eq!(k.press(), Some(Output::Text("Q".into())));
+        assert_eq!(k.press(), Some(Output::Text("Q".into())), "locked");
     }
 
     #[test]

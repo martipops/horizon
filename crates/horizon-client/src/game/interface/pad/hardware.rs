@@ -408,9 +408,8 @@ impl Pads {
         }
         // Another pad, or none: its A going away isn't a release.
         if self.devices.active != active {
-            self.menu.armed = None;
+            self.menu.drop_held();
             self.radial.cancel();
-            self.menu.stop_craft();
             // The output follows the pad in use: a new one must not keep writing to the old.
             self.devices.xbox_output = None;
             self.devices.shown_light = None;

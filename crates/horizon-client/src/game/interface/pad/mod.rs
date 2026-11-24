@@ -313,9 +313,8 @@ impl Pads {
         self.peaks = peaks;
         if self.feed_source != source {
             self.feed_source = source;
-            self.menu.armed = None;
+            self.menu.drop_held();
             self.radial.cancel();
-            self.menu.stop_craft();
         }
         self.feed = Some(state);
     }
@@ -331,9 +330,8 @@ impl Pads {
     }
     /// A replay ended: let go of everything it held.
     pub(super) fn clear_injected(&mut self) {
-        self.menu.armed = None;
+        self.menu.drop_held();
         self.radial.cancel();
-        self.menu.stop_craft();
         self.injected = PadState::default();
     }
 
@@ -607,6 +605,7 @@ impl Game<'_> {
     }
 
     pub(super) fn pad_yield_input(&mut self, event_loop: &dyn EventLoopCtl) {
+        self.pad_keyboard_yields();
         if self.pad.in_use {
             self.pad.in_use = false;
             self.pad_cancel_inputs(event_loop);
@@ -1080,9 +1079,8 @@ impl Game<'_> {
                 Ok(json!({ "ok": true }))
             }
             "release" => {
-                self.pad.menu.armed = None;
+                self.pad.menu.drop_held();
                 self.pad.radial.cancel();
-                self.direct_craft_stop();
                 self.pad.injected = PadState::default();
                 self.pad.taps.clear();
                 Ok(json!({ "ok": true }))

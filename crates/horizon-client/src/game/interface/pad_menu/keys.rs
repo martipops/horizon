@@ -264,13 +264,24 @@ impl Game<'_> {
     /// The real mouse, before the screen takes it: where it is, and a press
     /// or a scroll hands it the pointer back from the keyboard, at the
     /// place the mouse left it (`setLastInputType(MOUSE)`).
+    ///
+    /// Whether the event is the window telling again where the mouse already was (the pointer
+    /// came back over the window, the window was mapped again) while the pad or the keyboard's
+    /// focus has the pointer. Nothing moved, so the screen doesn't hear of it: the pointer stays
+    /// where they put it, and so does their focus.
     pub(in crate::game) fn key_focus_mouse(
         &mut self,
         event_loop: &dyn EventLoopCtl,
         event: &WindowEvent,
-    ) {
+    ) -> bool {
         if self.pad.menu.synthetic {
-            return;
+            return false;
+        }
+        if let WindowEvent::CursorMoved { position, .. } = event
+            && self.pad.menu.pos.is_some()
+            && self.pad.menu.real_pointer == Some(*position)
+        {
+            return true;
         }
         let takeover = match event {
             // Not while the pad holds the radial menu open: as for raw mouse motion in play
@@ -297,6 +308,7 @@ impl Game<'_> {
             WindowEvent::MouseWheel { .. } => self.key_focus_to_mouse(event_loop),
             _ => {}
         }
+        false
     }
 
     /// Only a press accepted by ScreenEvent.Pre may focus the widget under it.

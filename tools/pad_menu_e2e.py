@@ -73,6 +73,14 @@ Cases:
   right stick picks another first (Up and Down), without closing the keyboard.
 - osk_labels: the on-screen keyboard over chat draws its keys' labels, in Horizon's look and with no menu style given
   (`HORIZON_MENU_STYLE=vanilla`, where the overlays have no fonts of their own and use the pack's).
+- first_press_lands: on an inventory opened from the keyboard, or after the mouse moved, the first press of the left
+  stick, View, A, X or Y lands the crosshair and changes nothing in the inventory; the next one acts.
+- keyboard_leaves_with_pad: the mouse taking over closes chat's on-screen keyboard and keeps chat and its text; the
+  pad again brings the keyboard back.
+- keyboard_closes_with_screen: dying with chat's keyboard up closes it: nothing is left over the death screen.
+- pointer_event_same_place: a pointer event at the place the mouse was already at keeps the pad's focus and pointer;
+  the mouse moving still takes them.
+- trigger_lost_pad: the pad going away with LT held over the crafting book changes no category.
 Needs built fast binaries (`cargo build --profile fast -p horizon-game -p horizon-client-lib --bins`)
 and prepared resources in .local/horizon-client/26.3. Exit status 0 when every case passes.
 - radial_commit: holding the opener shows the overlay and pauses nothing; the stick selects; releasing runs the action once.
@@ -4699,6 +4707,131 @@ def radial_actions(game, check):
     check(any('only available in multiplayer' in line.lower() for line in said), f'nothing said: {said}')
 
 
+def mouse_moves(game, x, y):
+    """The real mouse, moved to this place (GUI pixels): `scroll-at` with no steps is one pointer event."""
+    game.ctl('scroll-at', x, y, 0)
+    time.sleep(SETTLE)
+
+
+@world_case
+def first_press_lands(game, check):
+    game.ctl('command', 'gamemode survival @s')
+    game.ctl('key', 'e', 'tap')
+    time.sleep(SETTLE)
+    game.wait_targets()
+
+    def full_hand():
+        """A full stack in the held hotbar slot and nothing else, in the hand or on the ground to pick up."""
+        try:
+            game.ctl('command', 'kill @e[type=item]')
+        except RuntimeError:
+            pass  # Nothing was thrown.
+        # What a press picked up goes back into its slot first.
+        if game.ctl('inventory')['carried']:
+            game.ctl('click-slot', 0)
+        game.ctl('command', 'clear @s')
+        game.ctl('command', 'give @s stone 64')
+        time.sleep(1)
+        have = game.ctl('inventory')
+        check(have['counts'] == {'minecraft:stone': 64} and have['held'] and not have['carried'],
+              f"the stack is not in the hand: {have['counts']}, carrying {have['carried']}")
+        return have
+
+    # The first press comes with the inventory opened from the keyboard, the others after the mouse moved, each
+    # time somewhere else, clear of every slot.
+    presses = (('ls', 'the left stick click (throw the stack)'), ('select', 'View (throw one)'),
+               ('south', 'A (pick up)'), ('west', 'X (take half)'), ('north', 'Y (quick move)'))
+    for i, (button, what) in enumerate(presses):
+        full = full_hand()
+        if i:
+            mouse_moves(game, 300 + 8 * i, 20)
+        check(game.menu()['pointer'] is None, f'before {what} the pad still has the pointer')
+        game.pad(button)
+        check(game.menu()['pointer'] is not None, f'{what} did not land the crosshair')
+        now = game.ctl('inventory')
+        check(now == full, f"{what} acted as it landed the crosshair: {now['counts']}, carrying {now['carried']}, "
+                           f"hotbar {[s and s.get('count') for s in now['hotbar']]}")
+    # On the slot the crosshair landed on, the next press is the press.
+    full_hand()
+    mouse_moves(game, 300, 40)
+    game.pad('ls')
+    game.pad('ls')
+    left = game.ctl('inventory')['counts']
+    check(not left, f'with the crosshair shown, the stack was not thrown: {left}')
+
+
+@world_case
+def keyboard_leaves_with_pad(game, check):
+    game.pad('up')
+    time.sleep(1)
+    check(game.menu()['keyboard'], 'chat the pad opened has no keyboard')
+    game.pad('south')  # q
+    mouse_moves(game, 300, 20)
+    status = game.ctl('pad', 'status')
+    check(not status['in_use'], 'the mouse moving left the pad in use')
+    check(not status['menu']['keyboard'], 'the keyboard stayed up after the mouse took over')
+    shot(game, 'keyboard-after-mouse')
+    check(game.ctl('ui')['screen'] == 'chat', f"chat closed with the keyboard: {game.ctl('ui')['screen']}")
+    # The pad again: chat's keyboard is back, and what was typed is still in the box. Done sends it.
+    game.pad('down')
+    check(game.menu()['keyboard'], "back on the pad, chat's keyboard did not open again")
+    game.pad('start')
+    time.sleep(SETTLE)
+    lines = [str(line) for line in game.ctl('chat-log', 3)['chat']]
+    check(any(line.rstrip().endswith(' q') for line in lines), f'what was typed before the mouse moved was lost: {lines}')
+
+
+@world_case
+def keyboard_closes_with_screen(game, check):
+    game.pad('up')
+    time.sleep(1)
+    check(game.menu()['keyboard'], 'chat the pad opened has no keyboard')
+    game.ctl('command', 'kill @s')
+    time.sleep(2)
+    screen = game.ctl('ui')['screen']
+    check(screen != 'chat', 'the player did not die: chat is still open')
+    shot(game, 'keyboard-over-death')
+    check(not game.menu()['keyboard'], f'the keyboard stayed up over the {screen} screen')
+    check(any(t['kind'] == 'button' for t in game.menu()['targets']), f'no button to press on the {screen} screen')
+
+
+@title_case
+def pointer_event_same_place(game, check, single, options, quit_game):
+    mouse_moves(game, 10, 10)
+    game.pad('down')
+    game.pad('down')
+    focus, pointer = game.focus(), game.menu()['pointer']
+    check(focus is not None and pointer is not None, f'the D-pad focused nothing: {focus}, pointer {pointer}')
+    # The window tells again where the mouse already was (the pointer back over it, the window mapped again).
+    mouse_moves(game, 10, 10)
+    check(game.focus() == focus, f'a pointer event that moved nothing took the focus: {game.focus()}, not {focus}')
+    check(game.menu()['pointer'] == pointer, f"and the pointer: {game.menu()['pointer']}, not {pointer}")
+    # The mouse moving still takes both.
+    mouse_moves(game, 30, 30)
+    check(game.focus() is None and game.menu()['pointer'] is None,
+          f"the mouse moving left the pad its focus {game.focus()} and pointer {game.menu()['pointer']}")
+
+
+@world_case
+def trigger_lost_pad(game, check):
+    open_book(game, 'minecraft:oak_planks')
+    time.sleep(1)
+    tab = lambda: selected_tab(game)[0]
+    before = tab()
+    game.ctl('pad', 'trigger', 'left', 1)
+    time.sleep(1)
+    check(tab() == before, 'LT changed the category as it went down on the crafting book')
+    # The pad goes away with LT held: `pad release` is what the reader does when the pad in use changes or is
+    # unplugged.
+    game.ctl('pad', 'release')
+    time.sleep(1)
+    check(tab() == before, f'the pad going away with LT held changed the category from {before} to {tab()}')
+    # LT pulled and let go by a person still changes it.
+    was = tab()
+    quick_tap(game, 'left')
+    check(tab() != was, 'LT down and up no longer changes the category')
+
+
 CASES = {'idle_a': idle_a, 'idle_b': idle_b, 'idle_x': idle_x, 'release': release, 'move_cancels': move_cancels,
          'pad_release': pad_release, 'pause_y': pause_y, 'settings': settings, 'create_world': create_world,
          'world_options': world_options, 'key_row_b': key_row_b, 'lock_question': lock_question,
@@ -4787,7 +4920,10 @@ CASES = {'idle_a': idle_a, 'idle_b': idle_b, 'idle_x': idle_x, 'release': releas
          'craft_release_a': craft_release_a, 'craft_release_lt': craft_release_lt,
          'craft_release_press': craft_release_press, 'craft_remainder': craft_remainder,
          'craft_full': craft_full, 'craft_grid': craft_grid, 'craft_carrying': craft_carrying,
-         'craft_lan_guest': craft_lan_guest, 'craft_dedicated': craft_dedicated}
+         'craft_lan_guest': craft_lan_guest, 'craft_dedicated': craft_dedicated,
+         'first_press_lands': first_press_lands, 'keyboard_leaves_with_pad': keyboard_leaves_with_pad,
+         'keyboard_closes_with_screen': keyboard_closes_with_screen,
+         'pointer_event_same_place': pointer_event_same_place, 'trigger_lost_pad': trigger_lost_pad}
 
 
 def main():

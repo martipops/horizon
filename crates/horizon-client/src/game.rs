@@ -9493,8 +9493,11 @@ impl Game<'_> {
         if !self.pad_synthetic_input() && window_handler::should_reassert_pointer_capture(&event) {
             self.reassert_pointer_capture();
         }
-        // The real mouse takes the pointer back from the keyboard's focus.
-        self.key_focus_mouse(event_loop, &event);
+        // The real mouse takes the pointer back from the keyboard's focus. A pointer event that
+        // moved nothing isn't the mouse, and goes no further.
+        if self.key_focus_mouse(event_loop, &event) {
+            return;
+        }
         // The screen's narration hears of the input before the screen takes
         // it; the pointer events the keyboard's focus sends aren't the mouse.
         if !self.key_focus_quiet() {

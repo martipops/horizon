@@ -159,6 +159,8 @@ pub(super) struct MenuCursor {
     repeats: u32,
     /// The on-screen keyboard, open over a text field.
     pub(super) osk: Option<Keyboard>,
+    /// The screen it opened over (`Game::key_screen`): it closes once another one is up.
+    osk_screen: u64,
     /// The recipe being crafted straight into the inventory (`pad_craft`).
     pub(super) craft: Option<super::pad_craft::DirectCraft>,
     /// LT held over the crafting book: it changes the category as it comes up, unless A was
@@ -215,6 +217,15 @@ impl MenuCursor {
         if let Some(craft) = &mut self.craft {
             craft.stop();
         }
+    }
+
+    /// The pad's input stopped coming from where it did (another pad, none, a script letting go):
+    /// what it held wasn't let go by a person, so its buttons coming up do nothing here. A
+    /// presses no button, LT changes no category of the recipe book, and a held craft stops.
+    pub(super) fn drop_held(&mut self) {
+        self.armed = None;
+        self.trigger = None;
+        self.stop_craft();
     }
 
     /// `Screen.clearFocus`: nothing is focused any more, and no click focus
@@ -729,6 +740,17 @@ impl Game<'_> {
         self.pad_pointer_to(event_loop, at);
     }
 
+    /// A press that acts where the pointer is, while the mouse has it (it moved since, or the pad
+    /// didn't open this screen): the pointer lands where the pad starts and the press does
+    /// nothing else, as the D-pad's first step (`pad_pointer_step`) and A with nothing focused.
+    /// Nothing is picked up, moved or thrown from a slot the player hasn't seen the crosshair
+    /// on. Whether the press only landed.
+    fn pad_lands_pointer(&mut self, event_loop: &dyn EventLoopCtl) -> bool {
+        let landing = self.pad.menu.pos.is_none();
+        self.pad_take_pointer(event_loop);
+        landing
+    }
+
     /// Run `f` with `key` held as a keyboard holds it, in the modifier word
     /// screens read as well as the physical keys, then put both back. The
     /// pad's only way to send Shift or Ctrl, so it can't fall out of step
@@ -839,10 +861,8 @@ impl Game<'_> {
                 return Ok(());
             }
         }
-        // The screen under the keyboard went away (dying with chat open): so does the keyboard.
-        if self.pad.menu.osk.is_some() && !self.pad_has_typing_screen() {
-            self.pad.menu.osk = None;
-        }
+        // A press in the poll the screen under the keyboard went away types nothing.
+        self.pad_keyboard_follows_screen();
         // The on-screen keyboard takes every button while it is open.
         if let Some(keyboard) = self.pad.menu.osk.as_mut() {
             if let Some(out) = keyboard.button(button) {
@@ -903,7 +923,9 @@ impl Game<'_> {
             && self.screen == Screen::Inventory
             && self.title.is_none()
         {
-            self.pad_take_pointer(event_loop);
+            if self.pad_lands_pointer(event_loop) {
+                return Ok(());
+            }
             // Refused, the press is plain A's.
             if let Some(entry) = self.recipe_under_pointer()
                 && self.direct_craft_start(entry)
@@ -911,10 +933,12 @@ impl Game<'_> {
                 return Ok(());
             }
         }
-        // The book's controls take A alone; X, Y and the throws are for slots and recipes.
+        // The book's controls take A alone; X, Y and the throws are for slots and recipes. Under
+        // the pad's pointer, not where the mouse left its own.
         let book_control = !prompt
             && self.screen == Screen::Inventory
             && self.title.is_none()
+            && self.pad.menu.pos.is_some()
             && self.recipe_book_under_pointer();
         let on_recipe = book_control && self.recipe_under_pointer().is_some();
         match button {
@@ -951,7 +975,9 @@ impl Game<'_> {
                 self.pad_open_keyboard()
             }
             Button::South | Button::West => {
-                self.pad_take_pointer(event_loop);
+                if self.pad_lands_pointer(event_loop) {
+                    return Ok(());
+                }
                 self.pad_pointer_button(event_loop, button == Button::West, true);
                 // A on a text field in pointer mode opens the keyboard, as
                 // in focus mode (not the right click).
@@ -964,7 +990,9 @@ impl Game<'_> {
             }
             // Y in an inventory: a shift-click (quick move).
             Button::North if matches!(self.screen, Screen::Inventory | Screen::Creative) => {
-                self.pad_take_pointer(event_loop);
+                if self.pad_lands_pointer(event_loop) {
+                    return Ok(());
+                }
                 let in_keys = self.keys.held(Action::Sneak);
                 self.keys.insert(KeyCode::ShiftLeft);
                 self.pad_with_modifier(KeyCode::ShiftLeft, |game| {
@@ -981,7 +1009,9 @@ impl Game<'_> {
                 if matches!(self.screen, Screen::Inventory | Screen::Creative)
                     && self.title.is_none() =>
             {
-                self.pad_take_pointer(event_loop);
+                if self.pad_lands_pointer(event_loop) {
+                    return Ok(());
+                }
                 if button == Button::LeftStick {
                     self.pad_with_modifier(KeyCode::ControlLeft, |game| {
                         game.key_pressed(KeyCode::KeyQ, KeyCode::KeyQ)
@@ -1528,6 +1558,7 @@ impl Game<'_> {
         let focusing = focus_mode && !targets.is_empty();
         let resizing = self.pad_follow_resize(event_loop);
         let restarting = self.pad_prompt_frame(&targets);
+        self.pad_keyboard_follows_screen();
         if focusing && !resizing && !restarting && !self.key_focus_restart(event_loop, &targets) {
             self.pad_follow_focus(event_loop, &targets);
         }
@@ -2096,6 +2127,30 @@ impl Game<'_> {
         }
         let suggests = self.screen == Screen::Chat && self.title.is_none() && !self.dialog_open();
         self.pad.menu.osk = Some(Keyboard::new(self.pad_enter_keeps_typing(), suggests));
+        self.pad.menu.osk_screen = self.key_screen();
+    }
+
+    /// The on-screen keyboard belongs to the screen it opened over. Once another one is up (the
+    /// player died with chat open, the server opened or closed a screen, the connection was
+    /// lost), it closes: it isn't left drawn over a screen it doesn't type into. A prompt coming
+    /// or going is `pad_prompt_frame`'s, which brings chat's keyboard back after it.
+    fn pad_keyboard_follows_screen(&mut self) {
+        if self.pad.menu.osk.is_none() || self.pad_prompt_key() != self.pad.menu.prompt {
+            return;
+        }
+        if self.key_screen() != self.pad.menu.osk_screen || !self.pad_has_typing_screen() {
+            self.pad.menu.osk = None;
+        }
+    }
+
+    /// The mouse or the keyboard took over from the pad: its on-screen keyboard closes with it.
+    /// Nothing else would close it, and while it is up Tab and the arrows don't move the focus
+    /// (`key_focus_blocked`). Over chat or a sign it opens again once the pad is back
+    /// (`pad_auto_keyboard`), as after a prompt.
+    pub(super) fn pad_keyboard_yields(&mut self) {
+        if self.pad.menu.osk.take().is_some() {
+            self.pad.menu.osk_dismissed = false;
+        }
     }
 
     /// Chat or a sign opened by the pad (either menu mode): the keyboard
