@@ -221,6 +221,7 @@ impl Game<'_> {
         let (stick, bypass_square_movement, stick_keys) = if playing {
             self.input_move_for_tick(external_server)
         } else {
+            self.input_move_rest();
             (None, false, None)
         };
         let held = |action| playing && self.keys.held(action);

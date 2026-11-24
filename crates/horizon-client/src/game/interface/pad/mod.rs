@@ -143,9 +143,19 @@ pub(super) struct Pads {
     guide_facts: Option<(u64, horizon_client::gameplay_guide::Facts)>,
     /// The guide's rows as last drawn.
     pub(super) guide_shown: Vec<guide::Shown>,
-    /// The movement keys the stick held at the last gameplay tick, kept within a margin so a
-    /// stick resting on an edge doesn't flicker them (`gamepad::eight_direction_keys_held`).
-    stick_keys: std::cell::Cell<[bool; 4]>,
+    /// What the last gameplay tick took from the stick; `None` since a context or a player
+    /// change, when the stick starts from rest.
+    stick_sample: std::cell::Cell<Option<StickSample>>,
+}
+
+/// The movement keys a gameplay tick took from the stick.
+#[derive(Clone, Copy)]
+struct StickSample {
+    keys: [bool; 4],
+    /// The stock stick's own, which the next tick keeps within a margin so a stick resting on an
+    /// edge doesn't flicker them (`gamepad::eight_direction_keys_held`); a mod's
+    /// `ControllerMove` answer has none to keep.
+    stock: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -358,6 +368,7 @@ impl Pads {
     /// The radial menu closes with it, in `Game::pad_player_replaced`.
     pub(super) fn player_replaced(&mut self) {
         self.health.forget();
+        self.stick_sample.set(None);
     }
 
     /// The active pad is a Nintendo one going by its letters.
@@ -599,6 +610,7 @@ impl Game<'_> {
         }
         self.pad.state.left = [0.0; 2];
         self.pad.state.right = [0.0; 2];
+        self.pad.stick_sample.set(None);
         self.pad.late_releases.clear();
         for (button, down) in self.pad.edges.cancel() {
             self.pad_button_logged(event_loop, button, down);
@@ -882,7 +894,7 @@ impl Game<'_> {
     /// when a mod's `ControllerMove` answered).
     pub(super) fn pad_move_for_tick(&self, external_server: bool) -> super::play_input::TickMove {
         let Some(axes) = self.pad_move_axes() else {
-            self.pad.stick_keys.set([false; 4]);
+            self.pad.stick_sample.set(None);
             return (None, false, None);
         };
         let deadzone = self.settings.controller.move_deadzone;
@@ -902,7 +914,10 @@ impl Game<'_> {
             if let Some(movement) = movement
                 && let Some(direction) = bounded_move_override(movement.direction)
             {
-                self.pad.stick_keys.set([false; 4]);
+                self.pad.stick_sample.set(Some(StickSample {
+                    keys: horizon_client::sprint::axis_keys(direction),
+                    stock: false,
+                }));
                 return (
                     (direction != [0.0; 2]).then_some(direction),
                     movement.bypass_square_movement,
@@ -911,10 +926,13 @@ impl Game<'_> {
             }
         }
         let stick = gamepad::move_vector(axes, deadzone);
+        let previous = self.pad.stick_sample.get().filter(|sample| sample.stock);
         let keys = stick.map_or([false; 4], |v| {
-            gamepad::eight_direction_keys_held(v, self.pad.stick_keys.get())
+            gamepad::eight_direction_keys_held(v, previous.map_or([false; 4], |s| s.keys))
         });
-        self.pad.stick_keys.set(keys);
+        self.pad
+            .stick_sample
+            .set(Some(StickSample { keys, stock: true }));
         // On a server the stick moves as the keys it holds (`tick.rs`), which a margin keeps
         // steady: the tick gets their heading, whose keys are exactly those.
         let held = stick.map(|_| keys);
@@ -924,9 +942,24 @@ impl Game<'_> {
         (stick, false, held)
     }
 
-    /// The keys the stock stick held at the last gameplay tick (`pad_move_for_tick`).
-    pub(super) fn pad_stick_keys(&self) -> [bool; 4] {
-        self.pad.stick_keys.get()
+    /// A gameplay tick another context owns (a screen, a loading level): the stick starts from
+    /// rest at the next one it plays.
+    pub(super) fn pad_stick_rest(&self) {
+        self.pad.stick_sample.set(None);
+    }
+
+    /// The movement keys the stick holds: those the last gameplay tick moved and sent, none of
+    /// them included, or the raw stick's from rest while no tick has read it.
+    pub(super) fn pad_movement_keys(&self) -> [bool; 4] {
+        if self.pad_move_axes().is_none() {
+            return [false; 4];
+        }
+        match self.pad.stick_sample.get() {
+            Some(sample) => sample.keys,
+            None => self
+                .pad_move()
+                .map_or([false; 4], gamepad::eight_direction_keys),
+        }
     }
 
     /// The right stick turns the view, once per frame (`Entity.turn`).

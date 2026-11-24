@@ -2,7 +2,7 @@
 //! in-process connection. Supplying PadState directly keeps focus and timing deterministic.
 use super::{connect, local_rotation_tests::finish_login, reset_player, tick, with_client_game};
 use crate::game::{Game, Screen};
-use horizon_client::{gamepad, input, items::ItemStack};
+use horizon_client::{gamepad, held::Source, input, items::ItemStack};
 use horizon_protocol::{connection::Connection, packets::play::Serverbound as S};
 use mod_api::{
     CameraType, ClientHost, ControllerLookEvent, ControllerLookInput, ControllerMoveEvent,
@@ -376,9 +376,29 @@ fn native_controller_sticks_shape_real_movement_and_camera() {
     );
 }
 
-/// A stock stick on a server, through the real client tick: the input packet's movement keys stay
-/// on through a light turn across a sector's edge, nothing double-taps into a sprint, and a real
-/// double tap of the stick still sprints.
+/// What the client sent since the last call: the movement keys of each input packet, and the
+/// sprint commands (`true` starts).
+fn sent_movement(game: &Game<'_>, server: &mut Connection) -> (Vec<u8>, Vec<bool>) {
+    game.send(S::Punch(horizon_protocol::packets::Empty));
+    let (mut inputs, mut sprints) = (Vec::new(), Vec::new());
+    loop {
+        let (id, payload) = server.recv().unwrap();
+        match S::decode(id, &payload).unwrap() {
+            S::PlayerInput(input) => inputs.push(input.flags & 0b1111),
+            S::PlayerCommand(command) if command.action == 1 => sprints.push(true),
+            S::PlayerCommand(command) if command.action == 2 => sprints.push(false),
+            S::Punch(_) => return (inputs, sprints),
+            _ => {}
+        }
+    }
+}
+
+const FORWARD: u8 = 0b0001;
+const LEFT: u8 = 0b0100;
+
+/// A stock stick on a server, through the real client tick: the packets' movement keys stay on
+/// through a light turn across a sector's edge, nothing but a real double tap starts a sprint,
+/// the keyboard's sprint and the stick go together, and a context change forgets the sector.
 #[test]
 #[ignore = "daily"]
 fn a_stock_stick_on_a_server_sends_steady_keys_and_sprints_only_on_a_double_tap() {
@@ -403,24 +423,63 @@ fn a_stock_stick_on_a_server_sends_steady_keys_and_sprints_only_on_a_double_tap(
         let drive = |game: &mut Game<'_>, stick: [f32; 2]| {
             game.pad.state.left = stick;
             tick(game);
-            let keys = game.remote.as_ref().unwrap().last_input & 0b1111;
-            (keys, game.player.as_ref().unwrap().sprinting)
         };
-        let turn = [raw(20.0, 0.31), raw(27.0, 0.29), raw(27.0, 0.31)];
-        let sent: Vec<_> = turn.iter().map(|&stick| drive(game, stick)).collect();
-        // Forward, then forward and left: never no key, never a sprint.
-        assert_eq!(sent, [(0b0001, false), (0b0101, false), (0b0101, false)]);
-        // Centred past vanilla's double-tap window, so the strafe starts from rest.
-        for _ in 0..8 {
-            drive(game, [0.0; 2]);
+        // Centred past vanilla's double-tap window, so what follows starts from rest.
+        let rest = |game: &mut Game<'_>, server: &mut Connection| {
+            for _ in 0..8 {
+                drive(game, [0.0; 2]);
+            }
+            sent_movement(game, server);
+        };
+        rest(game, &mut server);
+        // Forward, then forward and left, sent once each: never no key, never a sprint.
+        for stick in [raw(20.0, 0.31), raw(27.0, 0.29), raw(27.0, 0.31)] {
+            drive(game, stick);
         }
-        let strafe = [raw(60.0, 0.6), raw(71.0, 0.6), raw(67.0, 0.6)];
-        assert!(strafe.iter().all(|&stick| !drive(game, stick).1));
+        let turn = sent_movement(game, &mut server);
+        assert_eq!(turn, (vec![FORWARD, FORWARD | LEFT], vec![]));
+        rest(game, &mut server);
+        // A strafe swinging by the forward sectors' edge.
+        for stick in [raw(60.0, 0.6), raw(71.0, 0.6), raw(67.0, 0.6)] {
+            drive(game, stick);
+        }
+        let strafe = sent_movement(game, &mut server);
+        assert_eq!(strafe, (vec![FORWARD | LEFT, LEFT], vec![]));
+        rest(game, &mut server);
+        // Forward, centred, forward again within vanilla's window: a sprint, which a pure strafe
+        // ends.
+        for stick in [raw(0.0, 1.0), [0.0; 2], raw(0.0, 1.0)] {
+            drive(game, stick);
+        }
+        let taps = sent_movement(game, &mut server);
+        assert_eq!(taps, (vec![FORWARD, 0, FORWARD], vec![true]));
+        drive(game, raw(90.0, 1.0));
+        assert_eq!(sent_movement(game, &mut server), (vec![LEFT], vec![false]));
+        rest(game, &mut server);
+        // W and Sprint on the keyboard: the stick to the left joins them, A takes its place, and
+        // the sprint goes on.
+        game.keys.press(KeyCode::KeyW, Source::Keyboard);
+        game.keys.press(KeyCode::ControlLeft, Source::Keyboard);
+        drive(game, raw(90.0, 1.0));
+        let mixed = sent_movement(game, &mut server);
+        assert_eq!(mixed, (vec![FORWARD | LEFT], vec![true]));
+        game.keys.press(KeyCode::KeyA, Source::Keyboard);
         drive(game, [0.0; 2]);
-        reset_player(game, 20);
-        // Forward, centred, forward again within vanilla's window: a sprint.
-        let taps = [raw(0.0, 1.0), [0.0; 2], raw(0.0, 1.0)];
-        let last = taps.iter().map(|&stick| drive(game, stick)).last().unwrap();
-        assert_eq!(last, (0b0001, true));
+        assert_eq!(sent_movement(game, &mut server), (vec![], vec![]));
+        game.keys.clear();
+        rest(game, &mut server);
+        // Forward held, then a screen owns a tick: 0.29 is under the tilt that starts walking.
+        drive(game, raw(0.0, 0.31));
+        game.screen = Screen::Paused;
+        drive(game, [0.0; 2]);
+        game.screen = Screen::Playing;
+        sent_movement(game, &mut server);
+        drive(game, raw(0.0, 0.29));
+        assert_eq!(sent_movement(game, &mut server).0, Vec::<u8>::new());
+        // The key query says what that tick sent, not a tilt no tick has read yet.
+        game.pad.state.left = raw(0.0, 0.5);
+        assert!(!game.movement_key_held(KeyCode::KeyW));
+        tick(game);
+        assert!(game.movement_key_held(KeyCode::KeyW));
     });
 }

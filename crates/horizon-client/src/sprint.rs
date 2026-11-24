@@ -29,14 +29,13 @@ impl Keys {
             None => input::keyboard_direction(self.forward, self.backward, self.left, self.right),
         }
     }
-    /// Add a stick's move vector and the keys it holds (`held`, for a stock
-    /// stick; a mod's vector gets `gamepad::eight_direction_keys`): the
-    /// direction flags code reading keys (sprint, vehicles, the server's input
-    /// packet) see are those keys, as `movement_key_held` reads them.
+    /// Add a stick's move vector and the keys it holds (`held`, for a
+    /// stock stick; a mod's vector gets [`axis_keys`]): the direction flags
+    /// code reading keys (sprint, vehicles, the server's input packet) see are
+    /// those keys, as `movement_key_held` reads them.
     pub fn with_stick(mut self, stick: Option<[f32; 2]>, held: Option<[bool; 4]>) -> Self {
         if let Some(v) = stick {
-            let keys = held.unwrap_or_else(|| crate::gamepad::eight_direction_keys(v));
-            let [forward, backward, left, right] = keys;
+            let [forward, backward, left, right] = held.unwrap_or_else(|| axis_keys(v));
             self.stick = held;
             self.forward |= forward;
             self.backward |= backward;
@@ -46,6 +45,17 @@ impl Keys {
         }
         self
     }
+}
+/// The movement keys (forward, backward, left, right) of a move vector a mod's `ControllerMove`
+/// chose: each axis past 0.3, the mapping that hook was made with.
+pub fn axis_keys([left, forward]: [f32; 2]) -> [bool; 4] {
+    const AXIS_KEY: f32 = 0.3;
+    [
+        forward > AXIS_KEY,
+        forward < -AXIS_KEY,
+        left > AXIS_KEY,
+        left < -AXIS_KEY,
+    ]
 }
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SprintState {
@@ -118,13 +128,14 @@ impl SprintState {
         }
         let old_forward = self.previous_forward;
         let old_shift = self.previous_shift;
-        // A stock stick counts as forward where it holds the forward key, with its margin
-        // (`Keys::stick`): not any forward part, which would sprint sideways with the stick hard
-        // left, nor a flag that flickers at an edge into a double-tap. Keys and a mod's axes keep
-        // vanilla's `hasForwardImpulse`.
-        let forward = match keys.stick {
-            Some([ahead, ..]) => ahead && !keys.backward,
-            None => keys.direction()[1] > 1.0e-5,
+        // A stock stick that moves the player by its own vector counts as forward where it holds
+        // the forward key, with its margin (`Keys::stick`): not any forward part, which would
+        // sprint sideways with the stick hard left. Everything else keeps vanilla's
+        // `hasForwardImpulse`: a mod's axes, and the keys, which on a server are the stick's and
+        // the keyboard's together.
+        let forward = match (keys.analog, keys.stick) {
+            (Some(_), Some([ahead, ..])) => ahead,
+            _ => keys.direction()[1] > 1.0e-5,
         };
         self.previous_forward = forward;
         self.previous_shift = keys.shift;
@@ -233,6 +244,54 @@ mod tests {
         assert!(!run(&[at(20.0, 0.31), at(27.0, 0.29), at(27.0, 0.31)]));
         assert!(!run(&[at(60.0, 0.6), at(71.0, 0.6), at(67.0, 0.6)]));
         assert!(run(&[at(0.0, 1.0), [0.0, 0.0], at(0.0, 1.0)]));
+    }
+
+    /// On a server the stick's keys join the keyboard's (the tick clears `analog`): a stick hard
+    /// left beside W and Sprint neither keeps a sprint from starting nor stops one, and a stick
+    /// held back against W does, as S would.
+    #[test]
+    fn a_servers_sprint_reads_the_keyboard_and_the_stick_together() {
+        let keyboard = Keys {
+            forward: true,
+            ..Keys::default()
+        };
+        let with = |v: [f32; 2], sprint: bool| {
+            let held = crate::gamepad::eight_direction_keys(v);
+            let mut keys = keyboard.with_stick(Some(v), Some(held));
+            keys.analog = None;
+            keys.sprint = sprint;
+            keys
+        };
+        let (left, back) = ([1.0, 0.0], [0.0, -1.0]);
+        let (mut state, mut sprinting) = (SprintState::default(), false);
+        step(&mut state, with(left, true), &mut sprinting);
+        assert!(sprinting, "W, Sprint and the stick left start a sprint");
+        step(&mut state, keyboard, &mut sprinting);
+        step(&mut state, with(left, false), &mut sprinting);
+        assert!(sprinting, "adding the stick keeps it");
+        step(&mut state, with(back, false), &mut sprinting);
+        assert!(!sprinting, "forward and back cancel out");
+        step(&mut state, with(back, true), &mut sprinting);
+        assert!(!sprinting, "and start none");
+        // In single player the stick's own vector moves the player: left is left.
+        let (mut state, mut sprinting) = (SprintState::default(), false);
+        let mut local = with(left, true);
+        local.analog = Some(left);
+        step(&mut state, local, &mut sprinting);
+        assert!(!sprinting);
+    }
+
+    /// A mod's `ControllerMove` vector keeps the per-axis keys it always had.
+    #[test]
+    fn a_mods_vector_keeps_its_per_axis_keys() {
+        let flags = |v| {
+            let keys = Keys::default().with_stick(Some(v), None);
+            assert!(keys.stick.is_none());
+            [keys.forward, keys.backward, keys.left, keys.right]
+        };
+        assert_eq!(flags([0.29, 0.29]), [false; 4]);
+        assert_eq!(flags([0.31, 0.90]), [true, false, true, false]);
+        assert_eq!(flags([-0.5, 0.0]), [false, false, false, true]);
     }
 
     /// A mod's own axes keep vanilla's forward impulse: a light forward with Sprint sprints.

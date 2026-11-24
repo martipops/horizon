@@ -630,6 +630,11 @@ impl Game<'_> {
         self.pad_move_for_tick(external_server)
     }
 
+    /// The gameplay tick doesn't take the stick (`pad_stick_rest`).
+    pub(super) fn input_move_rest(&self) {
+        self.pad_stick_rest();
+    }
+
     /// Read the actual session, not the last server's reconnect address.
     pub(super) fn input_is_external_multiplayer(&self) -> bool {
         self.remote.as_ref().is_some_and(|r| r.external_server)
@@ -726,15 +731,12 @@ impl Game<'_> {
         if self.keys.raw(&key) {
             return true;
         }
-        let Some(stick) = self.input_move() else {
-            return false;
-        };
-        // The stock pad's keys as the last tick moved and sent them, with their margin; another
-        // source's vector, or a mod's, by its own heading.
-        let held = if self.input_source.is_none() { self.pad_stick_keys() } else { [false; 4] };
-        let [forward, backward, left, right] = match held {
-            [false, false, false, false] => horizon_client::gamepad::eight_direction_keys(stick),
-            held => held,
+        // The pad's as the last tick moved and sent them; another source's by its own heading.
+        let [forward, backward, left, right] = match &self.input_source {
+            None => self.pad_movement_keys(),
+            Some(_) => self
+                .input_move()
+                .map_or([false; 4], horizon_client::gamepad::eight_direction_keys),
         };
         match key {
             KeyCode::KeyW => forward,
