@@ -123,6 +123,11 @@ pub(super) struct Pads {
     /// The furthest each stick leant (left, right) between the last two polls, from the pad's
     /// own events: a flick out and back between two frames still reaches the radial menu.
     peaks: [[f32; 2]; 2],
+    /// The pad at each of its events since the last poll, in order, from its own reader or
+    /// splitscreen's router: a poll reads only where the pad ended.
+    between: Vec<PadState>,
+    /// The presses and releases in `between`, each shown to the game in turn.
+    pulses: gamepad::Pulses,
     /// With Either selecting: the stick that last leant past its select tilt (0 left, 1 right),
     /// and whether each was past it at the last poll.
     radial_either: Option<usize>,
@@ -212,6 +217,15 @@ pub(in crate::game) enum PadEvent {
     Back(PadId),
 }
 
+/// A pad's events since the last poll.
+#[derive(Clone, Default)]
+pub(in crate::game) struct Between {
+    /// The pad at each of them, in order, from after it last came back.
+    pub(in crate::game) moments: Vec<PadState>,
+    /// It went away since: back under its id, it is a new pad, and what it did before goes.
+    pub(in crate::game) lost: bool,
+}
+
 /// A build without the `controllers` feature (the server build, which must not need libudev): no
 /// hardware pads, only `horizon-ctl pad`'s virtual one.
 #[cfg(not(feature = "controllers"))]
@@ -265,6 +279,9 @@ mod hardware {
         pub(in crate::game) fn peaks(&self, _: PadId) -> [[f32; 2]; 2] {
             [[0.0; 2]; 2]
         }
+        pub(in crate::game) fn between(&self, _: PadId) -> super::Between {
+            super::Between::default()
+        }
         pub(in crate::game) fn name(&self, _: PadId) -> String {
             String::new()
         }
@@ -305,16 +322,20 @@ impl Pads {
     }
     /// Splitscreen: this player's pad state, from `source`. Another pad, or
     /// none: the old one's A going away isn't a release.
-    /// `peaks`: the furthest its sticks leant since the last feed (`Pads::peaks`).
+    /// `peaks`: the furthest its sticks leant since the last feed (`Pads::peaks`); `between`:
+    /// its events since then.
     pub(super) fn feed_from(
         &mut self,
         source: Option<PadId>,
         state: PadState,
         peaks: [[f32; 2]; 2],
+        between: Between,
     ) {
         self.peaks = peaks;
-        if self.feed_source != source {
+        self.between = between.moments;
+        if self.feed_source != source || between.lost {
             self.feed_source = source;
+            self.pulses.drop_owed();
             self.menu.armed = None;
             self.radial.cancel();
             self.menu.stop_craft();
@@ -414,6 +435,8 @@ impl Game<'_> {
                 .observe(None, std::time::Instant::now());
             self.pad.state = PadState::default();
             self.pad.in_use = false;
+            self.pad.between.clear();
+            self.pad.pulses.drop_owed();
             // The keyboard's menu focus follows its widget all the same.
             if !self.loading_overlay_preview_active() {
                 self.pad_menu_frame(event_loop);
@@ -425,17 +448,33 @@ impl Game<'_> {
             // their keys and mouse: a read makes a newly touched pad the active one, which lets
             // go of the run's A held in a menu. A held button lets go as the run starts and is
             // held again after it.
-            _ if self.scripted_run() => PadState::default(),
+            _ if self.scripted_run() => {
+                self.pad.between.clear();
+                self.pad.pulses.drop_owed();
+                PadState::default()
+            }
             Some(state) => state,
             None => self.pad.read(),
         };
         // A Nintendo pad going by its letters is read that way: its own, or the one
         // splitscreen's router feeds this player.
-        let hardware = if self.pad.by_letter(&self.settings.controller) {
-            hardware.by_letter()
-        } else {
-            hardware
-        };
+        let by_letter = self.pad.by_letter(&self.settings.controller);
+        let letters = |state: PadState| if by_letter { state.by_letter() } else { state };
+        let threshold = self.settings.controller.trigger_threshold;
+        // Each press and release since the last poll, in turn: a tap let go before this poll
+        // still presses, and a second one presses again (`Pulses`). A button whose release
+        // still waits for its tick keeps the next change for a later poll, so each tap gets one.
+        for moment in std::mem::take(&mut self.pad.between) {
+            self.pad.pulses.see(&letters(moment), threshold);
+        }
+        let ticking = self.title.is_none() && self.screen == Screen::Playing && !self.pause;
+        let wait = self
+            .pad
+            .late_releases
+            .iter()
+            .filter(|b| ticking && self.pad.pressed_at[**b as usize] == Some(self.ticks))
+            .fold(0, |wait, b| wait | b.bit());
+        let hardware = self.pad.pulses.read(&letters(hardware), threshold, wait);
         // A person's pad, for `input-log` and the repro recording; the virtual
         // pad is an agent's `pad` line and is recorded as that.
         let hardware_edges = self.pad.hardware_edges(hardware);
@@ -457,7 +496,6 @@ impl Game<'_> {
         for button in std::mem::take(&mut self.pad.taps) {
             self.pad.injected.set(button, false);
         }
-        let threshold = self.settings.controller.trigger_threshold;
         if self.loading_overlay_preview_active() {
             self.pad.state = state;
             self.pad_cancel_inputs(event_loop);
@@ -597,6 +635,10 @@ impl Game<'_> {
         self.pad.state.left = [0.0; 2];
         self.pad.state.right = [0.0; 2];
         self.pad.late_releases.clear();
+        // Taps still to show go with the context that got them, and a button down now isn't a new
+        // press in the next one.
+        let held = self.pad.pulses.drop_owed();
+        self.pad.edges.suppress(held);
         for (button, down) in self.pad.edges.cancel() {
             self.pad_button_logged(event_loop, button, down);
         }
