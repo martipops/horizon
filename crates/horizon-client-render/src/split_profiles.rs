@@ -8,12 +8,15 @@ use crate::{
     gamepad::MenuJob,
     graphics_style,
     hud::{HudAtlas, HudBatch, rgba},
-    hud_kit::fit::wrap,
+    hud_kit::fit::{self, wrap},
     lang,
     pad_glyph::{self, Glyph, Glyphs},
     text::Text,
     ui,
 };
+
+/// GUI px the bumpers' hint keeps clear of the view's sides.
+const BUMPERS_SIDE: f32 = 4.0;
 
 /// A string of this page: the language table's, or the English text.
 fn tr(key: &str, english: &str) -> String {
@@ -388,7 +391,10 @@ impl SplitProfiles {
         };
         let keys = [MenuJob::PagePrev, MenuJob::PageNext].map(|job| Glyph::menu(job, glyphs));
         let key_width = |b: Glyph| pad_glyph::width(atlas, b);
-        let total = keys.iter().map(|&b| key_width(b) + 4.0).sum::<f32>() + 2.0 + width(&words);
+        let keys_width = keys.iter().map(|&b| key_width(b) + 4.0).sum::<f32>() + 2.0;
+        // The keys keep their room on a narrow view, the words are cut to what's left.
+        let words = fit::ellipsize(atlas, &words, batch.width - keys_width - 2.0 * BUMPERS_SIDE);
+        let total = keys_width + width(&words);
         let (mut x, y) = (((batch.width - total) / 2.0).floor(), 30.0);
         for b in keys {
             let kw = key_width(b);
@@ -547,6 +553,32 @@ impl SplitProfiles {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_bumpers_hint_stays_on_a_narrow_view() {
+        let atlas = atlas();
+        let drawn = |width: u32, place: &str| {
+            let p = SplitProfiles {
+                place: Some(place.into()),
+                ..Default::default()
+            };
+            let mut batch = HudBatch::scratch([width, 240]);
+            p.draw_bumpers(&mut batch, &atlas, Glyphs::default());
+            let xs = batch.vertices.iter().map(|v| v.pos[0]);
+            (
+                xs.clone().fold(f32::INFINITY, f32::min),
+                xs.fold(0.0, f32::max),
+            )
+        };
+        let long = "Fenêtre 2, Moniteur 2 (3840x2160) (2 sur 4)";
+        let (left, right) = drawn(1000, long);
+        assert!(
+            right - left > 320.0,
+            "the whole hint fits: not the narrow case"
+        );
+        let (left, right) = drawn(320, long);
+        assert!(left >= 0.0 && right <= 320.0, "{left} to {right} in 320");
+    }
 
     #[test]
     fn forgetting_the_last_page_s_only_profile_shows_the_page_before() {

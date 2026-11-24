@@ -51,11 +51,36 @@ fn answers(
         .collect()
 }
 
-/// The badge's place between its bumpers' glyphs.
+/// GUI px from the view's left and top edges to the badge, and what it keeps clear at the right.
+const BADGE_AT: f32 = 2.0;
+/// The badge, and its place between its bumpers' glyphs.
 const BADGE: hint::Look = hint::Look {
     color: rgba(255, 255, 255, 230),
     ..hint::GUIDE
 };
+
+/// The badge while its player's bumpers move it: who, then where between the bumpers' glyphs.
+/// The glyphs keep their room on a narrow view; the name, then the place, is cut to what's left.
+fn draw_bumper_badge(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    badge: &str,
+    place: &str,
+    [prev, next]: [Glyph; 2],
+) {
+    let next = HintRow::new([next], "");
+    let bare = HintRow::new([prev], "").measure(atlas, &BADGE) + BADGE.gap;
+    let next_width = BADGE.gap + next.measure(atlas, &BADGE);
+    let room = batch.width - 2.0 * BADGE_AT - bare - next_width;
+    let who = format!("{badge} · ");
+    let who = ellipsize(atlas, &who, room);
+    batch.text(atlas, &who, BADGE_AT, BADGE_AT, BADGE.color, true);
+    let mut x = BADGE_AT + atlas.font.width(&who);
+    let left = batch.width - BADGE_AT - next_width - x;
+    let prev = HintRow::new([prev], place).fitted(atlas, &BADGE, left);
+    x += hint::draw_hint(batch, atlas, &prev, &BADGE, x, BADGE_AT) + BADGE.gap;
+    hint::draw_hint(batch, atlas, &next, &BADGE, x, BADGE_AT);
+}
 
 /// How wide a prompt's answers draw on one line: each row, then `BETWEEN` after its words.
 fn line_width(atlas: &HudAtlas, rows: &[HintRow]) -> f32 {
@@ -179,27 +204,17 @@ impl Game<'_> {
         if let (false, Some(badge)) = (hidden, &self.split_hud.badge) {
             let place = self.split_hud.place.as_ref();
             let place = place.filter(|place| Instant::now() < place.until);
-            let mut x = 2.0;
-            let say = |batch: &mut HudBatch, x: f32, text: &str| {
-                batch.text(atlas, text, x, 2.0, rgba(255, 255, 255, 230), true);
-                x + atlas.font.width(text)
-            };
             match place {
                 Some(place) if place.bumpers => {
-                    x = say(batch, x, &format!("{badge} · "));
-                    for (job, text) in [
-                        (MenuJob::PagePrev, place.text.as_str()),
-                        (MenuJob::PageNext, ""),
-                    ] {
-                        let row = HintRow::new([self.menu_glyph(job)], text);
-                        x += hint::draw_hint(batch, atlas, &row, &BADGE, x, 2.0) + BADGE.gap;
-                    }
+                    let keys = [MenuJob::PagePrev, MenuJob::PageNext].map(|j| self.menu_glyph(j));
+                    draw_bumper_badge(batch, atlas, badge, &place.text, keys);
                 }
                 Some(place) => {
-                    say(batch, x, &format!("{badge} · {}", place.text));
+                    let text = format!("{badge} · {}", place.text);
+                    batch.text(atlas, &text, BADGE_AT, BADGE_AT, BADGE.color, true);
                 }
                 None if self.split_hud.names => {
-                    say(batch, x, badge);
+                    batch.text(atlas, badge, BADGE_AT, BADGE_AT, BADGE.color, true);
                 }
                 None => {}
             }
@@ -328,6 +343,33 @@ mod tests {
             assert_eq!(row.glyphs, [Glyph::menu(job, places)]);
             assert!(row.caption.ends_with(ELLIPSIS) && row.caption.len() < what.len());
         }
+    }
+
+    #[test]
+    fn the_bumper_badge_keeps_both_glyphs_on_a_narrow_view() {
+        let atlas = HudAtlas::build(&horizon_client::resource_source::ResourceSource::directory(
+            "/nonexistent".into(),
+        ))
+        .unwrap();
+        let keys =
+            [MenuJob::PagePrev, MenuJob::PageNext].map(|j| Glyph::menu(j, Glyphs::default()));
+        let drawn = |width: u32, badge: &str, place: &str| {
+            let mut batch = HudBatch::scratch([width, 240]);
+            draw_bumper_badge(&mut batch, &atlas, badge, place, keys);
+            let right = batch.vertices.iter().map(|v| v.pos[0]).fold(0.0, f32::max);
+            (right, batch.vertices.len())
+        };
+        let (who, short) = ("Nouveau joueur", "Fenêtre 1");
+        let long = "Fenêtre 2, Moniteur 2 (3840x2160) (2 sur 4)";
+        // Past its right edge with the whole text; inside it, and still with the last glyph.
+        let (whole, _) = drawn(1000, who, long);
+        assert!(whole > 320.0, "{whole} fits: not the narrow case");
+        let (right, _) = drawn(320, who, long);
+        assert!(right <= 320.0, "{right} in 320");
+        let (right, _) = drawn(160, "ABCDEFGHIJKLMNOP", long);
+        assert!(right <= 160.0, "{right} in 160");
+        // Room enough: nothing is cut.
+        assert_eq!(drawn(320, who, short), drawn(1000, who, short));
     }
 
     #[test]
