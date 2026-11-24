@@ -314,7 +314,10 @@ impl Game<'_> {
         mob: &horizon_client::mobs::Mob,
         damage_type: &str,
     ) -> bool {
-        let source = Damage::of(Self::damage_kind(&self.motion.health.damage, damage_type));
+        let source = Damage::of(Self::damage_kind(
+            &self.health_resources.damage,
+            damage_type,
+        ));
         let vanilla = mob.refuses_damage(&source);
         horizon_client::health::query_invulnerability(
             &self.world,
@@ -1150,6 +1153,22 @@ mod tests {
             game.creative = true;
             assert!(game.punch_armor_stand(0));
             assert_eq!(game.armor_stands.len(), 0);
+        });
+    }
+
+    /// `ArmorStand.hurtServer` refuses an invisible stand's hit outright: even
+    /// a creative player's punch, which would break a visible one, leaves it.
+    #[test]
+    #[ignore = "daily"]
+    fn an_invisible_stand_refuses_even_a_creative_punch() {
+        use horizon_client::entities::ArmorStand;
+        with_game(|game| {
+            let mut stand = ArmorStand::new(15, Vec3::new(0.5, 64.0, 0.5), 0.0);
+            stand.invisible = true;
+            game.armor_stands.push(stand);
+            game.creative = true;
+            assert!(!game.punch_armor_stand(0));
+            assert_eq!(game.armor_stands.len(), 1, "still standing");
         });
     }
 
