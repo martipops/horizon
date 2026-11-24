@@ -6,7 +6,7 @@ use horizon_client::gamepad::{GlyphStyle, MenuJob};
 use horizon_client::hud::HudAtlas;
 use horizon_client::hud::{HudBatch, rgba};
 use horizon_client::hud_kit::{
-    fit::ellipsize,
+    fit::{ELLIPSIS, ellipsize},
     hint::{self, HintRow},
     plate::{self, Plate},
     room::Room,
@@ -69,9 +69,10 @@ fn draw_bumper_badge(
     [prev, next]: [Glyph; 2],
 ) {
     let next = HintRow::new([next], "");
-    let bare = HintRow::new([prev], "").measure(atlas, &BADGE) + BADGE.gap;
+    // The least a cut place draws.
+    let least = HintRow::new([prev], ELLIPSIS).measure(atlas, &BADGE);
     let next_width = BADGE.gap + next.measure(atlas, &BADGE);
-    let room = batch.width - 2.0 * BADGE_AT - bare - next_width;
+    let room = batch.width - 2.0 * BADGE_AT - least - next_width;
     let who = format!("{badge} · ");
     let who = ellipsize(atlas, &who, room);
     batch.text(atlas, &who, BADGE_AT, BADGE_AT, BADGE.color, true);
@@ -301,7 +302,6 @@ impl<'a> Split<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use horizon_client::hud_kit::fit::ELLIPSIS;
     use horizon_client::hud_kit::room::Keep;
     use horizon_client::hud_overlays::boss_bars_bottom;
 
