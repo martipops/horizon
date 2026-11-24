@@ -761,7 +761,8 @@ runtime or new dependency. Server-sent events can replace the polling later if a
   3. stops the game, backs up the world (`backups/<time>-before-<tag>.zip`), records the release in use in
      `<dir>/previous` and points `<dir>/current` at the new one;
   4. checks that the new game loads on this system (`--help`), then starts it;
-  5. waits until it has logged `Done` and answered a status request, for 300 s (`--timeout`).
+  5. waits for `Done` and a non-error status reply, for 300 s (`--timeout`). A legacy game without a control
+     endpoint (including No AI) is considered ready at `Done`.
 
   If the new game doesn't load, stops, or isn't up in time, the supervisor goes back by itself: `current`
   points at the release before, `previous` is left as it was, the world is put back from the backup (the
@@ -867,7 +868,10 @@ runtime or new dependency. Server-sent events can replace the polling later if a
     seconds and lost otherwise, as the monitor clears its flag whatever it did; and `server/status`, the
     heartbeat: every `status-heartbeat-interval` seconds (none at 0, the first after as many) the status
     `server/status` answers, up or not, to whoever is connected;
-  - planned: world-upgrade notifications, after the server-side `WorldUpgrader` exists.
+  - world-upgrade notifications, while a dedicated server upgrades an older world as it opens it:
+    `world/upgrade_started`, `world/upgrade_progress` (`progress` from 0 to 1, at most once a second),
+    `world/upgrade_finished` and `world/upgrade_failed` (a `reason` that names no server path). The
+    supervisor polls the starting server's events, so they arrive before the server is up.
 
 ## 9. Benchmark plan (bots against vanilla and Paper)
 
