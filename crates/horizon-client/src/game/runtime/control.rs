@@ -1,6 +1,6 @@
 //! Commands from the control socket (`horizon-ctl`), run on the game thread.
 use super::event_loop::EventLoopCtl;
-use super::{Game, Screen};
+use super::{Game, Screen, editor_overlay::EditorOverlay};
 use horizon_client::gfx::pack_timing;
 use horizon_client::held::Source;
 use horizon_client::{Result, items::ItemStack};
@@ -256,16 +256,7 @@ impl Game<'_> {
         for request in self.ui_wait.ready() {
             self.answer(request, event_loop);
         }
-        while let Some(request) = self.control.as_ref().and_then(|c| c.try_recv()) {
-            // Once per line received, not once per handler: a deferred `ui`
-            // comes back through `ui_wait` and must not be traced twice.
-            self.note_socket_line(&request.line);
-            self.agent_command_seen();
-            self.answer(request, event_loop);
-            if self.pending_save.is_some() {
-                break;
-            }
-        }
+        self.poll_control_requests(event_loop);
         // A recording made from the F3 keys or the Settings page has no socket,
         // and still wants its events.
         if self.control.is_some() || self.repro.recording_active() {
@@ -277,6 +268,19 @@ impl Game<'_> {
             self.ui
                 .options
                 .set_agent_status(self.agent_status_lines(), self.repro.recording_active());
+        }
+    }
+
+    pub(super) fn poll_control_requests(&mut self, event_loop: &dyn EventLoopCtl) {
+        while let Some(request) = self.control.as_ref().and_then(|c| c.try_recv()) {
+            // Once per line received, not once per handler: a deferred `ui`
+            // comes back through `ui_wait` and must not be traced twice.
+            self.note_socket_line(&request.line);
+            self.agent_command_seen();
+            self.answer(request, event_loop);
+            if self.pending_save.is_some() {
+                break;
+            }
         }
     }
 
@@ -320,12 +324,11 @@ impl Game<'_> {
     /// Nothing here is a key — the caller drops control characters. `Err` when
     /// no text box of the screen takes them.
     pub(super) fn type_chars_into_screen(&mut self, text: &str) -> Result<()> {
-        if self.book.is_some() {
-            self.book_type(text);
-            return Ok(());
-        }
-        if self.sign_edit.is_some() {
-            self.sign_input(None, Some(text));
+        if let Some(editor) = self.active_editor_overlay() {
+            match editor {
+                EditorOverlay::Book => self.book_type(text),
+                EditorOverlay::Sign => self.sign_input(None, Some(text)),
+            }
             return Ok(());
         }
         // The title's screens: the world name, the seed, a server's address.
@@ -371,7 +374,7 @@ impl Game<'_> {
         Ok(())
     }
 
-    fn control_command(
+    pub(super) fn control_command(
         &mut self,
         line: &str,
         reply: &Sender<String>,
@@ -426,6 +429,34 @@ impl Game<'_> {
         }
         if self.pending_save.is_some() && words.first() != Some(&"quit") {
             return Err("a world save is in progress".into());
+        }
+        if let Some(&command) = words.first() {
+            if self.remote.is_some()
+                && self.integrated.is_none()
+                && (matches!(
+                    command,
+                    "tp" | "give" | "xp" | "enchant" | "potion" | "effect" | "time" | "summon"
+                ) || command == "container" && words.len() > 4)
+            {
+                return Err(format!(
+                    "{command} requires the world's host; use command for server commands"
+                )
+                .into());
+            }
+            if matches!(command, "xp" | "enchant" | "potion" | "effect")
+                && let Some(server) = &self.integrated
+            {
+                let line = line.to_owned();
+                let selected = self.selected;
+                return server
+                    .call(move |game| {
+                        let words: Vec<&str> = line.split_whitespace().collect();
+                        game.owner_station_command(&words, selected)
+                            .map_err(|e| e.to_string())
+                    })
+                    .ok_or(super::integrated::NO_ANSWER)?
+                    .map_err(Into::into);
+            }
         }
         let arg = |i: usize| {
             words
@@ -676,10 +707,10 @@ impl Game<'_> {
                     }
                     return Ok(Some(if let Some(server) = &self.integrated {
                         server
-                            .call(move |g| g.in_owner_level(move |g| g.blocks_json(lo, hi)))
+                            .call(move |g| g.in_owner_level(move |g| g.server_blocks_json(lo, hi)))
                             .ok_or(super::integrated::NO_ANSWER)?
                     } else {
-                        self.blocks_json(lo, hi)
+                        self.server_blocks_json(lo, hi)
                     }));
                 }
                 let value = if let Some(server) = &self.integrated {
@@ -703,9 +734,20 @@ impl Game<'_> {
                     _ => return Err("server-hold on|off".into()),
                 };
                 if let Some(server) = &self.integrated {
-                    server
-                        .call(move |g| g.agent.hold_server = held)
-                        .ok_or(super::integrated::NO_ANSWER)?;
+                    if self.export_server_calls_blocked()
+                        || self
+                            .export
+                            .as_ref()
+                            .is_some_and(|session| session.server_clock)
+                    {
+                        if !server.post(move |g| g.agent.hold_server = held) {
+                            return Err("the integrated server stopped".into());
+                        }
+                    } else {
+                        server
+                            .call(move |g| g.agent.hold_server = held)
+                            .ok_or(super::integrated::NO_ANSWER)?;
+                    }
                 } else if self.remote.is_some() {
                     return Err("server-hold requires the world's host".into());
                 } else {
@@ -765,32 +807,6 @@ impl Game<'_> {
                 self.require_world()?;
                 // KeyboardHandler.keyPress: the open screen's narration hears it.
                 super::narrator::narrate_key(&mut self.narration, key, arg(2)? != "up");
-                // The sign editor takes raw presses (Enter, arrows, Backspace, Escape).
-                if self.sign_edit.is_some() {
-                    if arg(2)? != "up" {
-                        self.sign_input(Some(key), None);
-                    }
-                    return ok();
-                }
-                // A held edit modifier (`key super down`) and A/C/V/X: the
-                // open book's Select All, Copy, Paste or Cut.
-                if self.book.is_some() && arg(2)? != "up" {
-                    let held = |k: [KeyCode; 2]| k.iter().any(|k| self.keys.raw(k));
-                    let edit = if cfg!(target_os = "macos") {
-                        held([KeyCode::SuperLeft, KeyCode::SuperRight])
-                    } else {
-                        held([KeyCode::ControlLeft, KeyCode::ControlRight])
-                    };
-                    let name = arg(1)?;
-                    let letter = name.chars().next().filter(|_| name.len() == 1);
-                    let shift = held([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
-                    if let Some(shortcut) =
-                        horizon_client::clipboard::edit_shortcut(letter, edit, shift, false)
-                    {
-                        self.book_shortcut(shortcut);
-                        return ok();
-                    }
-                }
                 // KeyboardHandler.keyPress: the debug keys see the physical key first.
                 let physical = key;
                 {
@@ -813,6 +829,37 @@ impl Game<'_> {
                     }
                 }
                 let action = arg(2)?;
+                if let Some(editor) = self.active_editor_overlay() {
+                    if action == "up" {
+                        self.screen_key_released(key);
+                        return ok();
+                    }
+                    let screenshot = action != "repeat" && self.screenshot_shortcut(key, false);
+                    if !screenshot && !self.screen_key_pressed(key, action == "repeat") {
+                        // A held edit modifier and A/C/V/X on a book.
+                        let name = arg(1)?;
+                        let letter = name.chars().next().filter(|_| name.len() == 1);
+                        let shortcut = horizon_client::clipboard::edit_shortcut(
+                            letter,
+                            self.has_control_down_with_quirk(),
+                            self.has_shift_down(),
+                            false,
+                        );
+                        if let (EditorOverlay::Book, Some(shortcut)) = (editor, shortcut) {
+                            self.book_shortcut(shortcut);
+                        } else {
+                            self.editor_input(editor, Some(key), None);
+                        }
+                    }
+                    if action == "tap" {
+                        self.physical_keys.remove(&key);
+                        self.debug_key(key, horizon_client::debug_keys::KeyAction::Release);
+                        if self.active_editor_overlay().is_some() {
+                            self.screen_key_released(key);
+                        }
+                    }
+                    return ok();
+                }
                 // ScreenEvent.KeyPressed.Pre: the open screen hears of the
                 // press before it acts on it. A cancelled press goes no further.
                 if action != "up" && self.screen_key_pressed(physical, action == "repeat") {
@@ -1149,6 +1196,9 @@ impl Game<'_> {
                 ok()
             }
             "screenshot" => {
+                // Reconcile any newly picked pack, saved options, or in-flight async native build
+                // before arming the screenshot so the captured frame uses the requested pack.
+                self.settle_native_shader_pack();
                 let renderer = self.renderer.as_mut().ok_or("no renderer yet")?;
                 arg(1)?;
                 // The rest of the line: a path may hold spaces.

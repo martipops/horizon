@@ -58,8 +58,18 @@ fn capture_terrain_loading(
     view: &horizon_client::streaming::ViewArrival,
     has_column: impl Fn((i32, i32)) -> bool,
 ) -> bool {
-    // Replay columns can only arrive as the recording advances.
+    // Replay and lockstep columns can only arrive as the capture clock advances.
     streaming_busy || (!replaying && view.arrival_incomplete(has_column))
+}
+
+// The capture clock drives future columns, but the loading screen must retire locally.
+pub(super) fn capture_level_loading(
+    tracker: Option<&horizon_client::level_loading::LevelLoadTracker>,
+    lockstep: bool,
+    chunks_empty: bool,
+) -> bool {
+    tracker.is_some_and(horizon_client::level_loading::LevelLoadTracker::is_active)
+        || (!lockstep && chunks_empty)
 }
 
 pub(super) enum CaptureMode {
@@ -80,27 +90,32 @@ impl Game<'_> {
 
     /// The drawn world still has terrain or resources to put in place.
     fn capture_terrain_loading(&self) -> bool {
+        let lockstep = self.export.as_ref().is_some_and(|s| s.server_clock);
         self.title.is_some()
             || self.player.is_none()
             || self.integrated_starting.is_some()
             || self.pending_entry.is_some()
             || self.pack_reload.is_some()
             || self.pending_save.is_some()
-            || self
-                .remote
-                .as_ref()
-                .is_some_and(|r| r.level_load.is_active())
-            || self.world.chunks.is_empty()
+            || capture_level_loading(
+                self.remote.as_ref().map(|r| &r.level_load),
+                lockstep,
+                self.world.chunks.is_empty(),
+            )
             || capture_terrain_loading(
                 self.streaming.busy(),
-                self.replay.playing(),
+                self.replay.playing() || lockstep,
                 &self.view_arrival,
                 |column| self.world.chunks.contains_key(&column),
             )
             || !self.pending_uploads.is_empty()
-            || self.remote_backlog() != 0
+            || self.remote_backlog_delays_frame()
             || !self.world.dirty_light.is_empty()
             || !self.world.dirty_sections.is_empty()
+            || self
+                .renderer
+                .as_ref()
+                .is_some_and(|r| r.native_pack_loading())
     }
 
     /// Why a sequence can't start (or go on) now, if it can't.
@@ -186,6 +201,9 @@ impl Game<'_> {
         if self.screenshot_sequence.is_some() || self.export.is_some() {
             return Err("a capture is already running".into());
         }
+        // Reconcile any newly picked pack, saved options, or in-flight async native build before
+        // snapshotting the scene so the sequence never captures a stale or half-applied pack.
+        self.settle_native_shader_pack();
         let renderer = self.renderer.as_ref().ok_or("no renderer yet")?;
         if self.pending_screenshot.is_some() || renderer.screenshot.is_some() {
             return Err("a screenshot is already pending".into());

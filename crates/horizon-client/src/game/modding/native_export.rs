@@ -137,7 +137,9 @@ impl Game<'_> {
                 .renderer
                 .as_ref()
                 .is_some_and(|r| r.screenshot_in_flight());
-        check_start_context(occupied, max_texture, world_ready, capture_busy)
+        let max_texture = check_start_context(occupied, max_texture, world_ready, capture_busy)?;
+        self.export_server().map_err(|_| ExportError::Unavailable)?;
+        Ok(max_texture)
     }
 
     pub(super) fn stop_export(&mut self) -> Result<(), ExportError> {
@@ -387,7 +389,7 @@ mod tests {
         spec.format = Format::Encoder;
 
         assert_eq!(
-            prepare_output(game.path(), &state.budget, &spec).err(),
+            prepare_with_written_encoder(game.path(), &encoder, &state.budget, &spec),
             Some(ExportError::EncoderUnavailable)
         );
         assert!(!encoder.exists());
@@ -417,7 +419,7 @@ mod tests {
     #[test]
     fn an_existing_take_is_refused_before_encoder_launch_and_refunds_the_charge() {
         let game = tempfile::tempdir().unwrap();
-        encoder_that_disappears_after_probe(game.path());
+        let encoder = encoder_that_disappears_after_probe(game.path());
         let state = NativeExport::default();
         let mut spec =
             export_spec(&ExportRequest::new("take", [16, 16], (30, 1), 1), 8192).unwrap();
@@ -427,7 +429,7 @@ mod tests {
         std::fs::write(&existing, b"existing video").unwrap();
 
         assert_eq!(
-            prepare_output(game.path(), &state.budget, &spec).err(),
+            prepare_with_written_encoder(game.path(), &encoder, &state.budget, &spec),
             Some(ExportError::Exists)
         );
         assert!(state.budget.fits(MOD_EXPORT_BUDGET));
@@ -454,5 +456,26 @@ mod tests {
         fs::set_permissions(&encoder, fs::Permissions::from_mode(0o700)).unwrap();
         fs::write(game.join("horizon-export.txt"), "encoder=encoder\n").unwrap();
         encoder
+    }
+
+    /// `prepare_output`'s refusal with an encoder from `encoder_that_disappears_after_probe`. Another test's
+    /// fork can keep the script's write handle until it execs, and the probe then fails with ETXTBSY (Linux),
+    /// reported as `EncoderUnavailable` with the script still there because it never ran: that one case is retried.
+    #[cfg(unix)]
+    fn prepare_with_written_encoder(
+        game: &std::path::Path,
+        encoder: &std::path::Path,
+        budget: &Arc<ByteBudget>,
+        spec: &ExportSpec,
+    ) -> Option<ExportError> {
+        for _ in 0..50 {
+            match prepare_output(game, budget, spec).err() {
+                Some(ExportError::EncoderUnavailable) if encoder.exists() => {
+                    std::thread::sleep(std::time::Duration::from_millis(20))
+                }
+                refusal => return refusal,
+            }
+        }
+        prepare_output(game, budget, spec).err()
     }
 }

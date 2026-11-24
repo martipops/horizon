@@ -68,6 +68,19 @@ impl Game<'_> {
         self.native_target_body(self.native_entity_target(entity)?)
     }
 
+    /// The body a read of the entity's own movement state answers from: the server's entity,
+    /// or on a client the local player's body, whose sprinting, fluids and pose the client
+    /// keeps itself (`LocalPlayer`). None on a client for any other entity.
+    fn native_own_state_body(&self, entity: EntityRef) -> Option<Body<'_>> {
+        if self.is_logical_server() {
+            return self.native_entity_body(entity);
+        }
+        match self.native_client_entity_target(entity)? {
+            Target::Player => Some(Body::Player(self.player.as_ref()?)),
+            _ => None,
+        }
+    }
+
     fn native_target_body(&self, target: Target) -> Option<Body<'_>> {
         Some(match target {
             Target::Player => Body::Player(self.player.as_ref()?),
@@ -100,7 +113,7 @@ impl Game<'_> {
     /// cat or ocelot dashing after its target (their shared sprinting flag);
     /// false for the other kinds.
     pub(super) fn entity_is_sprinting(&self, entity: EntityRef) -> Option<bool> {
-        Some(match self.native_entity_body(entity)? {
+        Some(match self.native_own_state_body(entity)? {
             Body::Player(p) => p.sprinting,
             Body::Mob(m) => m.extra.sprinting,
             _ => false,
@@ -109,9 +122,45 @@ impl Game<'_> {
     /// Whether the entity touched water at its last fluid update
     /// (`Entity.isInWater`): players and mobs.
     pub(super) fn entity_is_in_water(&self, entity: EntityRef) -> Option<bool> {
-        match self.native_entity_body(entity)? {
+        match self.native_own_state_body(entity)? {
             Body::Player(p) => Some(p.fluids.was_touching_water),
             Body::Mob(m) => Some(m.fluids.in_water),
+            Body::Other(_) => None,
+        }
+    }
+    /// Whether the entity's eyes are submerged in water (`Entity.isUnderWater`:
+    /// `isEyeInFluid(WATER) && isInWater()`): players and mobs.
+    pub(super) fn entity_is_under_water(&self, entity: EntityRef) -> Option<bool> {
+        use horizon_client::motion::WATER;
+        match self.native_target_body(self.native_entity_read_target(entity)?)? {
+            Body::Player(p) => Some(p.is_eye_in_fluid(WATER) && p.fluids.was_touching_water),
+            Body::Mob(m) => Some(m.fluids.eye_in_water && m.fluids.in_water),
+            Body::Other(_) => None,
+        }
+    }
+    /// Whether the entity is on fire (`Entity.isOnFire`): not fire-immune and either
+    /// burning (`fire_ticks > 0`) or carrying the client's synced on-fire flag.
+    /// Players, mobs, armor stands and dropped items on a server; on a remote client,
+    /// only the local player's own fire state is available (`None` for any other entity).
+    pub(super) fn entity_is_on_fire(&self, entity: EntityRef) -> Option<bool> {
+        let target = self.native_entity_read_target(entity)?;
+        if self.remote.is_some() && !matches!(target, Target::Player) {
+            return None;
+        }
+        match self.native_target_body(target)? {
+            Body::Player(p) => Some(
+                p.fire_ticks > 0
+                    || (self.remote.is_some()
+                        && matches!(target, Target::Player)
+                        && self.remote.as_ref().is_some_and(|r| r.own_on_fire)),
+            ),
+            Body::Mob(m) => Some(m.is_on_fire()),
+            Body::Other(Target::Stand(id)) => {
+                Some(self.armor_stands.iter().find(|s| s.id == id)?.fire_ticks > 0)
+            }
+            Body::Other(Target::Item(id)) => {
+                Some(self.dropped.iter().find(|i| i.id == id)?.fire_ticks > 0)
+            }
             Body::Other(_) => None,
         }
     }
@@ -128,7 +177,7 @@ impl Game<'_> {
     }
     /// Whether the entity is in lava (`Entity.isInLava`): players and mobs.
     pub(super) fn entity_is_in_lava(&self, entity: EntityRef) -> Option<bool> {
-        match self.native_entity_body(entity)? {
+        match self.native_own_state_body(entity)? {
             Body::Player(p) => Some(p.is_in_lava()),
             Body::Mob(m) => Some(m.fluids.in_lava),
             Body::Other(_) => None,
@@ -569,7 +618,7 @@ impl Game<'_> {
     /// `crouching`, `swimming`, `sleeping`, a warden's `roaring`... Kinds
     /// with no pose stand.
     pub(super) fn entity_pose(&self, entity: EntityRef) -> Option<&'static str> {
-        Some(match self.native_entity_body(entity)? {
+        Some(match self.native_own_state_body(entity)? {
             Body::Player(p) => player_pose(p.pose),
             Body::Mob(m) => POSES.get(usize::from(sync::pose_id(m))).copied()?,
             Body::Other(_) => POSES[0],
@@ -1535,5 +1584,53 @@ mod fuse_tests {
             assert!(!game.entity_set_fuse(entity, -1));
             assert_eq!(game.tnts.last().unwrap().fuse, 37);
         });
+    }
+
+    #[test]
+    fn entity_is_on_fire_and_is_under_water_read_entity_state() {
+        if std::env::var_os("HORIZON_TEST_RESOURCES").is_none() {
+            return;
+        }
+        let mut game = crate::game::native_machines::tests::server_game();
+        let zombie_kind = game
+            .res
+            .mob_types()
+            .get("minecraft:zombie")
+            .unwrap()
+            .clone();
+        let blaze_kind = game
+            .res
+            .mob_types()
+            .get("minecraft:blaze")
+            .unwrap()
+            .clone();
+        let mut zombie = horizon_client::mobs::Mob::new(
+            101,
+            zombie_kind,
+            Vec3::new(0.0, 64.0, 0.0),
+            0.0,
+        );
+        zombie.fire_ticks = 40;
+        zombie.fluids.in_water = true;
+        zombie.fluids.eye_in_water = false;
+        let mut blaze = horizon_client::mobs::Mob::new(
+            102,
+            blaze_kind,
+            Vec3::new(2.0, 64.0, 0.0),
+            0.0,
+        );
+        blaze.fire_ticks = 40;
+        blaze.fluids.in_water = true;
+        blaze.fluids.eye_in_water = true;
+        game.mobs.push(zombie);
+        game.mobs.push(blaze);
+
+        let zombie_ref = game.entity(101).unwrap();
+        let blaze_ref = game.entity(102).unwrap();
+
+        assert_eq!(zombie_ref.is_on_fire(&game), Some(true));
+        assert_eq!(blaze_ref.is_on_fire(&game), Some(false));
+        assert_eq!(zombie_ref.is_under_water(&game), Some(false));
+        assert_eq!(blaze_ref.is_under_water(&game), Some(true));
     }
 }
