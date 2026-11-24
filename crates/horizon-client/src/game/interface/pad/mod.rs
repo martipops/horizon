@@ -831,7 +831,7 @@ impl Game<'_> {
             return;
         }
         // A long frame (a hitch) must not spin the view.
-        let seconds = seconds.min(0.1);
+        let seconds = seconds.min(horizon_client::input_source::LOOK_SECONDS_CAP);
         let turn = gamepad::look_delta(
             self.pad.state.right,
             settings,

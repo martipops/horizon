@@ -580,21 +580,31 @@ impl Game<'_> {
 /// never the controller modules. A registered source answers (`input_source`); with none, the
 /// internal adapter, the `pad` modules, does until they leave the engine (spec #14205).
 impl Game<'_> {
-    /// Takes the source out for a call that needs it mutable beside the host (`self`).
-    fn with_input_source<T>(
+    /// Takes the source out for a call that needs it mutable beside the host (`self`). It goes
+    /// back even when the call panics, so a caught panic doesn't leave the session on the pads.
+    pub(super) fn with_input_source<T>(
         &mut self,
         call: impl FnOnce(&mut dyn InputSource, &Self) -> T,
     ) -> Option<T> {
         let mut source = self.input_source.take()?;
-        let answer = call(source.as_mut(), self);
+        let answer =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| call(source.as_mut(), self)));
         self.input_source = Some(source);
-        Some(answer)
+        match answer {
+            Ok(answer) => Some(answer),
+            Err(panic) => std::panic::resume_unwind(panic),
+        }
+    }
+
+    /// Whether a registered source is left unread: a scripted run (`scripted_run`) drives
+    /// nothing, the source as the pads, so every question to it answers as an idle device's.
+    fn input_source_muted(&self) -> bool {
+        self.input_source.is_some() && self.scripted_run()
     }
 
     /// Once per frame, before the frame's input is read: the source's turn.
-    /// A scripted run (`scripted_run`) drives nothing: the source, as the pads, is left unread.
     pub(super) fn input_frame(&mut self) {
-        if self.scripted_run() {
+        if self.input_source_muted() {
             return;
         }
         self.with_input_source(|source, host| source.frame(host));
@@ -604,7 +614,7 @@ impl Game<'_> {
     pub(super) fn input_move(&self) -> Option<[f32; 2]> {
         match &self.input_source {
             // A scripted run moves the player only as its script says.
-            Some(_) if self.scripted_run() => None,
+            Some(_) if self.input_source_muted() => None,
             Some(source) => source.move_vector(self),
             None => self.pad_move(),
         }
@@ -613,6 +623,8 @@ impl Game<'_> {
     /// Whether a device holds the key mapping named `mapping` (`key.use`).
     pub(super) fn input_holds(&self, mapping: &str) -> bool {
         match &self.input_source {
+            // A scripted run holds only what its script does.
+            Some(_) if self.input_source_muted() => false,
             Some(source) => source.holds(mapping),
             None => self.pad.holds_action(mapping),
         }
@@ -621,9 +633,10 @@ impl Game<'_> {
     /// Turns the view by what the devices give this frame (`Entity.turn`).
     pub(super) fn input_look(&mut self, seconds: f32) {
         // A scripted run turns the view only as its script says.
-        if self.input_source.is_some() && self.scripted_run() {
+        if self.input_source_muted() {
             return;
         }
+        let seconds = seconds.min(horizon_client::input_source::LOOK_SECONDS_CAP);
         match self.with_input_source(|source, host| source.look(host, seconds)) {
             Some(Some([yaw, pitch])) => self.look_turn(yaw, pitch),
             Some(None) => {}
@@ -641,12 +654,15 @@ impl Game<'_> {
     }
 
     /// Whether the pointer event being handled is one a device made (a pad's menu cursor
-    /// clicking), not the mouse's.
+    /// clicking, a source's, the keyboard's focus clicking a widget), not the mouse's.
     pub(super) fn input_made_pointer_event(&self) -> bool {
-        match &self.input_source {
-            Some(source) => source.made_pointer_event(),
-            None => self.pad.menu.synthetic,
-        }
+        // The keyboard's menu focus marks its clicks with or without a source.
+        self.pad.menu.synthetic
+            || match &self.input_source {
+                Some(_) if self.input_source_muted() => false,
+                Some(source) => source.made_pointer_event(),
+                None => false,
+            }
     }
 
     /// A new player entity took over (spawn, respawn, a server joined, a dimension change).
@@ -660,6 +676,9 @@ impl Game<'_> {
     /// Whether the drop about to happen is a device's whole-stack drop (it has no Control key to
     /// hold). Asking answers once.
     pub(super) fn input_takes_stack_drop(&mut self) -> bool {
+        if self.input_source_muted() {
+            return false;
+        }
         match &mut self.input_source {
             Some(source) => source.takes_stack_drop(),
             None => std::mem::take(&mut self.pad.drop_stack),
@@ -703,10 +722,15 @@ impl Game<'_> {
     }
 }
 
-/// A new game's input source, from the registered factory ([`input_source_for`]).
+/// A new game's input source, from the registered factory ([`input_source_for`]). A server's game
+/// doesn't read the registry, so it doesn't seal it: a registration after a server started still
+/// counts for the players' games.
 pub(super) fn input_source(
     role: super::execution_role::ExecutionRole,
 ) -> Option<Box<dyn InputSource>> {
+    if !role.is_client() {
+        return None;
+    }
     input_source_for(role, horizon_client::input_source::factory())
 }
 

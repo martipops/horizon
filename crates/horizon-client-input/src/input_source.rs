@@ -16,6 +16,9 @@ pub enum Feedback {
     ItemStackSplit,
 }
 
+/// The longest frame, in seconds, a look is turned by: a hitch's frame turns the view no further.
+pub const LOOK_SECONDS_CAP: f32 = 0.1;
+
 /// What the engine offers an input source about the game it drives: read-only, engine terms only.
 /// `Game` implements it.
 pub trait InputHost {
@@ -45,13 +48,16 @@ pub trait InputSource {
         false
     }
     /// How far the source turns the view this frame, `seconds` long, in `Entity.turn`'s units
-    /// (`[yaw, pitch]`, as the mouse's); `None` leaves it.
+    /// (`[yaw, pitch]`, as the mouse's); `None` leaves it. The engine caps `seconds` at
+    /// [`LOOK_SECONDS_CAP`], so a long frame (a hitch) doesn't spin the view.
     fn look(&mut self, _host: &dyn InputHost, _seconds: f32) -> Option<[f64; 2]> {
         None
     }
     /// The keyboard or mouse acted in play: it has control again.
     fn keyboard_used(&mut self) {}
     /// Whether the pointer event being handled is one the source made (a menu cursor clicking).
+    /// The engine treats it as the pad's: it doesn't take control back for the keyboard, and the
+    /// native mods' mouse hooks skip it, as they do a controller's click.
     fn made_pointer_event(&self) -> bool {
         false
     }

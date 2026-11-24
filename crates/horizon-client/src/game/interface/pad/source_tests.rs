@@ -22,7 +22,10 @@ struct Script {
     frames: Cell<u32>,
     holds: Cell<&'static [&'static str]>,
     look: Cell<Option<[f64; 2]>>,
+    /// The frame time the last look was given.
+    look_seconds: Cell<Option<f32>>,
     moves: Cell<Option<[f32; 2]>>,
+    pointer: Cell<bool>,
     stack_drop: Cell<bool>,
 }
 
@@ -38,8 +41,12 @@ impl InputSource for Probe {
     fn holds(&self, mapping: &str) -> bool {
         self.0.holds.get().contains(&mapping)
     }
-    fn look(&mut self, _host: &dyn InputHost, _seconds: f32) -> Option<[f64; 2]> {
+    fn look(&mut self, _host: &dyn InputHost, seconds: f32) -> Option<[f64; 2]> {
+        self.0.look_seconds.set(Some(seconds));
         self.0.look.get()
+    }
+    fn made_pointer_event(&self) -> bool {
+        self.0.pointer.get()
     }
     fn takes_stack_drop(&mut self) -> bool {
         self.0.stack_drop.replace(false)
@@ -77,6 +84,15 @@ fn a_registered_source_answers_in_the_pads_place() {
         script.look.set(Some([100.0, 0.0]));
         game.input_look(0.05);
         assert_ne!(game.yaw, yaw, "the source's look turns the view");
+        // A two-second hitch: the source is given the capped frame, as the pad's look is.
+        game.input_look(2.0);
+        assert_eq!(script.look_seconds.get(), Some(0.1));
+
+        // A click the source makes is a device's, so the native mods' mouse hooks skip it.
+        assert!(!game.pad_synthetic_input());
+        script.pointer.set(true);
+        assert!(game.pad_synthetic_input(), "the source's click isn't the mouse");
+        script.pointer.set(false);
 
         assert!(!game.input_takes_stack_drop(), "the pad's mark isn't asked");
         script.stack_drop.set(true);
@@ -154,8 +170,15 @@ fn a_scripted_run_leaves_the_source_unread() {
         let script = install(game);
         script.moves.set(Some([0.0, 1.0]));
         script.look.set(Some([100.0, 0.0]));
+        script.holds.set(&["key.use"]);
+        script.pointer.set(true);
+        script.stack_drop.set(true);
         game.tick_script.play_empty();
         assert!(game.scripted_run());
+
+        assert!(!game.input_holds("key.use"), "no hold from the source");
+        assert!(!game.input_made_pointer_event(), "no click from the source");
+        assert!(!game.input_takes_stack_drop(), "no stack drop from the source");
 
         assert_eq!(game.input_move(), None, "no move from the source");
         let yaw = game.yaw;
@@ -164,5 +187,18 @@ fn a_scripted_run_leaves_the_source_unread() {
         game.input_frame();
         assert_eq!(script.frames.get(), 0, "the source isn't driven");
         assert!(game.input_source.is_some(), "it stays registered");
+    });
+}
+
+#[test]
+#[ignore = "daily"]
+fn a_panic_in_the_source_leaves_it_registered() {
+    playing(|game| {
+        install(game);
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            game.with_input_source(|_, _| panic!("the source failed"));
+        }));
+        assert!(caught.is_err());
+        assert!(game.input_source.is_some(), "the session stays on the source");
     });
 }
