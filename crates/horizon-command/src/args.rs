@@ -529,6 +529,11 @@ pub enum Arg {
     },
 }
 
+#[inline]
+fn is_id_byte(b: u8) -> bool {
+    b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'_' | b'-' | b'.' | b':' | b'/')
+}
+
 pub fn is_id_char(c: char) -> bool {
     c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '_' | '-' | '.' | ':' | '/')
 }
@@ -539,11 +544,17 @@ pub fn read_id(reader: &mut Reader) -> CmdResult<String> {
 }
 /// Identifier.read.
 pub fn read_identifier(reader: &mut Reader) -> CmdResult<String> {
+    let bytes = reader.string.as_bytes();
     let start = reader.cursor;
-    while reader.can_read() && is_id_char(reader.peek()) {
-        reader.skip();
+    let mut end = start;
+    while let Some(&b) = bytes.get(end) {
+        if !is_id_byte(b) {
+            break;
+        }
+        end += 1;
     }
-    let raw = &reader.string[start..reader.cursor];
+    reader.cursor = end;
+    let raw = &reader.string[start..end];
     match parse_identifier(raw) {
         Some(id) => Ok(id),
         None => {
@@ -636,18 +647,19 @@ fn read_bounds<T: Copy>(
     }
     let start = reader.cursor;
     let number = |reader: &mut Reader| -> CmdResult<Option<T>> {
+        let bytes = reader.string.as_bytes();
         let s = reader.cursor;
-        while reader.can_read() {
-            let c = reader.peek();
-            let allowed = c.is_ascii_digit()
-                || c == '-'
-                || (c == '.' && !(reader.can_read_n(2) && reader.peek_at(1) == '.'));
+        let mut end = s;
+        while let Some(&b) = bytes.get(end) {
+            let allowed =
+                b.is_ascii_digit() || b == b'-' || (b == b'.' && bytes.get(end + 1) != Some(&b'.'));
             if !allowed {
                 break;
             }
-            reader.skip();
+            end += 1;
         }
-        let text = &reader.string[s..reader.cursor];
+        reader.cursor = end;
+        let text = &reader.string[s..end];
         if text.is_empty() {
             return Ok(None);
         }
@@ -658,9 +670,13 @@ fn read_bounds<T: Copy>(
     };
     let result = (|| {
         let min = number(reader)?;
-        let max = if reader.can_read_n(2) && reader.peek() == '.' && reader.peek_at(1) == '.' {
-            reader.skip();
-            reader.skip();
+        let max = if reader
+            .string
+            .as_bytes()
+            .get(reader.cursor..reader.cursor + 2)
+            == Some(b"..")
+        {
+            reader.cursor += 2;
             number(reader)?
         } else {
             min
@@ -702,16 +718,34 @@ pub fn read_double_bounds(reader: &mut Reader) -> CmdResult<DoubleRange> {
 }
 /// MinMaxBounds.FloatDegrees.fromReader (no swap check).
 pub fn read_float_bounds(reader: &mut Reader) -> CmdResult<(Option<f32>, Option<f32>)> {
-    read_bounds(
-        reader,
-        |s| java_parse_double(s).map(|v| v as f32),
-        "parsing.float.invalid",
-    )
+    read_bounds(reader, parse_float_bound, "parsing.float.invalid")
+}
+/// Java float parsing (`Float.parseFloat`) in a single IEEE-754 rounding over the
+/// characters `read_bounds` admits (`[0-9.-]`).
+fn parse_float_bound(s: &str) -> Option<f32> {
+    let body = s.strip_prefix('-').unwrap_or(s);
+    let mut chars = body.chars().peekable();
+    let mut digits = 0;
+    while chars.peek().is_some_and(char::is_ascii_digit) {
+        chars.next();
+        digits += 1;
+    }
+    if chars.peek() == Some(&'.') {
+        chars.next();
+        while chars.peek().is_some_and(char::is_ascii_digit) {
+            chars.next();
+            digits += 1;
+        }
+    }
+    if digits == 0 || chars.next().is_some() {
+        return None;
+    }
+    s.parse::<f32>().ok()
 }
 /// Java integer parsing over number characters.
 pub fn java_parse_int(s: &str) -> Option<i32> {
     let digits = s.strip_prefix(['-', '+']).unwrap_or(s);
-    if digits.is_empty() || !digits.chars().all(|c| c.is_ascii_digit()) {
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
     s.parse().ok()
@@ -733,43 +767,43 @@ pub fn java_parse_double(s: &str) -> Option<f64> {
             f64::INFINITY
         }));
     }
-    let mut chars = body.chars().peekable();
-    let mut digits = 0;
-    while chars.peek().is_some_and(char::is_ascii_digit) {
-        chars.next();
+    let bytes = body.as_bytes();
+    let mut i = 0;
+    let mut digits = 0usize;
+    while i < bytes.len() && bytes[i].is_ascii_digit() {
+        i += 1;
         digits += 1;
     }
-    if chars.peek() == Some(&'.') {
-        chars.next();
-        while chars.peek().is_some_and(char::is_ascii_digit) {
-            chars.next();
+    if i < bytes.len() && bytes[i] == b'.' {
+        i += 1;
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
+            i += 1;
             digits += 1;
         }
     }
     if digits == 0 {
         return None;
     }
-    if matches!(chars.peek(), Some('e' | 'E')) {
-        chars.next();
-        if matches!(chars.peek(), Some('+' | '-')) {
-            chars.next();
+    if i < bytes.len() && matches!(bytes[i], b'e' | b'E') {
+        i += 1;
+        if i < bytes.len() && matches!(bytes[i], b'+' | b'-') {
+            i += 1;
         }
-        let mut exp = 0;
-        while chars.peek().is_some_and(char::is_ascii_digit) {
-            chars.next();
+        let mut exp = 0usize;
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
+            i += 1;
             exp += 1;
         }
         if exp == 0 {
             return None;
         }
     }
-    if chars.next().is_some() {
+    if i < bytes.len() {
         return None;
     }
-    let clean: String = t
+    let clean = t
         .trim_end_matches(['d', 'D', 'f', 'F'])
-        .trim_start_matches('+')
-        .to_owned();
+        .trim_start_matches('+');
     clean.parse::<f64>().ok()
 }
 fn parse_coord_int(reader: &mut Reader) -> CmdResult<Coord> {
@@ -2151,5 +2185,31 @@ impl ArgType {
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn read_float_bounds_avoids_double_rounding() {
+        // Strictly below the f32 midpoint 16777219.0 (between 16777218 and 16777220):
+        // f64 rounds up to 16777219.0 and casting to f32 then ties-to-even up to 16777220.0,
+        // whereas single-rounding Float.parseFloat lands on 16777218.0.
+        let boundary = "16777218.9999999999";
+        assert_eq!(
+            java_parse_double(boundary).map(|v| v as f32),
+            Some(16_777_220.0)
+        );
+        let mut reader = Reader::new(boundary);
+        assert_eq!(
+            read_float_bounds(&mut reader).unwrap(),
+            (Some(16_777_218.0), Some(16_777_218.0))
+        );
+        // Reject malformed bound tokens that read_bounds can slice.
+        assert_eq!(parse_float_bound("."), None);
+        assert_eq!(parse_float_bound("-."), None);
+        assert_eq!(parse_float_bound("1.2.3"), None);
     }
 }

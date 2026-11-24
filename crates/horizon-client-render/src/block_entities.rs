@@ -33,6 +33,7 @@ use std::sync::{
 };
 
 mod carry;
+mod revised;
 pub use carry::Carried;
 
 static NEXT_TOKEN: AtomicU64 = AtomicU64::new(1);
@@ -76,6 +77,20 @@ pub struct BlockEntityLease {
 
 pub type Pos = (i32, i32, i32);
 
+/// How a block entity's ticker stands: a slot in `Level.blockEntityTickers`, one waiting for the
+/// next promotion, or none. A transaction keeps it with a block entity it removes, so an abort
+/// puts the same registration back instead of queueing a new one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TickerRegistration {
+    /// Neither made nor pending.
+    #[default]
+    None,
+    /// The slot it ticks in.
+    Live(u32),
+    /// The token of its pending entry.
+    Pending(u32),
+}
+
 /// What a block state's block entity does each tick (`BlockState.getTicker`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Ticking {
@@ -91,7 +106,7 @@ pub enum Ticking {
 
 #[derive(Default)]
 pub struct BlockEntities {
-    map: HashMap<Pos, BlockEntity>,
+    map: revised::Revised,
     generations: FxHashMap<Pos, u64>,
     on_load: std::collections::VecDeque<(Pos, u64)>,
     on_load_enabled: bool,
@@ -117,6 +132,11 @@ pub struct BlockEntities {
     /// The token of each position's pending entry: an entry whose token is
     /// not here any more was cancelled.
     pending: FxHashMap<Pos, u32>,
+    /// The live slots `cancel` freed, still in `tickers` until the next sweep: a removal an
+    /// aborted transaction puts back takes its slot again from here.
+    released: FxHashMap<Pos, u32>,
+    /// The pending tokens `cancel` withdrew, still in `added` until the next promotion.
+    withdrawn: FxHashMap<Pos, u32>,
     next_slot: u32,
     /// Whether a slot was freed since the list was last swept: otherwise
     /// every slot in it is still live, unless its block entity is `out`.
@@ -550,8 +570,13 @@ impl BlockEntities {
     /// `removeBlockEntityTicker`: no slot, made or pending.
     fn cancel(&mut self, pos: &Pos) {
         self.wake(pos);
-        self.freed |= self.live.remove(pos).is_some();
-        self.pending.remove(pos);
+        if let Some(slot) = self.live.remove(pos) {
+            self.freed = true;
+            self.released.insert(*pos, slot);
+        }
+        if let Some(token) = self.pending.remove(pos) {
+            self.withdrawn.insert(*pos, token);
+        }
     }
 
     /// Attachment map for a live block entity.
@@ -821,6 +846,11 @@ impl BlockEntities {
     pub fn get(&self, pos: &Pos) -> Option<&BlockEntity> {
         self.map.get(pos)
     }
+    /// What a save of the block entity at `pos` may key its output on: a new
+    /// value after every change, or chance of one (each `&mut` it lends).
+    pub fn revision(&self, pos: &Pos) -> Option<u64> {
+        self.map.revision(pos)
+    }
     pub fn get_mut(&mut self, pos: &Pos) -> Option<&mut BlockEntity> {
         self.wake(pos);
         let entity = self.map.get_mut(pos)?;
@@ -927,7 +957,7 @@ impl BlockEntities {
         }
         self.wake(&pos);
         index_chunk(&mut self.by_chunk, pos);
-        let entity = self.map.entry(pos).or_insert_with(make);
+        let entity = self.map.get_or_insert_with(pos, make);
         if absent && matches!(entity, BlockEntity::Mod(_)) {
             if self.on_load_enabled {
                 self.on_load.push_back((pos, self.generations[&pos]));
@@ -975,6 +1005,60 @@ impl BlockEntities {
     /// Drop the held data: every handle to it is stale from now on.
     pub fn release_broken(&mut self) {
         self.broken = None;
+    }
+    /// The ticker registration of the block entity at `pos`.
+    pub fn ticker_registration(&self, pos: &Pos) -> TickerRegistration {
+        if let Some(&slot) = self.live.get(pos) {
+            TickerRegistration::Live(slot)
+        } else if let Some(&token) = self.pending.get(pos) {
+            TickerRegistration::Pending(token)
+        } else {
+            TickerRegistration::None
+        }
+    }
+    /// Puts back a block entity a transaction removed from `pos` as it was: its `generation` and
+    /// its ticker as `ticker` kept it, while that slot or pending entry is still in the lists;
+    /// a new one where it isn't, as `insert` makes. Nothing else is queued: no load notice, as
+    /// the block entity never left for anyone outside the aborted transaction.
+    pub fn restore_removed(
+        &mut self,
+        pos: Pos,
+        entity: BlockEntity,
+        generation: u64,
+        ticker: TickerRegistration,
+    ) {
+        let is_mod = matches!(entity, BlockEntity::Mod(_));
+        let shown = shows_box(&entity);
+        self.replace_taken(pos);
+        self.note_sign_editor(pos, &entity);
+        note_listed(&mut self.listed, pos, Some(&entity));
+        index_chunk(&mut self.by_chunk, pos);
+        self.map.insert(pos, entity);
+        self.generations.insert(pos, generation);
+        match ticker {
+            TickerRegistration::None => {}
+            TickerRegistration::Live(slot) if self.released.get(&pos) == Some(&slot) => {
+                self.released.remove(&pos);
+                self.live.insert(pos, slot);
+                // The slot never left `tickers`; drop the awake cache all the same.
+                self.awake_tickers = None;
+            }
+            TickerRegistration::Pending(token) if self.withdrawn.get(&pos) == Some(&token) => {
+                self.withdrawn.remove(&pos);
+                self.pending.insert(pos, token);
+            }
+            _ => self.add(pos),
+        }
+        if shown {
+            self.boxes.insert(pos);
+        } else {
+            self.boxes.remove(&pos);
+        }
+        if is_mod {
+            self.mods.entry(chunk_of(pos)).or_default().insert(pos);
+        } else {
+            forget_mod(&mut self.mods, pos);
+        }
     }
     /// `LevelChunk.removeBlockEntity`: the block entity and its slot.
     pub fn remove(&mut self, pos: &Pos) -> Option<BlockEntity> {
@@ -1073,7 +1157,17 @@ impl BlockEntities {
     pub fn unload(&mut self, mut gone: impl FnMut(&Pos) -> bool) {
         self.carried.retain(|p, _| !gone(p));
         let asleep = std::mem::take(&mut self.asleep);
-        self.retain_impl(|p, _| !gone(p), false);
+        // A sign that goes moves the sign revision; the kept ones are not
+        // lent out, so they keep theirs.
+        let sign_dropped = self
+            .map
+            .iter()
+            .any(|(p, e)| matches!(e, BlockEntity::Sign(_)) && gone(p));
+        let dropped = self.map.retain_keys(|p| !gone(p));
+        self.forget_dropped(&dropped);
+        if sign_dropped {
+            self.bump_sign_revision();
+        }
         self.retire_taken(gone);
         self.asleep = asleep;
         let map = &self.map;
@@ -1126,6 +1220,25 @@ impl BlockEntities {
         });
         if sign_changed {
             self.bump_sign_revision();
+        }
+    }
+    /// What [`Self::unload`] forgets of the block entities it dropped from the map.
+    fn forget_dropped(&mut self, dropped: &[Pos]) {
+        for p in dropped {
+            retire_attachments(
+                &mut self.attachments,
+                self.attachment_observer.as_ref(),
+                &self.generations,
+                p,
+            );
+            self.generations.remove(p);
+            self.freed |= self.live.remove(p).is_some();
+            self.pending.remove(p);
+            forget_mod(&mut self.mods, *p);
+            self.boxes.remove(p);
+            forget_listed(&mut self.listed, p);
+            unindex_chunk(&mut self.by_chunk, p);
+            self.sign_editors.remove(p);
         }
     }
     /// [`Self::unload`] of the block entities in `chunks`, reading theirs alone ([`Self::by_chunk`])
@@ -1188,6 +1301,8 @@ impl BlockEntities {
         self.live.clear();
         self.added.clear();
         self.pending.clear();
+        self.released.clear();
+        self.withdrawn.clear();
         self.out.clear();
         self.replaced.clear();
         self.carried.clear();
@@ -1264,6 +1379,8 @@ impl BlockEntities {
     /// Returns the slots to tick, in order; check each with `is_live` before
     /// ticking it, as the ticks before it can free it.
     pub fn tickers(&mut self, state: impl Fn(Pos) -> u32) -> Arc<Vec<(Pos, u32)>> {
+        // Every entry `added` held leaves it now, the withdrawn ones with it.
+        self.withdrawn.clear();
         let mut tickers_changed = false;
         for (pos, token) in std::mem::take(&mut self.added) {
             if self.pending.get(&pos) != Some(&token) {
@@ -1316,6 +1433,8 @@ impl BlockEntities {
         });
         self.ticker_orders.truncate(write);
         self.awake_tickers = None;
+        // The freed slots left the list with the sweep.
+        self.released.clear();
         Arc::clone(&self.tickers)
     }
     /// Monotonic counter bumped whenever any sleeping entity wakes (`wake` / `wake_all`).
@@ -1371,6 +1490,9 @@ mod attachment_tests;
 mod lease_tests;
 
 #[cfg(test)]
+mod revision_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1388,6 +1510,57 @@ mod tests {
             .iter()
             .map(|(p, _)| *p)
             .collect()
+    }
+
+    #[test]
+    fn a_restored_removal_keeps_its_ticker_and_queues_nothing() {
+        let mut b = level();
+        b.set_on_load_enabled(true);
+        let states: HashMap<Pos, u32> = [((1, 64, 1), 1), ((2, 64, 1), 1)].into();
+        let ticking = (1, 64, 1);
+        let modded = (2, 64, 1);
+        b.insert(ticking, hopper());
+        b.insert(modded, BlockEntity::Mod(Box::default()));
+        assert_eq!(order(&mut b, &states), vec![ticking, modded]);
+        while b.next_on_load().is_some() {}
+        for _ in 0..50 {
+            for pos in [ticking, modded] {
+                let generation = b.generation(&pos).unwrap();
+                let ticker = b.ticker_registration(&pos);
+                let entity = b.remove(&pos).unwrap();
+                b.restore_removed(pos, entity, generation, ticker);
+                assert_eq!(b.generation(&pos), Some(generation));
+                assert_eq!(b.ticker_registration(&pos), ticker);
+            }
+        }
+        assert!(b.added.is_empty(), "no ticker queued");
+        assert_eq!(b.pending_on_load_len(), 0, "no load notice queued");
+        assert_eq!(
+            order(&mut b, &states),
+            vec![ticking, modded],
+            "the same slots, in order"
+        );
+
+        // One still pending gets its pending entry back, not a second one.
+        let fresh = (3, 64, 1);
+        b.insert(fresh, hopper());
+        let generation = b.generation(&fresh).unwrap();
+        let ticker = b.ticker_registration(&fresh);
+        assert!(matches!(ticker, TickerRegistration::Pending(_)));
+        let entity = b.remove(&fresh).unwrap();
+        b.restore_removed(fresh, entity, generation, ticker);
+        assert_eq!(b.ticker_registration(&fresh), ticker);
+        assert_eq!(b.added.len(), 1);
+        let states: HashMap<Pos, u32> = [(ticking, 1), (modded, 1), (fresh, 1)].into();
+        assert_eq!(order(&mut b, &states), vec![ticking, modded, fresh]);
+
+        // Once its slot is swept, a restored block entity gets a new one at the end.
+        let generation = b.generation(&ticking).unwrap();
+        let ticker = b.ticker_registration(&ticking);
+        let entity = b.remove(&ticking).unwrap();
+        assert_eq!(order(&mut b, &states), vec![modded, fresh]);
+        b.restore_removed(ticking, entity, generation, ticker);
+        assert_eq!(order(&mut b, &states), vec![modded, fresh, ticking]);
     }
 
     #[test]
