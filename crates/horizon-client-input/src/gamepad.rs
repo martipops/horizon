@@ -145,6 +145,21 @@ impl PadState {
             ],
         }
     }
+    /// The pad now (`self`) with what it held at some moment since the last read (`between`): a
+    /// button pressed and let go between two reads is held for this one, so it still presses,
+    /// and lets go at the next read; a trigger keeps the furthest it went. One read a frame
+    /// would otherwise miss a quick tap at a low frame rate or in a hitch. The sticks stay as
+    /// they are now: their peaks travel apart (`Pads::peaks`).
+    pub fn with_held_between(&self, between: &PadState) -> PadState {
+        PadState {
+            buttons: self.buttons | between.buttons,
+            triggers: [
+                self.triggers[0].max(between.triggers[0]),
+                self.triggers[1].max(between.triggers[1]),
+            ],
+            ..*self
+        }
+    }
     /// Anything pushed past the deadzones (the pad is in use).
     pub fn active(&self, settings: &PadSettings) -> bool {
         self.buttons != 0
@@ -2432,6 +2447,32 @@ bind_key.hotbar.2:north
         state.set(Button::DPadUp, true);
         edges.update(&state, 0.4);
         assert_eq!(edges.release_all(), [(Button::DPadUp, false)]);
+    }
+
+    #[test]
+    fn a_tap_between_two_reads_presses_then_lets_go() {
+        // A pulled into a press and let go again before the read, and the left trigger squeezed
+        // past the threshold and back: the read after them finds the pad at rest.
+        let mut between = PadState::default();
+        between.set(Button::South, true);
+        between.triggers[0] = 0.9;
+        let rest = PadState::default();
+        let mut edges = Edges::default();
+        let read = rest.with_held_between(&between);
+        assert_eq!(
+            edges.update(&read, 0.4),
+            [(Button::South, true), (Button::LeftTrigger, true)]
+        );
+        assert_eq!(
+            edges.update(&rest.with_held_between(&PadState::default()), 0.4),
+            [(Button::South, false), (Button::LeftTrigger, false)]
+        );
+        // Sticks are the pad's now, not what it held between.
+        let leaning = PadState {
+            left: [0.0, 1.0],
+            ..PadState::default()
+        };
+        assert_eq!(rest.with_held_between(&leaning).left, [0.0, 0.0]);
     }
 
     #[test]

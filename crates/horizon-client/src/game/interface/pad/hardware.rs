@@ -352,6 +352,9 @@ impl Pads {
         };
         let active = self.devices.active;
         self.peaks = [[0.0; 2]; 2];
+        // What the active pad held at any moment between the events: a tap let go before the
+        // last of them still presses (`PadState::with_held_between`).
+        let mut between: Option<(PadId, PadState)> = None;
         while let Some(gilrs::Event { id, event, .. }) = gilrs.next_event() {
             use gilrs::EventType as E;
             // The furthest each stick of the active pad leant between the events, which a read
@@ -405,6 +408,18 @@ impl Pads {
                 E::ButtonChanged(_, value, _) if value > TAKEOVER => self.devices.active = Some(id),
                 _ => {}
             }
+            if self.devices.active == Some(id)
+                && matches!(
+                    event,
+                    E::ButtonPressed(..) | E::ButtonChanged(..) | E::AxisChanged(..)
+                )
+            {
+                let now = state_of(&gilrs.gamepad(id));
+                between = Some(match between {
+                    Some((pad, held)) if pad == id => (id, held.with_held_between(&now)),
+                    _ => (id, now),
+                });
+            }
         }
         // Another pad, or none: its A going away isn't a release.
         if self.devices.active != active {
@@ -443,7 +458,10 @@ impl Pads {
             .active
             .and_then(|id| xbox_target(gilrs, id))
             .unwrap_or(xbox::Target::ANY);
-        state_of(&pad)
+        let held = between
+            .filter(|(id, _)| self.devices.active == Some(*id))
+            .map_or_else(PadState::default, |(_, held)| held);
+        state_of(&pad).with_held_between(&held)
     }
 }
 
@@ -542,6 +560,9 @@ pub(in crate::game) struct PadRouter {
     rumbles: Vec<(gilrs::ff::Effect, Instant)>,
     /// The furthest each pad's sticks leant since the last `events` (`Pads::peaks`).
     peaks: Vec<(PadId, [[f32; 2]; 2])>,
+    /// What each pad held at any moment since the last `events`: a tap let go before the last
+    /// event still presses (`PadState::with_held_between`).
+    between: Vec<(PadId, PadState)>,
     /// Each player's own output while several play: gilrs' force feedback has no trigger
     /// motors, so a guest's vibration would move the grips alone. One link per pad, dropped
     /// when the pad goes or the router hands the reader back.
@@ -708,12 +729,24 @@ impl PadRouter {
         };
         let mut events = Vec::new();
         self.peaks.clear();
+        self.between.clear();
         while let Some(gilrs::Event { id, event, .. }) = gilrs.next_event() {
-            if matches!(event, gilrs::EventType::AxisChanged(..)) {
+            use gilrs::EventType as E;
+            if matches!(event, E::AxisChanged(..)) {
                 let sticks = sticks_of(&gilrs.gamepad(id));
                 match self.peaks.iter_mut().find(|(pad, _)| *pad == id) {
                     Some((_, peaks)) => keep_peaks(peaks, sticks),
                     None => self.peaks.push((id, sticks)),
+                }
+            }
+            if matches!(
+                event,
+                E::ButtonPressed(..) | E::ButtonChanged(..) | E::AxisChanged(..)
+            ) {
+                let now = state_of(&gilrs.gamepad(id));
+                match self.between.iter_mut().find(|(pad, _)| *pad == id) {
+                    Some((_, held)) => *held = held.with_held_between(&now),
+                    None => self.between.push((id, now)),
                 }
             }
             match event {
@@ -761,12 +794,20 @@ impl PadRouter {
             .map_or([[0.0; 2]; 2], |(_, peaks)| *peaks)
     }
 
-    /// The pad's state now (released when it is gone).
+    /// The pad's state now (released when it is gone), with what it held since the last
+    /// `events` (`PadState::with_held_between`).
     pub(in crate::game) fn state(&self, id: PadId) -> PadState {
+        let between = self
+            .between
+            .iter()
+            .find(|(pad, _)| *pad == id)
+            .map_or_else(PadState::default, |(_, held)| *held);
         self.gilrs
             .as_ref()
             .and_then(|g| g.connected_gamepad(id))
-            .map_or_else(PadState::default, |pad| state_of(&pad))
+            .map_or_else(PadState::default, |pad| {
+                state_of(&pad).with_held_between(&between)
+            })
     }
 
     /// Its glyphs (Xbox, PlayStation, Nintendo), as `read` finds them for the active pad.
