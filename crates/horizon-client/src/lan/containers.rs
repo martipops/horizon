@@ -10,11 +10,12 @@ use crate::{
 use horizon_core::nbt::Tag;
 use horizon_core::random::RandomSource;
 use horizon_protocol::{
-    item::Hashed,
+    item::{Hashed, WirePatch},
     packets::{
         configuration::CustomPayload,
         play::{self, Clientbound as C},
     },
+    registry::SyncedNames,
 };
 use std::collections::HashMap;
 
@@ -693,6 +694,38 @@ impl Hub {
             (Some(h), Some(s)) => h.item == self.item_id(&s.item) && h.count == s.count as i32,
             _ => false,
         }
+    }
+
+    /// `RemoteSlot.matches`: the client's hash of a stack, components included, is the hash of
+    /// the server's. A component that has no hash here can't be compared, so a stack holding one
+    /// never matches.
+    pub fn claim_matches(&mut self, claimed: &Option<Hashed>, mine: &Option<ItemStack>) -> bool {
+        let (claimed, mine) = match (claimed, self.stack(mine)) {
+            (None, None) => return true,
+            (Some(claimed), Some(mine)) => (claimed, mine),
+            _ => return false,
+        };
+        let names = SyncedNames {
+            builtin: &self.sync.builtin,
+            dynamic: &self.sync.dynamic,
+        };
+        let mut hashed = Hashed::create(&mine, &names);
+        let components = mine
+            .wire
+            .0
+            .as_deref()
+            .and_then(|patch| WirePatch::decode(patch).ok())
+            .map_or(mine.added.len(), |(added, _)| added.len());
+        if hashed.added.len() != components {
+            return false;
+        }
+        // HashedPatchMap holds a map and a set: their order says nothing.
+        let mut claimed = claimed.clone();
+        for stack in [&mut claimed, &mut hashed] {
+            stack.added.sort_unstable();
+            stack.removed.sort_unstable();
+        }
+        claimed == hashed
     }
 
     /// The slot's stack as the menu holds it: borrowed where its storage can

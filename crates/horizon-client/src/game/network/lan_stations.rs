@@ -38,16 +38,18 @@ pub(super) struct GuestStation {
 /// How a station op's outcome reaches the client.
 #[derive(Clone, Copy)]
 enum Answer<'a> {
-    /// The whole menu (`sendAllDataToRemote`).
+    /// The whole menu and the data slots that changed.
     Whole,
+    /// The whole menu and every data slot (`sendAllDataToRemote`, `broadcastFullState`).
+    Resync,
     /// `broadcastChanges` after `handleContainerButtonClick`: the slots that differ from what
     /// the client holds.
     Changes,
-    /// `broadcastChanges` after `handleContainerClick`: those slots, each slot the click's
-    /// packet listed (`changedSlots`: sent again whatever it predicted there, its hash is not
-    /// compared) and the carried stack. A click made on an older `state` than the menu's gets
-    /// the whole menu (`fullResyncNeeded`).
-    Click { state: i32, listed: &'a [usize] },
+    /// `broadcastChanges` after `handleContainerClick`: what the client holds in the slots the
+    /// click's packet lists (`changedSlots`) and on its cursor is what it predicted, so a right
+    /// prediction is not sent back. A click made on an older state than the menu's is answered
+    /// by a `Resync` (`fullResyncNeeded`).
+    Click(&'a play::ContainerClick),
 }
 
 /// `AbstractContainerMenu.incrementStateId`.
@@ -385,7 +387,7 @@ impl Game<'_> {
         let answer = if guest.is_some() {
             answer
         } else {
-            Answer::Whole
+            Answer::Resync
         };
         self.lan_send_station(conn, answer);
         true
@@ -792,22 +794,9 @@ impl Game<'_> {
 
     /// A click on the guest's station window; false for other windows.
     pub(super) fn lan_station_click(&mut self, conn: u32, p: &play::ContainerClick) -> bool {
-        let listed: Vec<usize> = p
-            .changed
-            .iter()
-            .filter_map(|(slot, _)| usize::try_from(*slot).ok())
-            .collect();
-        self.lan_station_op(
-            conn,
-            Some(p.container),
-            Answer::Click {
-                state: p.state,
-                listed: &listed,
-            },
-            |menu, env| {
-                let _ = menu.click(env, i32::from(p.slot), i32::from(p.button), input(p.input));
-            },
-        )
+        self.lan_station_op(conn, Some(p.container), Answer::Click(p), |menu, env| {
+            let _ = menu.click(env, i32::from(p.slot), i32::from(p.button), input(p.input));
+        })
     }
 
     /// `ServerGamePacketListenerImpl.handleContainerButtonClick`:
@@ -913,27 +902,43 @@ impl Game<'_> {
         let g = &host.hub.guests[gi];
         items.extend((9..36).chain(0..9).map(|i| g.inventory[i].clone()));
         let carried = g.carried.clone();
-        let listed: Option<&[usize]> = match answer {
-            Answer::Whole => None,
-            Answer::Changes => Some(&[]),
-            // `broadcastFullState`.
-            Answer::Click { state, .. } if state != gs.state => None,
-            Answer::Click { listed, .. } => Some(listed),
+        let answer = match answer {
+            Answer::Click(p) if p.state != gs.state => Answer::Resync,
+            answer => answer,
         };
         // `synchronizeSlotToRemote`: the slots that differ from what the client holds, the
         // inventory's by the inventory menu's numbers (its main rows start at 9).
-        let mut resend: Option<Vec<usize>> = listed.map(|listed| {
-            (0..items.len())
-                .filter(|&slot| {
-                    let held = if slot < own {
-                        gs.sent.get(slot)
-                    } else {
-                        g.menu_sent.get(slot - own + 9)
-                    };
-                    held != Some(&items[slot]) || listed.contains(&slot)
-                })
-                .collect()
-        });
+        let mut resend: Option<Vec<usize>> = match answer {
+            Answer::Whole | Answer::Resync => None,
+            Answer::Changes | Answer::Click(_) => Some(
+                (0..items.len())
+                    .filter(|&slot| {
+                        let held = if slot < own {
+                            gs.sent.get(slot)
+                        } else {
+                            g.menu_sent.get(slot - own + 9)
+                        };
+                        held != Some(&items[slot])
+                    })
+                    .collect(),
+            ),
+        };
+        // `setRemoteSlotUnsafe`: a slot the click lists holds what the client predicted there.
+        if let (Some(slots), Answer::Click(p)) = (resend.as_mut(), answer) {
+            for (slot, claimed) in &p.changed {
+                let Some((slot, item)) = usize::try_from(*slot)
+                    .ok()
+                    .and_then(|slot| Some((slot, items.get(slot)?)))
+                else {
+                    continue;
+                };
+                slots.retain(|&s| s != slot);
+                if !host.hub.claim_matches(claimed, item) {
+                    slots.push(slot);
+                }
+            }
+            slots.sort_unstable();
+        }
         // The client works a result out of an input it is sent (`slotsChanged`), and that may
         // not be the server's (a mod's hook decided it): the result follows its inputs.
         if let Some(slots) = resend.as_mut()
@@ -966,7 +971,9 @@ impl Game<'_> {
                         item: host.hub.stack(&items[slot]),
                     }));
                 }
-                if matches!(answer, Answer::Click { .. }) {
+                if let Answer::Click(p) = answer
+                    && !host.hub.claim_matches(&p.carried, &carried)
+                {
                     packets.push(C::SetCursorItem(play::SetCursorItem {
                         item: host.hub.stack(&carried),
                     }));
@@ -978,6 +985,9 @@ impl Game<'_> {
         // ContainerSetData's value is a short. An anvil cost outside it
         // would change sign (`-65535` as `+1`), so the signed cost follows
         // on `horizon:anvil_cost` after that short.
+        if matches!(answer, Answer::Resync) {
+            gs.sent_data.clear();
+        }
         gs.sent_data.resize(gs.menu.data.len(), None);
         let mut data = Vec::new();
         let mut wide_cost = None;

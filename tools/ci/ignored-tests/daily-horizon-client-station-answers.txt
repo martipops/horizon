@@ -1,3 +1,5 @@
 # What a station's player is sent after a recipe pick and a click needs prepared resources (the stonecutting recipes).
 horizon-client game::lan_stations::answer_tests::a_click_in_the_inventory_sends_no_station_slot lib daily resources
 horizon-client game::lan_stations::answer_tests::a_recipe_pick_sends_the_result_and_leaves_the_input_alone lib daily resources
+horizon-client game::lan_stations::answer_tests::a_rightly_predicted_take_does_not_set_the_input_again lib daily resources
+horizon-client game::lan_stations::answer_tests::a_claim_with_other_components_does_not_match lib daily resources
