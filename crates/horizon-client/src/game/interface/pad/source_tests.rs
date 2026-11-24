@@ -189,16 +189,3 @@ fn a_scripted_run_leaves_the_source_unread() {
         assert!(game.input_source.is_some(), "it stays registered");
     });
 }
-
-#[test]
-#[ignore = "daily"]
-fn a_panic_in_the_source_leaves_it_registered() {
-    playing(|game| {
-        install(game);
-        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            game.with_input_source(|_, _| panic!("the source failed"));
-        }));
-        assert!(caught.is_err());
-        assert!(game.input_source.is_some(), "the session stays on the source");
-    });
-}

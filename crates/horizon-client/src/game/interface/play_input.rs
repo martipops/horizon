@@ -583,20 +583,17 @@ impl Game<'_> {
 /// never the controller modules. A registered source answers (`input_source`); with none, the
 /// internal adapter, the `pad` modules, does until they leave the engine (spec #14205).
 impl Game<'_> {
-    /// Takes the source out for a call that needs it mutable beside the host (`self`). It goes
-    /// back even when the call panics, so a caught panic doesn't leave the session on the pads.
-    pub(super) fn with_input_source<T>(
+    /// Takes the source out for a call that needs it mutable beside the host (`self`). A panic in
+    /// the call isn't caught on this path (the crash handler ends the game), so the source is put
+    /// back only on return.
+    fn with_input_source<T>(
         &mut self,
         call: impl FnOnce(&mut dyn InputSource, &Self) -> T,
     ) -> Option<T> {
         let mut source = self.input_source.take()?;
-        let answer =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| call(source.as_mut(), self)));
+        let answer = call(source.as_mut(), self);
         self.input_source = Some(source);
-        match answer {
-            Ok(answer) => Some(answer),
-            Err(panic) => std::panic::resume_unwind(panic),
-        }
+        Some(answer)
     }
 
     /// Whether a registered source is left unread: a scripted run (`scripted_run`) drives
@@ -660,6 +657,9 @@ impl Game<'_> {
     /// The keyboard or mouse acted in play (a key or button pressed): it has control again, though
     /// only moving the mouse takes a pad out of use.
     pub(super) fn input_keyboard_used(&mut self) {
+        if self.input_source_muted() {
+            return;
+        }
         match &mut self.input_source {
             Some(source) => source.keyboard_used(),
             None => self.pad.keyboard_took_over = true,
@@ -735,27 +735,25 @@ impl Game<'_> {
     }
 }
 
-/// A new game's input source, from the registered factory ([`input_source_for`]). A server's game
-/// doesn't read the registry, so it doesn't seal it: a registration after a server started still
-/// counts for the players' games.
+/// A new game's input source, from the registered factory ([`input_source_for`]).
 pub(super) fn input_source(
     role: super::execution_role::ExecutionRole,
+) -> Option<Box<dyn InputSource>> {
+    input_source_for(role, horizon_client::input_source::factory)
+}
+
+/// A new game's input source: its own, from the registered `factory`, for a player's game; none
+/// for a server's (the integrated server's thread, a dedicated server), which has no device. A
+/// server's game doesn't read the registry, so it doesn't seal it: a registration after a server
+/// started still counts for the players' games.
+pub(super) fn input_source_for<'a>(
+    role: super::execution_role::ExecutionRole,
+    factory: impl FnOnce() -> Option<&'a dyn Factory>,
 ) -> Option<Box<dyn InputSource>> {
     if !role.is_client() {
         return None;
     }
-    input_source_for(role, horizon_client::input_source::factory())
-}
-
-/// A new game's input source: its own, from the registered `factory`, for a player's game; none
-/// for a server's (the integrated server's thread, a dedicated server), which has no device.
-pub(super) fn input_source_for(
-    role: super::execution_role::ExecutionRole,
-    factory: Option<&dyn Factory>,
-) -> Option<Box<dyn InputSource>> {
-    factory
-        .filter(|_| role.is_client())
-        .map(|factory| factory.build())
+    factory().map(|factory| factory.build())
 }
 
 /// What the engine offers an input source: the game it drives, read-only.
