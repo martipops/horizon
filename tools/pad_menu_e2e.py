@@ -81,6 +81,7 @@ Cases:
 - pointer_event_same_place: a pointer event at the place the mouse was already at keeps the pad's focus and pointer;
   the mouse moving still takes them, and a click lands where the mouse is.
 - trigger_lost_pad: the pad going away with LT held over the crafting book changes no category.
+- drag_lost_pad: the pad going away with A or X held over a drag deals out none of the stack.
 Needs built fast binaries (`cargo build --profile fast -p horizon-game -p horizon-client-lib --bins`)
 and prepared resources in .local/horizon-client/26.3. Exit status 0 when every case passes.
 - radial_commit: holding the opener shows the overlay and pauses nothing; the stick selects; releasing runs the action once.
@@ -4758,6 +4759,12 @@ def first_press_lands(game, check):
     game.pad('ls')
     left = game.ctl('inventory')['counts']
     check(not left, f'with the crosshair shown, the stack was not thrown: {left}')
+    # The mouse moved onto the very place the crosshair is: it has the pointer all the same.
+    full = full_hand()
+    mouse_moves(game, *game.menu()['pointer'])
+    check(game.menu()['pointer'] is None, 'the mouse moving onto the crosshair left the pad the pointer')
+    game.pad('south')
+    check(game.ctl('inventory') == full, 'A took the stack as it landed the crosshair where the mouse was')
 
 
 @world_case
@@ -4779,6 +4786,16 @@ def keyboard_leaves_with_pad(game, check):
     time.sleep(SETTLE)
     lines = [str(line) for line in game.ctl('chat-log', 3)['chat']]
     check(any(line.rstrip().endswith(' q') for line in lines), f'what was typed before the mouse moved was lost: {lines}')
+    # A pad that goes away takes its keyboard with it, and brings it back.
+    game.pad('up')
+    time.sleep(1)
+    check(game.menu()['keyboard'], 'chat opened again has no keyboard')
+    game.ctl('pad', 'connection', 'disconnected')
+    time.sleep(SETTLE)
+    check(not game.menu()['keyboard'], 'the keyboard stayed up after the pad disconnected')
+    check(game.ctl('ui')['screen'] == 'chat', f"chat closed with the pad: {game.ctl('ui')['screen']}")
+    game.pad('down')
+    check(game.menu()['keyboard'], "the pad back, chat's keyboard did not open again")
 
 
 @world_case
@@ -4841,6 +4858,45 @@ def trigger_lost_pad(game, check):
     was = tab()
     quick_tap(game, 'left')
     check(tab() != was, 'LT down and up no longer changes the category')
+
+
+@world_case
+def drag_lost_pad(game, check):
+    game.ctl('command', 'gamemode survival')
+    game.ctl('command', 'give @s dirt 16')
+    time.sleep(1)
+    game.ctl('key', 'e', 'tap')
+    time.sleep(SETTLE)
+    game.wait_targets()
+    for _ in range(12):
+        game.pad('down')
+    for _ in range(12):
+        game.pad('left')
+
+    def drag(button):
+        """The button held over three slots, the stack in the hand."""
+        game.pad(button, 'down')
+        game.pad('right')
+        game.pad('right')
+
+    def spread():
+        return [s['count'] for s in game.ctl('inventory')['main'] if s and s.get('count')]
+
+    game.pad('south')
+    held = game.ctl('inventory')['carried']
+    check(held and held['count'] == 16, f'A did not pick up the stack in the hotbar: {held}')
+    game.pad('up')
+    for button in ('south', 'west'):
+        drag(button)
+        # The pad goes away mid-drag: `pad release` is what the reader does when the pad in use changes or is unplugged.
+        game.ctl('pad', 'release')
+        time.sleep(SETTLE)
+        check(game.ctl('inventory')['carried'] == held and not spread(),
+              f"the pad lost with {button} held dealt out the stack: {spread()}, carrying {game.ctl('inventory')['carried']}")
+    # A drag let go by a person still deals it out.
+    drag('south')
+    game.pad('south', 'up')
+    check(len(spread()) == 3, f'the stack spread over {len(spread())} slots, not 3')
 
 
 CASES = {'idle_a': idle_a, 'idle_b': idle_b, 'idle_x': idle_x, 'release': release, 'move_cancels': move_cancels,
@@ -4934,7 +4990,8 @@ CASES = {'idle_a': idle_a, 'idle_b': idle_b, 'idle_x': idle_x, 'release': releas
          'craft_lan_guest': craft_lan_guest, 'craft_dedicated': craft_dedicated,
          'first_press_lands': first_press_lands, 'keyboard_leaves_with_pad': keyboard_leaves_with_pad,
          'keyboard_closes_with_screen': keyboard_closes_with_screen,
-         'pointer_event_same_place': pointer_event_same_place, 'trigger_lost_pad': trigger_lost_pad}
+         'pointer_event_same_place': pointer_event_same_place, 'trigger_lost_pad': trigger_lost_pad,
+         'drag_lost_pad': drag_lost_pad}
 
 
 def main():

@@ -296,3 +296,27 @@ fn keyboard_handoff_keeps_the_attack_the_pad_holds() {
         assert!(game.left);
     });
 }
+
+#[test]
+#[ignore = "daily"]
+fn the_next_pad_does_not_go_on_with_what_the_last_one_held() {
+    playing(|game| {
+        let mut held = PadState::default();
+        held.set(Button::South, true);
+        pad_press(game, Button::South, "key.jump");
+        assert!(game.keys.held(Action::Jump));
+        // Another pad takes over with its own A down (`Pads::feed_from`).
+        game.pad.menu.drop_held();
+        game.pad_source_lost(&NoEventLoop);
+        assert!(
+            !game.keys.held(Action::Jump),
+            "the pad that held jump is gone"
+        );
+        assert!(
+            game.pad.edges.update(&held, 0.4).is_empty(),
+            "the new pad's A is no press until it comes up"
+        );
+        game.pad.edges.update(&PadState::default(), 0.4);
+        assert_eq!(game.pad.edges.update(&held, 0.4), [(Button::South, true)]);
+    });
+}

@@ -502,6 +502,7 @@ Approximations:
   as it goes down on a furnace's, smoker's or blast furnace's book; on the crafting book (the inventory's and the
   crafting table's), where LT + A crafts, it changes it as it's let go instead, however long it was held, unless A
   was pressed meanwhile. A pad that goes away with LT held (unplugged, or another pad taking over) changes nothing.
+  Nor does one that goes away mid-drag: the stack stays in the hand.
 - **Direct crafting**: LT + A on a recipe crafts it once into the inventory.
   With both still held past the repeat delay it keeps crafting until either is
   let go, the items run out or the inventory is full. It's the recipe book's
@@ -590,9 +591,9 @@ own screen (`Screen::Mod`), which takes its input through the screen hooks: the 
 there.
 
 The keyboard is the pad's and belongs to the screen it opened over. When the mouse or a real keyboard
-takes over it closes, so Tab and the arrows move the focus again; over chat or a sign it opens again once
-the pad is back. When another screen comes up under it (dying with chat open, a screen the server opens)
-it closes too. What was typed stays in the field either way.
+takes over, or the pad is disconnected, it closes, so Tab and the arrows move the focus again; over chat or a
+sign it opens again once the pad is back. When another screen comes up under it (dying with chat open, a screen
+the server opens) it closes too. What was typed stays in the field either way.
 
 Done (Menu, or the keyboard's Done key) closes the keyboard, and on the way:
 

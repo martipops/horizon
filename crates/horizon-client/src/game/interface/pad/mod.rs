@@ -390,6 +390,8 @@ impl Game<'_> {
     /// Once per loop iteration: read the pads and act on button changes.
     pub(super) fn poll_pads(&mut self, event_loop: &dyn EventLoopCtl) {
         self.pad.virtual_input = self.pad.injected != PadState::default();
+        // Before anything below lets go of the old pad's buttons as its own releases.
+        self.pad_source_lost(event_loop);
         let context = self.pad_context();
         if let Some(old) = self.pad.context.filter(|old| *old != context) {
             if old.screen != context.screen {
@@ -422,6 +424,8 @@ impl Game<'_> {
             Some(state) => state,
             None => self.pad.read(),
         };
+        // The read found another pad, or none.
+        self.pad_source_lost(event_loop);
         // A Nintendo pad going by its letters is read that way: its own, or the one
         // splitscreen's router feeds this player.
         let hardware = if self.pad.by_letter(&self.settings.controller) {
@@ -612,7 +616,12 @@ impl Game<'_> {
         }
     }
 
-    fn pad_button_logged(&mut self, event_loop: &dyn EventLoopCtl, button: Button, down: bool) {
+    pub(super) fn pad_button_logged(
+        &mut self,
+        event_loop: &dyn EventLoopCtl,
+        button: Button,
+        down: bool,
+    ) {
         if let Err(e) = self.pad_button(event_loop, button, down) {
             log::warn!("Horizon: controller {}: {e}", button.name());
         }
@@ -975,6 +984,7 @@ impl Game<'_> {
         // The pad that was playing is gone: nothing is driving until another is touched.
         if matches!(change, Connection::Disconnected { active: true }) {
             self.pad.in_use = false;
+            self.pad_keyboard_yields();
         }
         if !self.settings.controller.enabled {
             return;

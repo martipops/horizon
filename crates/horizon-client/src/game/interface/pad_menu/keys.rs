@@ -295,6 +295,10 @@ impl Game<'_> {
             _ => false,
         };
         if takeover {
+            // Moved at all, even to the crosshair itself, before the next poll's buttons.
+            if matches!(event, WindowEvent::CursorMoved { .. }) {
+                self.pad_gives_pointer();
+            }
             self.pad_yield_input(event_loop);
         }
         match event {
@@ -339,17 +343,11 @@ impl Game<'_> {
     /// The keyboard or the pad lets go of the pointer: it goes back to the real mouse, so a click
     /// lands where the mouse is and not on what the pad had focused.
     fn key_focus_to_mouse(&mut self, event_loop: &dyn EventLoopCtl) {
-        let menu = &mut self.pad.menu;
-        let keyboard = std::mem::take(&mut menu.keyboard);
-        if !keyboard && menu.pos.is_none() {
+        if !self.pad.menu.keyboard && self.pad.menu.pos.is_none() {
             return;
         }
-        // Only the keyboard's focus is where the next Tab goes on from.
-        let focus = menu.focus.take().map(|t| t.rect);
-        if keyboard {
-            menu.origin = focus;
-        }
-        menu.pos = None;
+        self.pad_gives_pointer();
+        let menu = &mut self.pad.menu;
         menu.pending = None;
         menu.nudge = None;
         let real = menu.real_pointer;

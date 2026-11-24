@@ -138,6 +138,9 @@ pub(super) struct MenuCursor {
     repeat: Option<(Button, Instant, bool)>,
     /// Pointer buttons the pad holds down.
     pub(super) held: [bool; 2],
+    /// The pad that held something is gone (`drop_held`): the next poll lets go of what is left
+    /// of it (`Game::pad_source_lost`).
+    pub(super) source_lost: bool,
     /// The focused button A went down on: letting go presses it, unless the
     /// focus moved or the input was cancelled first.
     pub(super) armed: Option<Rect>,
@@ -221,8 +224,10 @@ impl MenuCursor {
 
     /// The pad's input stopped coming from where it did (another pad, none, a script letting go):
     /// what it held wasn't let go by a person, so its buttons coming up do nothing here. A
-    /// presses no button, LT changes no category of the recipe book, and a held craft stops.
+    /// presses no button, LT changes no category of the recipe book, and a held craft stops. The
+    /// next poll drops a drag it was making and lets go of the rest (`Game::pad_source_lost`).
     pub(super) fn drop_held(&mut self) {
+        self.source_lost = true;
         self.armed = None;
         self.trigger = None;
         self.stop_craft();
@@ -861,8 +866,15 @@ impl Game<'_> {
                 return Ok(());
             }
         }
-        // A press in the poll the screen under the keyboard went away types nothing.
-        self.pad_keyboard_follows_screen();
+        // A press in the poll the screen under the keyboard went away, or a prompt came or went
+        // over it, was for that keyboard: it types nothing and presses nothing on what is up now.
+        if self.pad.menu.osk.is_some() {
+            self.pad_prompt_changed();
+            self.pad_keyboard_follows_screen();
+            if self.pad.menu.osk.is_none() {
+                return Ok(());
+            }
+        }
         // The on-screen keyboard takes every button while it is open.
         if let Some(keyboard) = self.pad.menu.osk.as_mut() {
             if let Some(out) = keyboard.button(button) {
@@ -1534,11 +1546,7 @@ impl Game<'_> {
         if let Some(at) = self.pad.menu.pos
             && ((at.0 - self.cursor.0).abs() > 0.5 || (at.1 - self.cursor.1).abs() > 0.5)
         {
-            self.pad.menu.pos = None;
-            let focus = self.pad.menu.focus.take();
-            if std::mem::take(&mut self.pad.menu.keyboard) {
-                self.pad.menu.origin = focus.map(|t| t.rect);
-            }
+            self.pad_gives_pointer();
             self.pad_yield_input(event_loop);
         }
         // Focus lands on the menu as it opens when the pad was in use.
@@ -1666,12 +1674,43 @@ impl Game<'_> {
         self.pad_show_os_pointer(self.pad.menu.pos.is_none() || self.pad.menu.keyboard);
     }
 
-    /// Each poll: a prompt came up or went away. The keyboard was typing into what was open, and
-    /// the focus starts again once the new frame shows: nothing pressed on one screen lands on
-    /// the other. A keyboard a prompt took from chat or a sign opens again after it
-    /// (`pad_auto_keyboard`), and the crosshair goes back to where it was. Whether the focus is
-    /// waiting for that frame.
-    fn pad_prompt_frame(&mut self, targets: &[Target]) -> bool {
+    /// The mouse takes the pointer from the pad or the keyboard's focus: it is where the mouse is,
+    /// and nothing of theirs is focused. The keyboard's focus stays where the next Tab or arrow
+    /// goes on from.
+    pub(super) fn pad_gives_pointer(&mut self) {
+        let menu = &mut self.pad.menu;
+        menu.pos = None;
+        let focus = menu.focus.take();
+        if std::mem::take(&mut menu.keyboard) {
+            menu.origin = focus.map(|t| t.rect);
+        }
+    }
+
+    /// The pad that held these buttons is gone (`MenuCursor::drop_held`). What they held ends
+    /// without acting: a stack being dragged over slots stays in the hand, as when the window
+    /// loses the pointer, and a button the next pad already holds is no press of its own until
+    /// it comes up.
+    pub(super) fn pad_source_lost(&mut self, event_loop: &dyn EventLoopCtl) {
+        if !std::mem::take(&mut self.pad.menu.source_lost) {
+            return;
+        }
+        for right in [false, true] {
+            if self.pad.menu.held[usize::from(right)] {
+                // Every release below would click the slot under it with a stack in the hand.
+                if matches!(self.screen, Screen::Inventory | Screen::Creative) {
+                    self.reset_inventory_clicks();
+                }
+                self.pad_pointer_button(event_loop, right, false);
+            }
+        }
+        for (button, down) in self.pad.edges.cancel() {
+            self.pad_button_logged(event_loop, button, down);
+        }
+    }
+
+    /// A prompt came up or went away. The keyboard was typing into what was open, and the focus
+    /// starts again once the new frame shows: nothing pressed on one screen lands on the other.
+    fn pad_prompt_changed(&mut self) {
         let prompt = self.pad_prompt_key();
         if prompt != self.pad.menu.prompt {
             let pointer_screen = self.pad_pointer_screen();
@@ -1698,6 +1737,14 @@ impl Game<'_> {
                 menu.prompt_restart = Some(widgets::generation());
             }
         }
+    }
+
+    /// Each poll: what a prompt coming or going changes (`pad_prompt_changed`), and then the focus
+    /// on the new screen. A keyboard a prompt took from chat or a sign opens again after it
+    /// (`pad_auto_keyboard`), and the crosshair goes back to where it was. Whether the focus is
+    /// waiting for the new frame.
+    fn pad_prompt_frame(&mut self, targets: &[Target]) -> bool {
+        self.pad_prompt_changed();
         let Some(changed_at) = self.pad.menu.prompt_restart else {
             return false;
         };
@@ -2568,5 +2615,70 @@ mod tests {
         assert!(!field_at(&targets, (50.0, 29.0)));
         assert!(!field_at(&targets, (5.0, 5.0)), "a button is not a field");
         assert!(!field_at(&[], (5.0, 5.0)));
+    }
+
+    /// No window loop runs in these tests.
+    struct NoEventLoop;
+    impl EventLoopCtl for NoEventLoop {
+        fn exit(&self) {
+            unreachable!("a press in a menu does not exit the event loop");
+        }
+        fn set_control_flow(&self, _: winit::event_loop::ControlFlow) {
+            unreachable!("a press in a menu does not change the event loop");
+        }
+    }
+
+    fn name_dialog() -> horizon_core::nbt::Tag {
+        use horizon_core::nbt::Tag;
+        let s = |value: &str| Tag::String(value.into());
+        Tag::compound([
+            ("type", s("minecraft:notice")),
+            ("title", s("Name")),
+            (
+                "inputs",
+                Tag::List(vec![Tag::compound([
+                    ("type", s("minecraft:text")),
+                    ("key", s("who")),
+                    ("label", s("Name")),
+                ])]),
+            ),
+        ])
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn a_press_as_a_prompt_comes_or_goes_is_not_the_old_keyboards() {
+        crate::game::native_entity_refs::tests::with_client_game(|game| {
+            game.title = None;
+            game.screen = Screen::Chat;
+            game.pad.in_use = true;
+            game.pad_open_keyboard();
+            game.show_dialog(&name_dialog());
+            let typed = |game: &Game<'_>| {
+                game.dialog_status()["open"]["inputs"][0]["value"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned()
+            };
+            assert_eq!(typed(game), "");
+            // A goes down in the poll the dialog came up in, over chat's keyboard.
+            game.pad_menu_button(&NoEventLoop, Button::South, true)
+                .unwrap();
+            assert_eq!(typed(game), "", "chat's keyboard typed into the dialog");
+            assert!(game.pad.menu.osk.is_none() && game.dialog_open());
+
+            // The other way: the dialog's own keyboard, and the server closes the dialog.
+            game.pad_open_keyboard();
+            game.pad.menu.osk_dismissed = false;
+            game.close_dialogs();
+            game.pad_menu_button(&NoEventLoop, Button::East, true)
+                .unwrap();
+            assert!(game.pad.menu.osk.is_none());
+            assert!(game.screen == Screen::Chat, "B went on to close chat");
+            assert!(
+                !game.pad.menu.osk_dismissed,
+                "B was the dialog's keyboard's: chat's still opens"
+            );
+        });
     }
 }
