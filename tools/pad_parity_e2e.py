@@ -145,6 +145,9 @@ def gameplay_drop(args, device):
         if device == 'keyboard':
             game.ctl('key', 'ctrl', 'down')
             game.ctl('key', 'q', 'tap')
+            # In play a key press waits for its tick (`handleKeybinds`), which reads Control then:
+            # let go before it and Q throws one item, not the stack.
+            game.ctl('wait', 5)
             game.ctl('key', 'ctrl', 'up')
         else:
             # Held past the stack threshold: Ctrl+Q has no button of its own.

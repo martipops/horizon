@@ -549,7 +549,9 @@ def settings_pages(args, name):
             game.wait_targets()
             menu = game.menu()
             check(menu['undeclared'] == [], f"undeclared on {page}: {menu['undeclared']}")
-            check(declared(game).get('Done') is True, f'{page} declares {declared(game)}')
+            # The page's way out: Done, or Back on Mods.
+            leave = 'Back' if page == 'mods' else 'Done'
+            check(declared(game).get(leave) is True, f'{page} declares {declared(game)}, not {leave}')
         # A Graphics page's Done, drawn its own way, is pressed by B.
         game.ctl('options', 'graphics')
         time.sleep(SETTLE)
@@ -1625,7 +1627,6 @@ STUDIO_RECORDINGS, STUDIO_BUTTONS = 12, 3
 EXTRAS_ABOUT = 'Optional additions, all off by default'
 AUTO_RECONNECT = 'Auto-reconnect'
 AUTO_RECONNECT_ABOUT = 'Rejoins a server after a lost connection or a restart'
-FIRST_EXTRA = 'Own name tag'
 LAST_MENU_EXTRA = 'Resource pack browser'
 GREYED_EXTRA = 'Sort key'
 ROW_WALK = 40
@@ -1634,6 +1635,17 @@ ROW_WALK = 40
 def label_of(game, text):
     """The widget whose label has this in it, or None while the list hides it."""
     return next((w for w in game.widgets() if text in w.get('label', '')), None)
+
+
+def first_extra(game):
+    """The extra at the top of the list as the page draws it, by its name: the first row beside the search field
+    that takes the focus. Extras get added above the others, so the cases ask the page instead of naming one."""
+    field = next((w for w in game.widgets() if w['kind'] == 'field'), None)
+    if field is None:
+        return None
+    beside = field['bounds'][0] + field['bounds'][2]
+    rows = [w for w in game.widgets() if w.get('enabled') and w.get('label') and w['bounds'][0] >= beside]
+    return min(rows, key=lambda w: w['bounds'][1])['label'].split(':')[0] if rows else None
 
 
 def ring_on(game, rect):
@@ -1667,8 +1679,11 @@ def extras_shell(args, name):
         shot(game, 'extras-open')
 
         # From the search field across to the first row, then down: a greyed row is stepped over, hidden rows scroll in.
+        first = first_extra(game)
+        check(first is not None, f'no row beside the search field: {labels(game)}')
         game.pad('right')
-        check(FIRST_EXTRA in (game.focused_label() or ''), f'the D-pad never reached {FIRST_EXTRA}: {game.focused_label()}')
+        check(first is not None and (game.focused_label() or '').startswith(first),
+              f'the D-pad never reached {first}: {game.focused_label()}')
         # A presses with a click: the row it pressed doesn't stay lit once the focus moves on.
         game.pad('south')
         pressed = game.focus()
@@ -1842,14 +1857,16 @@ def extras_shell_edges(args, name):
         time.sleep(SETTLE)
         game.wait_targets()
         check((game.menu()['focus'] or {}).get('kind') == 'field', f"Extras opened on {game.menu()['focus']}")
+        first = first_extra(game)
+        check(first is not None, f'no row beside the search field: {labels(game)}')
         game.pad('down')
-        check(FIRST_EXTRA in (game.focused_label() or ''),
-              f'down from the search field went to {game.focused_label()}, not {FIRST_EXTRA}')
+        on_first = first is not None and (game.focused_label() or '').startswith(first)
+        check(on_first, f'down from the search field went to {game.focused_label()}, not {first}')
 
         # The right stick moves the list until the focused row's middle is above the list's top.
         note = label_of(game, ZOOM_INSTALL)
         check(note is not None, f'no Mods note to find the list by: {labels(game)}')
-        if not note or FIRST_EXTRA not in (game.focused_label() or ''):
+        if not note or not on_first:
             return check.failures
         top = note['bounds'][1] - GROUP_NAME_H
         before = game.focused_label()
