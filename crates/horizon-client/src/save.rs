@@ -70,6 +70,9 @@ use {
 
 pub const VERSION_NAME: &str = horizon_core::VANILLA_VERSION;
 
+mod block_entity_cache;
+#[cfg(test)]
+mod block_entity_cache_tests;
 #[cfg(test)]
 mod compression_bench;
 mod compression_pool;
@@ -88,17 +91,37 @@ pub fn chunks_with_block_entities<'a, N: std::hash::BuildHasher>(
     entities: &HashMap<(i32, i32, i32), crate::containers::BlockEntity>,
     names: &HashMap<(i32, i32, i32), Tag, N>,
 ) -> Vec<Chunk> {
+    snapshot(chunks, entities, names, |_| None)
+}
+/// [`chunks_with_block_entities`] from the world's store, with the revision of
+/// each block entity, so a `SaveDir` can reuse the tag it saved for one that has
+/// not changed since.
+pub fn chunks_with_revised_block_entities<'a, N: std::hash::BuildHasher>(
+    chunks: impl IntoIterator<Item = &'a Arc<Chunk>>,
+    entities: &crate::block_entities::BlockEntities,
+    names: &HashMap<(i32, i32, i32), Tag, N>,
+) -> Vec<Chunk> {
+    snapshot(chunks, entities, names, |p| entities.revision(p))
+}
+fn snapshot<'a, N: std::hash::BuildHasher>(
+    chunks: impl IntoIterator<Item = &'a Arc<Chunk>>,
+    entities: &HashMap<(i32, i32, i32), crate::containers::BlockEntity>,
+    names: &HashMap<(i32, i32, i32), Tag, N>,
+    revision: impl Fn(&(i32, i32, i32)) -> Option<u64>,
+) -> Vec<Chunk> {
     let chunks: Vec<_> = chunks.into_iter().collect();
     if chunks.is_empty() {
         return Vec::new();
     }
     if chunks.len() == 1 {
         let mut c = (**chunks[0]).clone();
-        c.block_entities = entities
+        let copies: Vec<_> = entities
             .iter()
             .filter(|(p, _)| p.0 >> 4 == c.x && p.2 >> 4 == c.z)
             .map(|(p, e)| (*p, e.clone()))
             .collect();
+        let revisions: Vec<_> = copies.iter().map(|(p, _)| revision(p)).collect();
+        c.set_revised_block_entities(copies, revisions);
         c.block_names = names
             .iter()
             .filter(|(p, _)| p.0 >> 4 == c.x && p.2 >> 4 == c.z)
@@ -128,7 +151,8 @@ pub fn chunks_with_block_entities<'a, N: std::hash::BuildHasher>(
         .map(|chunk| {
             let mut c = (**chunk).clone();
             let (entities, names) = &grouped[&(c.x, c.z)];
-            c.block_entities = entities.iter().map(|(p, e)| (**p, (*e).clone())).collect();
+            let copies = entities.iter().map(|(p, e)| (**p, (*e).clone())).collect();
+            c.set_revised_block_entities(copies, entities.iter().map(|(p, _)| revision(p)));
             c.block_names = names.iter().map(|(p, n)| (**p, (*n).clone())).collect();
             c
         })
@@ -182,8 +206,56 @@ impl Drop for SessionLock {
     /// alone keeps the lock while any copy of the descriptor lives on, such as
     /// the one a process spawned on another thread holds until its `exec`.
     fn drop(&mut self) {
-        let _ = self.0.unlock();
+        let _ = unlock(&self.0);
     }
+}
+/// The lock vanilla's `DirectoryLock` takes, `FileChannel.tryLock()`, is a POSIX
+/// record lock (`fcntl`) on Unix. Rust's `File::try_lock` is `flock`, which Linux
+/// keeps apart from it: a world open in vanilla would open in Horizon and the
+/// reverse (#20841). Linux's open file description lock conflicts with Java's,
+/// and unlike a plain `fcntl` lock it belongs to the opened file, not the
+/// process, so a second [`SessionLock::acquire`] or an [`SessionLock::is_locked`]
+/// probe in this process still sees it, and closing the probe doesn't drop it.
+/// The `flock` is taken too, on the same descriptor: a Horizon built before this
+/// takes only that one, and the OFD lock alone would not see it.
+#[cfg(target_os = "linux")]
+fn whole_file_lock(file: &fs::File, kind: nix::libc::c_int) -> nix::Result<()> {
+    use nix::fcntl::{FcntlArg, fcntl};
+    use nix::libc;
+    let whole = libc::flock {
+        l_type: kind as libc::c_short,
+        l_whence: libc::SEEK_SET as libc::c_short,
+        l_start: 0,
+        l_len: 0,
+        l_pid: 0,
+    };
+    fcntl(file, FcntlArg::F_OFD_SETLK(&whole)).map(drop)
+}
+#[cfg(target_os = "linux")]
+fn try_lock(file: &fs::File) -> std::result::Result<(), fs::TryLockError> {
+    use nix::errno::Errno;
+    match whole_file_lock(file, nix::libc::F_WRLCK) {
+        Ok(()) => {}
+        Err(Errno::EAGAIN | Errno::EACCES) => return Err(fs::TryLockError::WouldBlock),
+        Err(e) => return Err(fs::TryLockError::Error(e.into())),
+    }
+    file.try_lock().inspect_err(|_| {
+        let _ = whole_file_lock(file, nix::libc::F_UNLCK);
+    })
+}
+#[cfg(target_os = "linux")]
+fn unlock(file: &fs::File) -> std::io::Result<()> {
+    let ofd = whole_file_lock(file, nix::libc::F_UNLCK);
+    file.unlock()?;
+    Ok(ofd?)
+}
+#[cfg(not(target_os = "linux"))]
+fn try_lock(file: &fs::File) -> std::result::Result<(), fs::TryLockError> {
+    file.try_lock()
+}
+#[cfg(not(target_os = "linux"))]
+fn unlock(file: &fs::File) -> std::io::Result<()> {
+    file.unlock()
 }
 impl SessionLock {
     pub fn acquire(world: &Path) -> Result<Self> {
@@ -194,7 +266,7 @@ impl SessionLock {
             .create(true)
             .truncate(false)
             .open(world.join("session.lock"))?;
-        file.try_lock()
+        try_lock(&file)
             .map_err(|_| format!("{} is already open in another instance", world.display()))?;
         file.set_len(0)?;
         file.write_all(&[0x26, 0x03])?;
@@ -212,12 +284,12 @@ impl SessionLock {
             Ok(file) => file,
             Err(e) => return e.kind() == std::io::ErrorKind::PermissionDenied,
         };
-        match file.try_lock() {
+        match try_lock(&file) {
             Err(fs::TryLockError::WouldBlock) => true,
             Err(_) => false,
             // Take the probe's own lock back at once, as `SessionLock` does on drop.
             Ok(()) => {
-                let _ = file.unlock();
+                let _ = unlock(&file);
                 false
             }
         }
@@ -1440,9 +1512,9 @@ fn encode_saved(
     tables: Option<&SaveTables>,
     shape: LevelShape,
     blending: Option<&BlendingData>,
-    palette_cache: Option<&Arc<SavedPaletteBudget>>,
+    caches: SaveCaches<'_>,
 ) -> NamedTag {
-    let mut root = encode_with_palette_cache(chunk, registry, biomes, tables, shape, palette_cache);
+    let mut root = encode_with_palette_cache(chunk, registry, biomes, tables, shape, caches);
     if let Some(data) = blending {
         put_calculated_blending(&mut root, data);
     }
@@ -1482,7 +1554,69 @@ pub fn encode_with(
     tables: Option<&SaveTables>,
     shape: LevelShape,
 ) -> NamedTag {
-    encode_with_palette_cache(chunk, registry, biomes, tables, shape, None)
+    encode_with_palette_cache(
+        chunk,
+        registry,
+        biomes,
+        tables,
+        shape,
+        SaveCaches::default(),
+    )
+}
+
+/// The caches a `SaveDir` lends its chunk encoder; none for a one-off encode.
+#[derive(Clone, Copy, Default)]
+struct SaveCaches<'a> {
+    palettes: Option<&'a Arc<SavedPaletteBudget>>,
+    block_entities: Option<&'a block_entity_cache::BlockEntityCache>,
+}
+
+/// A modelled block entity as a chunk save writes it, before the per-save
+/// overlays: its encoding with `name`, over the `source` it was loaded with.
+fn saved_block_entity(
+    p: (i32, i32, i32),
+    e: &crate::containers::BlockEntity,
+    block: &str,
+    name: Option<&Tag>,
+    source: Option<&Tag>,
+) -> Tag {
+    let mut current = block_entity_encode::encode(p, e, block);
+    if let Some(name) = name
+        && let Tag::Compound(map) = &mut current
+    {
+        map.insert("CustomName".into(), name.clone());
+    }
+    let source = source
+        .filter(|tag| crate::block_entity_nbt::id(tag) == crate::block_entity_nbt::id(&current));
+    let merged = match source {
+        Some(original) => {
+            let loaded = decode_block_entity(original).map_or_else(
+                || current.clone(),
+                |(q, e)| {
+                    let mut loaded = block_entity_encode::encode(q, &e, block);
+                    if !matches!(
+                        e,
+                        crate::containers::BlockEntity::Banner(_)
+                            | crate::containers::BlockEntity::Sign(_)
+                            | crate::containers::BlockEntity::Mod(_)
+                    ) && let Some(name) = original
+                        .get("CustomName")
+                        .and_then(crate::block_entity_nbt::component)
+                        && let Tag::Compound(map) = &mut loaded
+                    {
+                        // BaseContainerBlockEntity.loadAdditional: the
+                        // external name is also part of the loaded model.
+                        // Its removal must win over the source overlay.
+                        map.insert("CustomName".into(), name);
+                    }
+                    loaded
+                },
+            );
+            merge_block_entity(original, &loaded, &current)
+        }
+        None => current,
+    };
+    crate::block_entity_nbt::canonical(&merged).unwrap_or(merged)
 }
 
 fn encode_with_palette_cache(
@@ -1491,8 +1625,9 @@ fn encode_with_palette_cache(
     biomes: &Biomes,
     tables: Option<&SaveTables>,
     shape: LevelShape,
-    palette_cache: Option<&Arc<SavedPaletteBudget>>,
+    caches: SaveCaches<'_>,
 ) -> NamedTag {
+    let palette_cache = caches.palettes;
     let sky_light = shape.sky_light;
     let mut sections = Vec::new();
     // Sky layers below the highest section with light other than 15 are
@@ -1534,55 +1669,38 @@ fn encode_with_palette_cache(
     let mut block_entities: Vec<Tag> = chunk
         .block_entities
         .iter()
+        .enumerate()
         // A mod block entity a native mod is ticking right now
         // (`tick_mod_block_entity`): its data is out of the world.
-        .filter(|(_, e)| !block_entity_placeholder(e))
-        .map(|(p, e)| {
+        .filter(|(_, (_, e))| !block_entity_placeholder(e))
+        .map(|(index, (p, e))| {
             let block = block_name(p);
-            let mut current = block_entity_encode::encode(*p, e, &block);
-            if let Some((_, name)) = chunk.block_names.iter().find(|(q, _)| q == p)
-                && let Tag::Compound(map) = &mut current
-            {
-                map.insert("CustomName".into(), name.clone());
-            }
+            let name = chunk
+                .block_names
+                .iter()
+                .find(|(q, _)| q == p)
+                .map(|(_, n)| n);
             let source = extras
                 .and_then(|x| x.block_entity_sources.iter().find(|(q, _)| q == p))
-                .map(|(_, tag)| tag)
-                .filter(|tag| {
-                    crate::block_entity_nbt::id(tag) == crate::block_entity_nbt::id(&current)
-                });
-            let merged = match source {
-                Some(original) => {
-                    let loaded = decode_block_entity(original).map_or_else(
-                        || current.clone(),
-                        |(q, e)| {
-                            let mut loaded = block_entity_encode::encode(q, &e, &block);
-                            if !matches!(
-                                e,
-                                crate::containers::BlockEntity::Banner(_)
-                                    | crate::containers::BlockEntity::Sign(_)
-                                    | crate::containers::BlockEntity::Mod(_)
-                            ) && let Some(name) = original
-                                .get("CustomName")
-                                .and_then(crate::block_entity_nbt::component)
-                                && let Tag::Compound(map) = &mut loaded
-                            {
-                                // BaseContainerBlockEntity.loadAdditional: the
-                                // external name is also part of the loaded model.
-                                // Its removal must win over the source overlay.
-                                map.insert("CustomName".into(), name);
-                            }
-                            loaded
-                        },
-                    );
-                    merge_block_entity(original, &loaded, &current)
-                }
-                None => current,
+                .map(|(_, tag)| tag);
+            let inputs = block_entity_cache::Inputs {
+                block: &block,
+                name,
+                source,
             };
-            let mut saved = crate::block_entity_nbt::canonical(&merged).unwrap_or(merged);
-            if let Some(limit) = extras
-                .and_then(|x| x.block_entity_sources.iter().find(|(q, _)| q == p))
-                .and_then(|(_, tag)| tag.get("horizon:stack_limit"))
+            let reuse = caches
+                .block_entities
+                .zip(chunk.block_entity_revision(index))
+                .filter(|_| block_entity_cache::eligible(e));
+            let cached = reuse.and_then(|(cache, revision)| cache.get(*p, revision, &inputs));
+            let mut saved = cached.unwrap_or_else(|| {
+                let saved = saved_block_entity(*p, e, &block, name, source);
+                match reuse {
+                    Some((cache, revision)) => cache.put(*p, revision, &inputs, saved),
+                    None => saved,
+                }
+            });
+            if let Some(limit) = source.and_then(|tag| tag.get("horizon:stack_limit"))
                 && let Tag::Compound(map) = &mut saved
             {
                 map.insert("horizon:stack_limit".into(), limit.clone());
@@ -2364,6 +2482,7 @@ struct Encoding {
     tables: Option<Arc<SaveTables>>,
     shape: LevelShape,
     section_palettes: Option<Arc<SavedPaletteBudget>>,
+    block_entities: Option<Arc<block_entity_cache::BlockEntityCache>>,
 }
 impl Record {
     fn tag(&self) -> Option<Arc<NamedTag>> {
@@ -2376,7 +2495,10 @@ impl Record {
                 e.tables.as_deref(),
                 e.shape,
                 blending.as_deref(),
-                e.section_palettes.as_ref(),
+                SaveCaches {
+                    palettes: e.section_palettes.as_ref(),
+                    block_entities: e.block_entities.as_deref(),
+                },
             ))),
             Record::Proto(p, e) => Some(Arc::new(encode_proto(
                 p,
@@ -2574,6 +2696,8 @@ pub struct SaveDir {
     /// on resident sections. Its own until [`Self::share_section_palettes`]
     /// joins it to another level's folder of the same world.
     section_palettes: Arc<SavedPaletteBudget>,
+    /// Lazy cache of the block entity tags saved here, by store revision.
+    block_entities: Arc<block_entity_cache::BlockEntityCache>,
 }
 fn intern_saved_fluids(root: &NamedTag) {
     if let Some(Tag::List(entities)) = root.tag.get("block_entities") {
@@ -2728,6 +2852,9 @@ impl SaveDir {
             datafix_context: OnceLock::new(),
             blending_lookup: OnceLock::new(),
             section_palettes: section_nbt::new_budget(),
+            block_entities: Arc::new(block_entity_cache::BlockEntityCache::new(
+                block_entity_cache::DEFAULT_BYTES,
+            )),
         }
     }
     /// Mark this as a server-owned world save, not a remote cache.
@@ -3109,6 +3236,7 @@ impl SaveDir {
             tables: self.tables.get().cloned(),
             shape: self.shape,
             section_palettes: None,
+            block_entities: None,
         });
         let records = protos
             .into_iter()
@@ -3153,7 +3281,10 @@ impl SaveDir {
                         tables,
                         self.shape,
                         blending.as_deref(),
-                        Some(&self.section_palettes),
+                        SaveCaches {
+                            palettes: Some(&self.section_palettes),
+                            block_entities: Some(&self.block_entities),
+                        },
                     )),
                 )
             })
