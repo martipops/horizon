@@ -17,6 +17,10 @@ pub struct Keys {
     /// A controller stick's move vector (`[left, forward]`, Horizon's own),
     /// used instead of the keys' direction while it is pushed.
     pub analog: Option<[f32; 2]>,
+    /// The movement keys a stock controller stick holds this tick, with their
+    /// margin (`gamepad::eight_direction_keys_held`): the flags, and sprint's
+    /// forward. `None` for keys, and for axes a mod supplied.
+    pub stick: Option<[bool; 4]>,
 }
 impl Keys {
     pub fn direction(self) -> [f32; 2] {
@@ -25,13 +29,15 @@ impl Keys {
             None => input::keyboard_direction(self.forward, self.backward, self.left, self.right),
         }
     }
-    /// Add a stick's move vector: the direction flags code reading keys
-    /// (sprint, vehicles, the server's input packet) see are the keys of the
-    /// one of 8 headings it is nearest, past 0.3 of its tilt
-    /// (`gamepad::eight_direction_keys`), as `movement_key_held` reads them.
-    pub fn with_stick(mut self, stick: Option<[f32; 2]>) -> Self {
+    /// Add a stick's move vector and the keys it holds (`held`, for a stock
+    /// stick; a mod's vector gets `gamepad::eight_direction_keys`): the
+    /// direction flags code reading keys (sprint, vehicles, the server's input
+    /// packet) see are those keys, as `movement_key_held` reads them.
+    pub fn with_stick(mut self, stick: Option<[f32; 2]>, held: Option<[bool; 4]>) -> Self {
         if let Some(v) = stick {
-            let [forward, backward, left, right] = crate::gamepad::eight_direction_keys(v);
+            let keys = held.unwrap_or_else(|| crate::gamepad::eight_direction_keys(v));
+            let [forward, backward, left, right] = keys;
+            self.stick = held;
             self.forward |= forward;
             self.backward |= backward;
             self.left |= left;
@@ -112,11 +118,12 @@ impl SprintState {
         }
         let old_forward = self.previous_forward;
         let old_shift = self.previous_shift;
-        // A stick counts as forward where it holds the forward key, with a margin once it does
-        // (`gamepad::forward_key_held`): not any forward part, which would sprint sideways with
-        // the stick hard left, nor a flag that flickers at an edge into a double-tap.
-        let forward = match keys.analog {
-            Some(v) => crate::gamepad::forward_key_held(v, old_forward) && !keys.backward,
+        // A stock stick counts as forward where it holds the forward key, with its margin
+        // (`Keys::stick`): not any forward part, which would sprint sideways with the stick hard
+        // left, nor a flag that flickers at an edge into a double-tap. Keys and a mod's axes keep
+        // vanilla's `hasForwardImpulse`.
+        let forward = match keys.stick {
+            Some([ahead, ..]) => ahead && !keys.backward,
             None => keys.direction()[1] > 1.0e-5,
         };
         self.previous_forward = forward;
@@ -185,8 +192,10 @@ mod tests {
         *sprinting = next;
     }
 
-    fn stick(v: [f32; 2]) -> Keys {
-        Keys::default().with_stick(Some(v))
+    /// A stock stick at `v` that held `previous` last tick.
+    fn stick(v: [f32; 2], previous: [bool; 4]) -> Keys {
+        let held = crate::gamepad::eight_direction_keys_held(v, previous);
+        Keys::default().with_stick(Some(v), Some(held))
     }
 
     /// The stick hard left with a little forward is a strafe: the sprint key doesn't sprint
@@ -195,24 +204,50 @@ mod tests {
     fn a_stick_strafing_left_does_not_sprint() {
         let mut state = SprintState::default();
         let mut sprinting = false;
-        let mut keys = stick([0.98, 0.17]);
+        let mut keys = stick([0.98, 0.17], [false; 4]);
         keys.sprint = true;
         assert!(!keys.forward);
         step(&mut state, keys, &mut sprinting);
         assert!(!sprinting);
     }
 
-    /// A stick resting on the tilt that starts walking, as a thumb does, never double-taps
-    /// forward into a sprint.
+    /// A stick resting on the tilt that starts walking, or swinging by an edge of the forward
+    /// sectors, never double-taps forward into a sprint; a real double tap still sprints.
     #[test]
-    fn a_stick_resting_on_the_key_tilt_does_not_start_a_sprint() {
+    fn only_a_real_double_tap_of_the_stick_sprints() {
+        let at = |degrees: f32, tilt: f32| {
+            let (s, c) = degrees.to_radians().sin_cos();
+            [tilt * s, tilt * c]
+        };
+        let run = |samples: &[[f32; 2]]| {
+            let (mut state, mut sprinting, mut held) = (SprintState::default(), false, [false; 4]);
+            for &v in samples {
+                let keys = stick(v, held);
+                held = keys.stick.unwrap_or_default();
+                step(&mut state, keys, &mut sprinting);
+            }
+            sprinting
+        };
+        let resting: Vec<_> = (0..12).map(|i| at(0.0, [0.31, 0.29][i % 2])).collect();
+        assert!(!run(&resting));
+        assert!(!run(&[at(20.0, 0.31), at(27.0, 0.29), at(27.0, 0.31)]));
+        assert!(!run(&[at(60.0, 0.6), at(71.0, 0.6), at(67.0, 0.6)]));
+        assert!(run(&[at(0.0, 1.0), [0.0, 0.0], at(0.0, 1.0)]));
+    }
+
+    /// A mod's own axes keep vanilla's forward impulse: a light forward with Sprint sprints.
+    #[test]
+    fn a_mods_light_forward_axis_still_sprints() {
         let mut state = SprintState::default();
         let mut sprinting = false;
-        for i in 0..12 {
-            let tilt = if i % 2 == 0 { 0.31 } else { 0.29 };
-            step(&mut state, stick([0.0, tilt]), &mut sprinting);
-            assert!(!sprinting, "tick {i}");
-        }
+        let keys = Keys {
+            forward: true,
+            sprint: true,
+            analog: Some([0.0, 0.2]),
+            ..Keys::default()
+        };
+        step(&mut state, keys, &mut sprinting);
+        assert!(sprinting);
     }
 
     /// Vanilla sprint is a state. Releasing the sprint key, including on the

@@ -218,10 +218,10 @@ impl Game<'_> {
             .is_some_and(|r| r.level_load.is_active());
         let playing = self.screen == Screen::Playing && !loading && !self.dialog_open();
         let external_server = self.input_is_external_multiplayer();
-        let (stick, bypass_square_movement) = if playing {
+        let (stick, bypass_square_movement, stick_keys) = if playing {
             self.input_move_for_tick(external_server)
         } else {
-            (None, false)
+            (None, false, None)
         };
         let held = |action| playing && self.keys.held(action);
         let mut keys = Keys {
@@ -234,8 +234,9 @@ impl Game<'_> {
             sprint: held(Action::Sprint),
             sprint_suppressed: false,
             analog: None,
+            stick: None,
         }
-        .with_stick(stick);
+        .with_stick(stick, stick_keys);
         // On a server (not this game's own server thread), the stick moves as the keys it sets do
         // (`KeyboardInput.tick`: 8 directions, full speed). The server only hears those keys
         // (`ServerboundPlayerInputPacket`), and an anticheat that predicts from them pulls back

@@ -76,6 +76,10 @@ fn studio_freecam_movement_key(key: KeyCode) -> bool {
     )
 }
 
+/// A gameplay tick's stick: the move vector, the one-tick square-movement opt-out, and the keys a
+/// stock stick holds (`Keys::stick`).
+pub(super) type TickMove = (Option<[f32; 2]>, bool, Option<[bool; 4]>);
+
 impl Game<'_> {
     /// Keep the held-key state of toggled sneak and sprint in step with their mapping.
     /// `KeyMapping.resetToggleKeys`: every toggle mapping up, and the latched sneak and sprint
@@ -584,8 +588,9 @@ impl Game<'_> {
         self.pad_move()
     }
 
-    /// The gameplay tick's stick and its one-tick square-movement opt-out.
-    pub(super) fn input_move_for_tick(&self, external_server: bool) -> (Option<[f32; 2]>, bool) {
+    /// The gameplay tick's stick, its one-tick square-movement opt-out and the keys a stock stick
+    /// holds (`Keys::stick`).
+    pub(super) fn input_move_for_tick(&self, external_server: bool) -> TickMove {
         self.pad_move_for_tick(external_server)
     }
 
@@ -647,7 +652,12 @@ impl Game<'_> {
         let Some(stick) = self.input_move() else {
             return false;
         };
-        let [forward, backward, left, right] = horizon_client::gamepad::eight_direction_keys(stick);
+        // The keys the stick held at the last tick, as that tick moved and sent them, with their
+        // margin; a mod's vector by its own heading.
+        let [forward, backward, left, right] = match self.pad_stick_keys() {
+            [false, false, false, false] => horizon_client::gamepad::eight_direction_keys(stick),
+            held => held,
+        };
         match key {
             KeyCode::KeyW => forward,
             KeyCode::KeyS => backward,

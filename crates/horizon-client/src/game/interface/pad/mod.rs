@@ -872,11 +872,13 @@ impl Game<'_> {
         Some(self.pad.state.left)
     }
 
-    /// Read only at the gameplay movement tick, not when a HUD or tutorial observes keys.
-    pub(super) fn pad_move_for_tick(&self, external_server: bool) -> (Option<[f32; 2]>, bool) {
+    /// Read only at the gameplay movement tick, not when a HUD or tutorial observes keys. The
+    /// move vector, the one-tick square-movement opt-out, and the keys a stock stick holds (none
+    /// when a mod's `ControllerMove` answered).
+    pub(super) fn pad_move_for_tick(&self, external_server: bool) -> super::play_input::TickMove {
         let Some(axes) = self.pad_move_axes() else {
             self.pad.stick_keys.set([false; 4]);
-            return (None, false);
+            return (None, false, None);
         };
         let deadzone = self.settings.controller.move_deadzone;
         if self.riding.is_none()
@@ -895,9 +897,11 @@ impl Game<'_> {
             if let Some(movement) = movement
                 && let Some(direction) = bounded_move_override(movement.direction)
             {
+                self.pad.stick_keys.set([false; 4]);
                 return (
                     (direction != [0.0; 2]).then_some(direction),
                     movement.bypass_square_movement,
+                    None,
                 );
             }
         }
@@ -908,10 +912,16 @@ impl Game<'_> {
         self.pad.stick_keys.set(keys);
         // On a server the stick moves as the keys it holds (`tick.rs`), which a margin keeps
         // steady: the tick gets their heading, whose keys are exactly those.
+        let held = stick.map(|_| keys);
         if external_server {
-            return (gamepad::heading(keys), false);
+            return (gamepad::heading(keys), false, held.filter(|k| *k != [false; 4]));
         }
-        (stick, false)
+        (stick, false, held)
+    }
+
+    /// The keys the stock stick held at the last gameplay tick (`pad_move_for_tick`).
+    pub(super) fn pad_stick_keys(&self) -> [bool; 4] {
+        self.pad.stick_keys.get()
     }
 
     /// The right stick turns the view, once per frame (`Entity.turn`).

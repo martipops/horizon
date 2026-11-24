@@ -40,6 +40,7 @@ impl Game<'_> {
             // KeyboardInput.calculateImpulse and tick: discard the stale
             // analog vector and derive the normalized direction from the keys.
             keys.analog = None;
+            keys.stick = None;
         } else if [strafe, forward] != original_axes {
             if forward != original_axes[1] {
                 keys.forward = forward > 0.0;
@@ -50,6 +51,7 @@ impl Game<'_> {
                 keys.right = strafe < 0.0;
             }
             keys.analog = Some([strafe, forward]);
+            keys.stick = None;
         }
         // A subscribed listener owns sprint for this tick. Without one, the
         // vanilla latch and double-tap behavior above are left untouched.
