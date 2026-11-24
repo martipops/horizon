@@ -262,7 +262,7 @@ impl Game<'_> {
     }
 
     /// The real mouse, before the screen takes it: where it is, and a press
-    /// or a scroll hands it the pointer back from the keyboard, at the
+    /// or a scroll hands it the pointer back from the keyboard or the pad, at the
     /// place the mouse left it (`setLastInputType(MOUSE)`).
     ///
     /// Whether the event is the window telling again where the mouse already was (the pointer
@@ -336,13 +336,19 @@ impl Game<'_> {
         }
     }
 
-    /// The keyboard lets go of the pointer: it goes back to the real mouse.
+    /// The keyboard or the pad lets go of the pointer: it goes back to the real mouse, so a click
+    /// lands where the mouse is and not on what the pad had focused.
     fn key_focus_to_mouse(&mut self, event_loop: &dyn EventLoopCtl) {
-        if !std::mem::take(&mut self.pad.menu.keyboard) {
+        let menu = &mut self.pad.menu;
+        let keyboard = std::mem::take(&mut menu.keyboard);
+        if !keyboard && menu.pos.is_none() {
             return;
         }
-        let menu = &mut self.pad.menu;
-        menu.origin = menu.focus.take().map(|t| t.rect);
+        // Only the keyboard's focus is where the next Tab goes on from.
+        let focus = menu.focus.take().map(|t| t.rect);
+        if keyboard {
+            menu.origin = focus;
+        }
         menu.pos = None;
         menu.pending = None;
         menu.nudge = None;

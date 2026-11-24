@@ -79,7 +79,7 @@ Cases:
   pad again brings the keyboard back.
 - keyboard_closes_with_screen: dying with chat's keyboard up closes it: nothing is left over the death screen.
 - pointer_event_same_place: a pointer event at the place the mouse was already at keeps the pad's focus and pointer;
-  the mouse moving still takes them.
+  the mouse moving still takes them, and a click lands where the mouse is.
 - trigger_lost_pad: the pad going away with LT held over the crafting book changes no category.
 Needs built fast binaries (`cargo build --profile fast -p horizon-game -p horizon-client-lib --bins`)
 and prepared resources in .local/horizon-client/26.3. Exit status 0 when every case passes.
@@ -4810,6 +4810,17 @@ def pointer_event_same_place(game, check, single, options, quit_game):
     mouse_moves(game, 30, 30)
     check(game.focus() is None and game.menu()['pointer'] is None,
           f"the mouse moving left the pad its focus {game.focus()} and pointer {game.menu()['pointer']}")
+    # A click with the mouse at rest lands where the mouse is, not on what the pad focused.
+    button = widget(game, 'multiplayer')
+    x, y, w, h = button['bounds']
+    mouse_moves(game, x + w / 2, y + h / 2)
+    game.pad('down')
+    at = game.menu()['pointer']
+    check(at is not None and not (x <= at[0] < x + w and y <= at[1] < y + h),
+          f'the pad is not on another button than the mouse: {at} in {x, y, w, h}')
+    click_widget(game, button)
+    ids = [found['id'] for found in game.widgets()]
+    check('proceed' in ids, f'the click did not land on Multiplayer, where the mouse was: {ids}')
 
 
 @world_case
