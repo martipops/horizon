@@ -601,6 +601,7 @@ impl Writer {
         }
         if self.write(motors) {
             self.sent = Some(motors);
+            self.rescan.started();
         }
     }
 
@@ -623,8 +624,8 @@ impl Writer {
         }
     }
     /// Drop a handle that hidapi failed on, and look for the pad again: one that slept or was
-    /// unplugged may come back. Nothing is written through the old handle. A pad that fails as
-    /// soon as it opens is not opened again at once, and not for ever ([`Rescan::lost`]).
+    /// unplugged may come back. Nothing is written through the old handle. A pad that fails on
+    /// its first report is not opened again at once, and not for ever ([`Rescan::lost`]).
     fn lost(&mut self, why: &str) {
         log::info!("Xbox output closed: {why}");
         self.pad = None;
@@ -632,7 +633,7 @@ impl Writer {
         self.open.store(0, Ordering::Relaxed);
         if self.rescan.lost(Instant::now()) {
             log::warn!(
-                "Horizon: the pad opens for output and fails straight away; \
+                "Horizon: the pad opens for output and takes no report; \
                  it is left alone until a controller connects"
             );
         }

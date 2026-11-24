@@ -127,8 +127,9 @@ fn pad_line(
 
 /// Open gilrs and say in the log what it sees: that the reader started, then a `Controller
 /// connected:` line for each pad already there. A log with the first line and none of the second
-/// is a pad the system never handed over. `None` on a platform without gilrs (or a Linux without
-/// udev): controllers stay off and the game runs as before.
+/// is a pad the system never handed over. It also says when the pads' own output is switched
+/// off, so a log shows the switch was read. `None` on a platform without gilrs (or a Linux
+/// without udev): controllers stay off and the game runs as before.
 fn open_reader() -> Option<gilrs::Gilrs> {
     match gilrs_builder().build() {
         Ok(gilrs) => {
@@ -136,6 +137,13 @@ fn open_reader() -> Option<gilrs::Gilrs> {
                 "Controller reader started: {} connected",
                 gilrs.gamepads().count()
             );
+            if !horizon_dualsense::output_allowed() {
+                log::info!(
+                    "Controller output off ({}=0): no pad is opened for writing; \
+                     vibration still goes through gilrs",
+                    horizon_dualsense::OUTPUT_SWITCH
+                );
+            }
             for (_, pad) in gilrs.gamepads() {
                 log::info!("Controller connected: {}", describe(&pad));
             }
@@ -467,14 +475,11 @@ impl Pads {
                     self.devices.xbox_output = None;
                     self.devices.shown_light = None;
                 }
-                E::ButtonPressed(..) => self.devices.active = Some(id),
-                E::AxisChanged(axis, value, _)
-                    if axis_takes_over(axis, value, z_is_a_stick(&gilrs.gamepad(id))) =>
-                {
-                    self.devices.active = Some(id)
-                }
-                E::ButtonChanged(_, value, _) if value > TAKEOVER => self.devices.active = Some(id),
                 _ => {}
+            }
+            if touched(&event, &gilrs.gamepad(id)) {
+                self.devices.active = Some(id);
+                log_first_input(&mut self.devices.heard, id, &gilrs.gamepad(id));
             }
         }
         // Another pad, or none: its A going away isn't a release.
@@ -485,9 +490,6 @@ impl Pads {
             // The output follows the pad in use: a new one must not keep writing to the old.
             self.devices.xbox_output = None;
             self.devices.shown_light = None;
-        }
-        if let Some(id) = self.devices.active {
-            log_first_input(&mut self.devices.heard, id, &gilrs.gamepad(id));
         }
         let Some(pad) = self
             .devices
@@ -554,6 +556,18 @@ fn axis_takes_over(axis: gilrs::Axis, value: f32, z_is_a_stick: bool) -> bool {
         A::LeftZ | A::RightZ if z_is_a_stick => value.abs() > TAKEOVER,
         A::LeftZ | A::RightZ | A::Unknown => value > TAKEOVER,
         _ => value.abs() > TAKEOVER,
+    }
+}
+
+/// Whether an event is someone using its pad: a press, or a stick or trigger pushed far enough.
+/// It makes the pad the active one, and it is what the log's first-input line waits for.
+fn touched(event: &gilrs::EventType, pad: &gilrs::Gamepad) -> bool {
+    use gilrs::EventType as E;
+    match *event {
+        E::ButtonPressed(..) => true,
+        E::AxisChanged(axis, value, _) => axis_takes_over(axis, value, z_is_a_stick(pad)),
+        E::ButtonChanged(_, value, _) => value > TAKEOVER,
+        _ => false,
     }
 }
 
@@ -793,9 +807,11 @@ impl PadRouter {
                     None => self.peaks.push((id, sticks)),
                 }
             }
+            if touched(&event, &gilrs.gamepad(id)) {
+                log_first_input(&mut self.heard, id, &gilrs.gamepad(id));
+            }
             match event {
                 gilrs::EventType::ButtonPressed(pressed, _) => {
-                    log_first_input(&mut self.heard, id, &gilrs.gamepad(id));
                     let crossed = face_buttons::crossed(&gilrs.gamepad(id));
                     if let Some(button) = Button::ALL
                         .into_iter()

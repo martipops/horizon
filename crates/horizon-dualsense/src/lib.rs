@@ -27,7 +27,6 @@ pub mod xbox;
 
 pub use device::{Link, Transport};
 use std::ffi::OsStr;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Sony's vendor ID and the DualSense's product IDs (the plain pad and the Edge).
 pub const SONY: u16 = 0x054c;
@@ -39,23 +38,16 @@ pub fn is_dualsense(vendor: u16, product: u16) -> bool {
     vendor == SONY && matches!(product, DUALSENSE | DUALSENSE_EDGE)
 }
 
-/// The environment switch that turns every pad's output off.
-const OUTPUT_SWITCH: &str = "HORIZON_CONTROLLER_OUTPUT";
+/// The environment switch that keeps this crate from writing to any pad.
+pub const OUTPUT_SWITCH: &str = "HORIZON_CONTROLLER_OUTPUT";
 
 /// Whether the game may open a pad to write to it. `HORIZON_CONTROLLER_OUTPUT=0` says no: both
 /// links ([`Link`], [`xbox::Link`]) stay closed, so no HID handle to a DualSense, an Xbox One pad
-/// or a DualShock 4 is opened and nothing is written to one. Gilrs keeps reading the pads, and
-/// vibration falls back to its force feedback. It tells a pad whose input stops because of the
-/// game's own writes from one whose input never arrives (docs/controllers.md "Input layer").
+/// or a DualShock 4 is opened and this crate writes nothing to one. It is only this crate's own
+/// output: gilrs keeps reading the pads, and the game still plays vibration through gilrs' force
+/// feedback, which the Vibration option turns off (docs/controllers.md "Input layer").
 pub fn output_allowed() -> bool {
-    static SAID: AtomicBool = AtomicBool::new(false);
-    let off = output_off(std::env::var_os(OUTPUT_SWITCH).as_deref());
-    if off && !SAID.swap(true, Ordering::Relaxed) {
-        log::info!(
-            "Horizon: controller output is off ({OUTPUT_SWITCH}=0): no pad is opened for writing"
-        );
-    }
-    !off
+    !output_off(std::env::var_os(OUTPUT_SWITCH).as_deref())
 }
 
 fn output_off(switch: Option<&OsStr>) -> bool {
