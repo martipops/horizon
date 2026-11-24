@@ -159,8 +159,12 @@ impl Split<'_> {
             bumpers: [false; 2],
         });
         self.planned_window(i, seat);
-        if let Some(name) = name {
-            self.enter(i - 1, name)?;
+        if let Some(name) = name
+            && let Err(e) = self.enter(i - 1, name)
+        {
+            // Nobody is there to pick another: no seat stays taken.
+            self.remove_guest(i - 1);
+            return Err(e);
         }
         Ok(())
     }
@@ -409,17 +413,20 @@ impl Split<'_> {
             }
             let joining = self.guests[i].name.is_none();
             match self.guests[i].game.ui.options.split_profiles.take_choice() {
-                Some(Some(name)) => match (|| {
-                    self.can_join(&name)?;
-                    if joining {
-                        self.enter(i, name)
-                    } else {
-                        self.switch(i, name)
+                Some(Some(name)) => {
+                    let picked = match self.can_join(&name) {
+                        // The page's own answer: they pick again, nothing failed.
+                        Err(why) => Err(why.into()),
+                        Ok(()) if joining => self
+                            .enter(i, name)
+                            .inspect_err(|why| self.join_failed(why)),
+                        Ok(()) => self.switch(i, name),
+                    };
+                    match picked {
+                        Ok(()) => changed = true,
+                        Err(why) => self.refuse(i, why.to_string()),
                     }
-                })() {
-                    Ok(()) => changed = true,
-                    Err(why) => self.refuse(i, why.to_string()),
-                },
+                }
                 _ if joining && !on_profiles(&self.guests[i].game) => {
                     self.remove_guest(i);
                     changed = true;
@@ -577,6 +584,7 @@ impl Split<'_> {
                 if let (Some(server), Some(old)) = (&self.host.integrated, &old) {
                     server.leave_split(old);
                 }
+                self.join_refused(&why);
                 self.refuse(k, why);
                 continue;
             }

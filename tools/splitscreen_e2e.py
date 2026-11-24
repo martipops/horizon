@@ -241,14 +241,18 @@ def scenario_refused():
     try:
         notice = lambda: g.ctl(1, 'pad', 'status').get('notice')
         g.wait(lambda: g.ctl(1, 'state').get('player') is not None, 'P1 in its world', seconds=60)
+        shown = {}
         try:
             # The player is refused as P1 enters its world, and the notice stays 5 s.
-            g.wait(notice, "a notice on P1's view", seconds=10)
+            g.wait(lambda: shown.update(notice() or {}) or shown, "a notice on P1's view", seconds=10)
         except RuntimeError:
             pass
-        shown = notice() or {}
         check('P1 is told a player could not join', shown.get('title'), "A player couldn't join")
-        check('with the reason', bool(shown.get('body')), True)
+        # What follows is the system's own error: a file where a folder was asked for.
+        check('with the reason', (shown.get('body') or '').partition(': ')[0], "Their game couldn't start")
+        if os.name != 'nt':
+            check("with the error's own words", (shown.get('body') or '').partition(': ')[2],
+                  'Not a directory (os error 20)')
         check('nobody joined', g.alive(2), False)
         state = g.ctl(1, 'state')
         check('P1 plays on', (state.get('screen'), state.get('player') is not None), ('playing', True))
@@ -256,6 +260,34 @@ def scenario_refused():
         check('P1 has its whole window', (w, h), (2 * WIDTH, 2 * HEIGHT) if w > WIDTH else (WIDTH, HEIGHT))
     finally:
         g.quit()
+
+
+def scenario_refused_by_server():
+    print("refused_by_server: a player P1's server doesn't let in is announced on P1's view, and picks again")
+    with dedicated() as (server, port):
+        g = Game(2, pick=True, args=('--offscreen', '--server', f'127.0.0.1:{port}'))
+        try:
+            g.wait(lambda: g.ctl(1, 'state').get('player') is not None, 'P1 on the server', seconds=60)
+            g.wait(lambda: (g.ctl(2, 'state').get('menu') or {}).get('mode') == 'splitscreen-profiles', "P2's picker")
+            server.console('whitelist add P1')
+            server.console('whitelist on')
+            server.wait_for('Whitelist is now turned on')
+            g.press(2, 'New Profile...')
+            g.ctl(2, 'type', 'jordank')
+            g.press(2, 'Create')
+            shown = {}
+            try:
+                g.wait(lambda: shown.update(g.ctl(1, 'pad', 'status').get('notice') or {}) or shown,
+                       "a notice on P1's view", seconds=20)
+            except RuntimeError:
+                pass
+            check('P1 is told a player could not join', shown.get('title'), "A player couldn't join")
+            check("in the server's words", shown.get('body'), 'You are not white-listed on this server!')
+            menu = lambda: (g.ctl(2, 'state').get('menu') or {}).get('mode')
+            check('P2 picks again', (g.alive(2), menu()), (True, 'splitscreen-profiles'))
+            check('P1 plays on', g.ctl(1, 'state').get('player') is not None, True)
+        finally:
+            g.quit()
 
 
 def scenario_four():
@@ -1472,6 +1504,7 @@ SCENARIOS = {
     'guide': scenario_guide,
     'join': scenario_join,
     'refused': scenario_refused,
+    'refused_by_server': scenario_refused_by_server,
     'controller_profiles': scenario_controller_profiles,
     'custom_skin': scenario_custom_skin,
     'four': scenario_four,

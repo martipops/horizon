@@ -232,16 +232,26 @@ impl<'a> Split<'a> {
         )
     }
 
-    /// A player couldn't join: the views that showed the join strip say so, with why in the
-    /// error's own words (as the profile page gives a failed pick's).
+    /// A player's game couldn't be set up: the views of those in the world say so, with the
+    /// error's own words in a translated sentence (the log has all of it).
     pub(super) fn join_failed(&mut self, why: &dyn std::fmt::Display) {
         let why = reason(&why.to_string());
+        self.notice_join(&tr("join_failed.setup", &[&why]));
+    }
+
+    /// P1's server didn't let a player in: said in the server's own words, as on the page of
+    /// the player it sent away.
+    pub(super) fn join_refused(&mut self, why: &str) {
+        self.notice_join(&reason(why));
+    }
+
+    fn notice_join(&mut self, body: &str) {
         for hud in self.huds_in_world() {
             hud.notice.raise(Notice::new(
                 NoticeId::JoinFailed,
                 Priority::Attention,
                 tr("join_failed", &[]),
-                why.as_str(),
+                body,
             ));
         }
     }
