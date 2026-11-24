@@ -125,7 +125,7 @@ pub(super) struct Pads {
     peaks: [[f32; 2]; 2],
     /// The pad at each of its events since the last poll, in order, from its own reader or
     /// splitscreen's router: a poll reads only where the pad ended.
-    between: Vec<PadState>,
+    between: gamepad::Moments,
     /// The presses and releases in `between`, each shown to the game in turn.
     pulses: gamepad::Pulses,
     /// With Either selecting: the stick that last leant past its select tilt (0 left, 1 right),
@@ -169,6 +169,8 @@ mod parity_tests;
 mod radial_play;
 #[cfg(test)]
 mod source_tests;
+#[cfg(test)]
+mod tap_tests;
 pub(super) use hardware::{PadId, PadRouter};
 
 /// How many of the radial menu's last actions `pad status` lists.
@@ -221,7 +223,7 @@ pub(in crate::game) enum PadEvent {
 #[derive(Clone, Default)]
 pub(in crate::game) struct Between {
     /// The pad at each of them, in order, from after it last came back.
-    pub(in crate::game) moments: Vec<PadState>,
+    pub(in crate::game) moments: horizon_client::gamepad::Moments,
     /// It went away since: back under its id, it is a new pad, and what it did before goes.
     pub(in crate::game) lost: bool,
 }
@@ -279,7 +281,7 @@ mod hardware {
         pub(in crate::game) fn peaks(&self, _: PadId) -> [[f32; 2]; 2] {
             [[0.0; 2]; 2]
         }
-        pub(in crate::game) fn between(&self, _: PadId) -> super::Between {
+        pub(in crate::game) fn take_between(&mut self, _: PadId) -> super::Between {
             super::Between::default()
         }
         pub(in crate::game) fn name(&self, _: PadId) -> String {
@@ -335,7 +337,7 @@ impl Pads {
         self.between = between.moments;
         if self.feed_source != source || between.lost {
             self.feed_source = source;
-            self.pulses.drop_owed();
+            self.pulses.drop_queued();
             self.menu.armed = None;
             self.radial.cancel();
             self.menu.stop_craft();
@@ -436,7 +438,7 @@ impl Game<'_> {
             self.pad.state = PadState::default();
             self.pad.in_use = false;
             self.pad.between.clear();
-            self.pad.pulses.drop_owed();
+            self.pad.pulses.drop_queued();
             // The keyboard's menu focus follows its widget all the same.
             if !self.loading_overlay_preview_active() {
                 self.pad_menu_frame(event_loop);
@@ -450,7 +452,7 @@ impl Game<'_> {
             // held again after it.
             _ if self.scripted_run() => {
                 self.pad.between.clear();
-                self.pad.pulses.drop_owed();
+                self.pad.pulses.drop_queued();
                 PadState::default()
             }
             Some(state) => state,
@@ -463,9 +465,9 @@ impl Game<'_> {
         let threshold = self.settings.controller.trigger_threshold;
         // Each press and release since the last poll, in turn: a tap let go before this poll
         // still presses, and a second one presses again (`Pulses`). A button whose release
-        // still waits for its tick keeps the next change for a later poll, so each tap gets one.
-        for moment in std::mem::take(&mut self.pad.between) {
-            self.pad.pulses.see(&letters(moment), threshold);
+        // still waits for its tick keeps its next press for a later poll, so each tap gets one.
+        for moment in std::mem::take(&mut self.pad.between).iter() {
+            self.pad.pulses.see(&letters(*moment), threshold);
         }
         let ticking = self.title.is_none() && self.screen == Screen::Playing && !self.pause;
         let wait = self
@@ -474,7 +476,8 @@ impl Game<'_> {
             .iter()
             .filter(|b| ticking && self.pad.pressed_at[**b as usize] == Some(self.ticks))
             .fold(0, |wait, b| wait | b.bit());
-        let hardware = self.pad.pulses.read(&letters(hardware), threshold, wait);
+        let live = letters(hardware);
+        let hardware = self.pad.pulses.read(&live, threshold, wait);
         // A person's pad, for `input-log` and the repro recording; the virtual
         // pad is an agent's `pad` line and is recorded as that.
         let hardware_edges = self.pad.hardware_edges(hardware);
@@ -498,15 +501,22 @@ impl Game<'_> {
         }
         if self.loading_overlay_preview_active() {
             self.pad.state = state;
-            self.pad_cancel_inputs(event_loop);
-            let edges = self.pad.edges.update(&state, threshold);
-            // A press that began here must not act when the underlying screen returns.
-            self.pad.edges.cancel();
-            if self.pad_focused()
-                && edges
+            self.pad_cancel_held(event_loop);
+            // Every tap up to now, so none is left to act when the underlying screen returns.
+            let mut dismissed = false;
+            loop {
+                let edges = self.pad.edges.update(&state, threshold);
+                // A press that began here must not act there either.
+                self.pad.edges.cancel();
+                dismissed |= edges
                     .into_iter()
-                    .any(|(button, down)| down && matches!(button, Button::East | Button::Start))
-            {
+                    .any(|(button, down)| down && matches!(button, Button::East | Button::Start));
+                if !self.pad.pulses.waiting() {
+                    break;
+                }
+                state = self.pad.pulses.read(&live, threshold, 0);
+            }
+            if dismissed && self.pad_focused() {
                 self.dismiss_loading_overlay_preview();
             }
             return;
@@ -613,7 +623,15 @@ impl Game<'_> {
     }
 
     /// End held actions and captures before another context receives input.
+    /// Let go of everything in this context: what the pad holds, and the taps still to show. A
+    /// button down whose press waits among them isn't a new press in the next context.
     fn pad_cancel_inputs(&mut self, event_loop: &dyn EventLoopCtl) {
+        let unseen = self.pad.pulses.drop_queued();
+        self.pad.edges.suppress(unseen);
+        self.pad_cancel_held(event_loop);
+    }
+
+    fn pad_cancel_held(&mut self, event_loop: &dyn EventLoopCtl) {
         // Before the releases below: a cancelled press must not click, a cancelled trigger
         // change the recipe book's category as it comes up, nor a cancelled radial menu
         // commit when its opener comes up.
@@ -635,10 +653,6 @@ impl Game<'_> {
         self.pad.state.left = [0.0; 2];
         self.pad.state.right = [0.0; 2];
         self.pad.late_releases.clear();
-        // Taps still to show go with the context that got them, and a button down now isn't a new
-        // press in the next one.
-        let held = self.pad.pulses.drop_owed();
-        self.pad.edges.suppress(held);
         for (button, down) in self.pad.edges.cancel() {
             self.pad_button_logged(event_loop, button, down);
         }

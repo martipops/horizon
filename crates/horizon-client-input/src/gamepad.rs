@@ -158,77 +158,136 @@ impl PadState {
     }
 }
 
+/// A pad at each of its events between two reads, in order, without the moments no reader can
+/// tell apart: a moving stick, or a trigger on its way from one turn to the next.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Moments(std::collections::VecDeque<PadState>);
+/// The most moments kept for a read: the oldest go first, so the newest always show.
+const MOST_MOMENTS: usize = 256;
+impl Moments {
+    pub fn push(&mut self, state: &PadState) {
+        let state = PadState {
+            buttons: state.buttons,
+            triggers: state.triggers,
+            ..PadState::default()
+        };
+        let len = self.0.len();
+        if self.0.back() == Some(&state) {
+            return;
+        }
+        // The newest lies between its neighbours: only they can cross a threshold.
+        if len >= 2 {
+            let (before, last) = (self.0[len - 2], self.0[len - 1]);
+            let on_the_way = |i: usize| {
+                let (a, b, c) = (before.triggers[i], last.triggers[i], state.triggers[i]);
+                (a <= b && b <= c) || (a >= b && b >= c)
+            };
+            if before.buttons == last.buttons
+                && last.buttons == state.buttons
+                && on_the_way(0)
+                && on_the_way(1)
+            {
+                self.0[len - 1] = state;
+                return;
+            }
+        }
+        if len == MOST_MOMENTS {
+            self.0.pop_front();
+        }
+        self.0.push_back(state);
+    }
+    pub fn clear(&mut self) {
+        self.0.clear();
+    }
+    pub fn iter(&self) -> impl Iterator<Item = &PadState> {
+        self.0.iter()
+    }
+}
+
 /// The presses and releases a pad made between two reads, kept in order: one read a frame finds
 /// only where the pad ended, so a tap let go before it, or a second tap of a button, would never
-/// happen at a low frame rate or in a hitch. Each button's changes are counted as the pad's
-/// events go by, and each read moves the button on by one of them, oldest first, so every press
-/// and release reaches `Edges` in turn. Triggers count as buttons past the threshold, with
-/// `Edges`' hysteresis.
+/// happen at a low frame rate or in a hitch. What the pad held at each of its moments waits in
+/// one queue, and each read moves along it to the next press, so every press reaches `Edges` with
+/// exactly the buttons that were down with it: buttons tapped one after the other never show
+/// together. Triggers count as buttons past the threshold, with `Edges`' hysteresis.
 #[derive(Clone, Debug, Default)]
 pub struct Pulses {
-    /// Each button as the pad held it at the latest moment seen.
+    /// The buttons the pad held at the latest moment seen.
     last: u32,
-    /// Each button as the last read showed it.
+    /// The buttons the last read showed.
     shown: u32,
-    /// The changes of each button (by bit) still to show.
-    owed: [u8; 32],
+    /// The buttons held after each change not shown yet, oldest first, ending at `last`.
+    queue: std::collections::VecDeque<u32>,
 }
-/// The most changes a button keeps waiting: a pad mashed through a long hitch gives a few taps,
-/// not a backlog that plays on for seconds.
-const MOST_OWED: u8 = 8;
+/// The most changes that wait: a pad mashed through a long hitch gives a few taps, not a backlog
+/// that plays on for seconds. The oldest go first.
+const MOST_QUEUED: usize = 16;
 impl Pulses {
     /// One moment of the pad between two reads, in the order its events came.
     pub fn see(&mut self, state: &PadState, threshold: f32) {
         let now = held_bits(state, threshold, self.last);
-        let changed = now ^ self.last;
-        for (bit, owed) in self.owed.iter_mut().enumerate() {
-            if changed & (1 << bit) != 0 {
-                // Past the cap, two changes go (a press and its release) instead of one coming.
-                *owed = if *owed < MOST_OWED {
-                    *owed + 1
-                } else {
-                    *owed - 1
-                };
+        if now != self.last {
+            if self.queue.len() == MOST_QUEUED {
+                self.queue.pop_front();
             }
+            self.queue.push_back(now);
+            self.last = now;
         }
-        self.last = now;
     }
-    /// The state to act on at this read: `live`, the pad now, with each button moved on by one
-    /// change from what the last read showed. `wait`: buttons (by bit) whose next change waits a
-    /// read, such as a release still held back for its tick.
+    /// The state to act on at this read: `live`, the pad now, holding what it held at the next
+    /// press since the last read (or now, with none left). No button changes twice in one read.
+    /// `wait`: buttons (by bit) whose next press waits a read, such as one whose last release is
+    /// still held back for its tick.
     pub fn read(&mut self, live: &PadState, threshold: f32, wait: u32) -> PadState {
         self.see(live, threshold);
-        for (bit, owed) in self.owed.iter_mut().enumerate() {
-            let mask = 1u32 << bit;
-            if *owed == 0 {
-                self.shown = (self.shown & !mask) | (self.last & mask);
-            } else if wait & mask == 0 {
-                self.shown ^= mask;
-                *owed -= 1;
+        let mut moved = 0;
+        while let Some(&next) = self.queue.front() {
+            let changed = next ^ self.shown;
+            let pressed = next & !self.shown;
+            if changed & moved != 0 || pressed & wait != 0 {
+                break;
+            }
+            self.queue.pop_front();
+            self.shown = next;
+            moved |= changed;
+            if pressed != 0 {
+                break;
             }
         }
         let mut state = *live;
         state.buttons = self.shown & !TRIGGER_BITS;
+        // `Edges` finds the triggers' bits again from their values.
+        let off = trigger_off(threshold);
         for (trigger, button) in [(0, Button::LeftTrigger), (1, Button::RightTrigger)] {
-            if (self.shown ^ self.last) & button.bit() != 0 {
-                state.triggers[trigger] = if self.shown & button.bit() != 0 {
-                    1.0
-                } else {
-                    0.0
-                };
+            let value = &mut state.triggers[trigger];
+            if self.shown & button.bit() != 0 {
+                *value = value.max(threshold).max(off);
+            } else if *value >= off {
+                *value = 0.0;
             }
         }
         state
     }
+    /// Changes are still to show.
+    pub fn waiting(&self) -> bool {
+        !self.queue.is_empty()
+    }
     /// Another pad, the same one connected again, or a context change: what was still to show is
-    /// dropped, and the next read shows the pad as it is. The buttons (by bit) it holds.
-    pub fn drop_owed(&mut self) -> u32 {
-        self.owed = [0; 32];
+    /// dropped, and the next read shows the pad as it is. The buttons (by bit) it holds whose
+    /// press was never shown.
+    pub fn drop_queued(&mut self) -> u32 {
+        self.queue.clear();
+        let unseen = self.last & !self.shown;
         self.shown = self.last;
-        self.last
+        unseen
     }
 }
 const TRIGGER_BITS: u32 = (1 << Button::LeftTrigger as u32) | (1 << Button::RightTrigger as u32);
+
+/// Where a trigger past `threshold` counts as let go.
+fn trigger_off(threshold: f32) -> f32 {
+    (threshold - 0.1).max(0.05)
+}
 
 /// The buttons `state` holds, triggers included past `threshold`; `was`: the buttons held
 /// before, for the triggers' hysteresis (as `Edges::update`).
@@ -237,7 +296,7 @@ fn held_bits(state: &PadState, threshold: f32, was: u32) -> u32 {
     for (trigger, button) in [(0, Button::LeftTrigger), (1, Button::RightTrigger)] {
         let value = state.triggers[trigger];
         let on = if was & button.bit() != 0 {
-            value >= (threshold - 0.1).max(0.05)
+            value >= trigger_off(threshold)
         } else {
             value >= threshold
         };
@@ -263,7 +322,7 @@ impl Edges {
             let was = (self.held | self.suppressed) & button.bit() != 0;
             let value = state.triggers[trigger];
             let on = if was {
-                value >= (threshold - 0.1).max(0.05)
+                value >= trigger_off(threshold)
             } else {
                 value >= threshold
             };
@@ -2629,7 +2688,7 @@ bind_key.hotbar.2:north
         let mut pulses = Pulses::default();
         pulses.see(&a, 0.4);
         pulses.see(&rest, 0.4);
-        pulses.drop_owed();
+        pulses.drop_queued();
         assert_eq!(pulses.read(&rest, 0.4, 0), rest);
         // A tap, then held, when a context is cancelled after the tap's press was shown: the hold
         // is no new press in the next context, and a press after it comes up is.
@@ -2641,7 +2700,7 @@ bind_key.hotbar.2:north
             edges.update(&pulses.read(&a, 0.4, 0), 0.4),
             [(Button::South, true)]
         );
-        edges.suppress(pulses.drop_owed());
+        edges.suppress(pulses.drop_queued());
         edges.cancel();
         assert_eq!(edges.update(&pulses.read(&a, 0.4, 0), 0.4), []);
         assert_eq!(edges.update(&pulses.read(&rest, 0.4, 0), 0.4), []);
@@ -2649,6 +2708,88 @@ bind_key.hotbar.2:north
             edges.update(&pulses.read(&a, 0.4, 0), 0.4),
             [(Button::South, true)]
         );
+    }
+
+    #[test]
+    fn buttons_tapped_one_after_the_other_never_show_together() {
+        // LT tapped, then A, both between two reads; and the same with the last read holding LT.
+        let rest = PadState::default();
+        let (lt, a) = (
+            holding(&[], [0.9, 0.0]),
+            holding(&[Button::South], [0.0; 2]),
+        );
+        for start in [rest, lt] {
+            let mut pulses = Pulses::default();
+            pulses.read(&start, 0.4, 0);
+            for moment in [lt, rest, a, rest] {
+                pulses.see(&moment, 0.4);
+            }
+            let mut pressed = false;
+            for _ in 0..6 {
+                let read = pulses.read(&rest, 0.4, 0);
+                pressed |= read.held(Button::South);
+                assert!(
+                    !(read.held(Button::South) && read.triggers[0] >= 0.3),
+                    "{read:?}"
+                );
+            }
+            assert!(pressed, "A pressed");
+        }
+        // Held together they do, though LT comes up before A: the press has its modifier.
+        let both = holding(&[Button::South], [0.9, 0.0]);
+        let mut pulses = Pulses::default();
+        for moment in [lt, both, a, rest] {
+            pulses.see(&moment, 0.4);
+        }
+        let chord = (0..6).any(|_| {
+            let read = pulses.read(&rest, 0.4, 0);
+            read.held(Button::South) && read.triggers[0] >= 0.4
+        });
+        assert!(chord);
+    }
+
+    #[test]
+    fn a_trigger_easing_into_the_hysteresis_band_still_presses() {
+        let at = |value| holding(&[], [value, 0.0]);
+        let lt = Button::LeftTrigger;
+        // Squeezed past 0.4 and eased to 0.35, which keeps it held, then let go.
+        assert_eq!(
+            pulse_edges(at(0.0), &[&[at(0.9), at(0.35)], &[at(0.35)], &[at(0.0)]]),
+            [vec![(lt, true)], vec![], vec![(lt, false)]]
+        );
+        // Let go to 0.2 and squeezed to 0.35, short of a press: it stays up.
+        assert_eq!(
+            pulse_edges(at(0.9), &[&[at(0.2), at(0.35)], &[at(0.35)]]),
+            [vec![(lt, false)], vec![]]
+        );
+    }
+
+    #[test]
+    fn what_waits_stays_bounded_and_ends_at_the_pad_now() {
+        // Stick reports add nothing, and a trigger's travel only its turns.
+        let mut moments = Moments::default();
+        for i in 0..10_000 {
+            let mut state = holding(&[], [(i as f32 / 10_000.0).min(0.9), 0.0]);
+            state.left = [i as f32 / 10_000.0, 0.0];
+            moments.push(&state);
+        }
+        assert!(moments.iter().count() <= 2);
+        // Nor do a noisy trigger or a mashed button grow without end.
+        let (rest, a) = (PadState::default(), holding(&[Button::South], [0.0; 2]));
+        let mut moments = Moments::default();
+        for _ in 0..10_000 {
+            moments.push(&holding(&[], [0.1, 0.0]));
+            moments.push(&a);
+        }
+        assert!(moments.iter().count() <= MOST_MOMENTS);
+        let mut pulses = Pulses::default();
+        for moment in moments.iter() {
+            pulses.see(moment, 0.4);
+        }
+        for _ in 0..MOST_QUEUED + 1 {
+            pulses.read(&rest, 0.4, 0);
+        }
+        assert_eq!(pulses.read(&rest, 0.4, 0), rest);
     }
 
     #[test]

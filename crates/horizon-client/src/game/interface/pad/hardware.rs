@@ -425,12 +425,12 @@ impl Pads {
                     self.between.clear();
                     between_of = Some(id);
                 }
-                self.between.push(state_of(&gilrs.gamepad(id)));
+                self.between.push(&state_of(&gilrs.gamepad(id)));
             }
         }
         // Another pad, or none: its A going away isn't a release.
         if self.devices.active != active || lost {
-            self.pulses.drop_owed();
+            self.pulses.drop_queued();
             self.menu.armed = None;
             self.radial.cancel();
             self.menu.stop_craft();
@@ -747,17 +747,15 @@ impl PadRouter {
                 event,
                 E::ButtonPressed(..) | E::ButtonChanged(..) | E::AxisChanged(..)
             ) {
-                let now = state_of(&gilrs.gamepad(id));
-                match self.between.iter_mut().find(|(pad, _)| *pad == id) {
-                    Some((_, between)) => between.moments.push(now),
-                    None => self.between.push((
-                        id,
-                        Between {
-                            moments: vec![now],
-                            lost: false,
-                        },
-                    )),
-                }
+                let i = match self.between.iter().position(|(pad, _)| *pad == id) {
+                    Some(i) => i,
+                    None => {
+                        self.between.push((id, Between::default()));
+                        self.between.len() - 1
+                    }
+                };
+                let between = &mut self.between[i].1;
+                between.moments.push(&state_of(&gilrs.gamepad(id)));
             }
             match event {
                 gilrs::EventType::ButtonPressed(pressed, _) => {
@@ -821,12 +819,12 @@ impl PadRouter {
             .map_or_else(PadState::default, |pad| state_of(&pad))
     }
 
-    /// The pad at each of its events since the last `events`, in order (`Pads::between`).
-    pub(in crate::game) fn between(&self, id: PadId) -> Between {
+    /// The pad's events since the last `events` (`Pads::between`), for the player it drives.
+    pub(in crate::game) fn take_between(&mut self, id: PadId) -> Between {
         self.between
-            .iter()
+            .iter_mut()
             .find(|(pad, _)| *pad == id)
-            .map_or_else(Between::default, |(_, between)| between.clone())
+            .map_or_else(Between::default, |(_, between)| std::mem::take(between))
     }
 
     /// Its glyphs (Xbox, PlayStation, Nintendo), as `read` finds them for the active pad.

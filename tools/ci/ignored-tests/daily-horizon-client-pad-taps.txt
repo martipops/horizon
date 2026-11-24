@@ -1,0 +1,3 @@
+# The daily tests of the pad's taps shorter than a poll: each is #[ignore = "daily"] in its source and runs once
+# a day in the daily run, where it must pass (README.md). Rows: PACKAGE TEST TARGET daily REASON, sorted.
+horizon-client game::pad::tap_tests::b_and_start_close_the_loading_overlay_preview lib daily resources

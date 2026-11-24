@@ -143,11 +143,11 @@ impl Split<'_> {
     }
     /// The pad at each of its events since the last frame (`Pads::between`): nothing for a pad
     /// just joined, whose events let go of the press that gave it its player.
-    fn pad_between(&self, pad: Option<PadId>) -> Between {
+    fn pad_between(&mut self, pad: Option<PadId>) -> Between {
         let Some(id) = pad else {
             return Between::default();
         };
-        let mut between = self.pads.between(id);
+        let mut between = self.pads.take_between(id);
         if self.fresh.contains(&id) {
             between.moments.clear();
         }
