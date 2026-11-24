@@ -38,7 +38,13 @@ once per loop iteration next to winit's events.
   move vector directly (a half-tilted stick walks slowly, like Bedrock),
   instead of being rounded to WASD. The forward/back/left/right flags other
   code reads (sprint start, boats, minecarts, the server's input packet) are
-  set when the stick passes a threshold. On a server (not this game's own
+  the keys of the one of 8 headings the stick is nearest, from 0.3 of its tilt
+  (`gamepad::eight_direction_keys`), so a light diagonal holds both keys. Once
+  held they keep a margin, 0.05 of the tilt and 3 degrees past a sector's
+  edge, so a thumb resting on an edge doesn't flicker a key (two rising edges
+  of forward would be vanilla's double-tap sprint). Sprint reads the stick's
+  forward key the same way, so the stick hard left with a little forward
+  strafes rather than sprinting sideways. On a server (not this game's own
   server thread) the stick moves as those keys do, in 8 directions at full
   speed, as the server only hears the keys: an anticheat predicting from them
   pulls back a player moving at the stick's own angle and speed.

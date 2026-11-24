@@ -1072,6 +1072,57 @@ pub fn eight_direction_keys([left, forward]: [f32; 2]) -> [bool; 4] {
     ]
 }
 
+/// How far below [`KEY_TILT`] a stick already holding keys keeps them, so a tilt resting near it
+/// doesn't pulse between standing still and full speed.
+const KEY_TILT_MARGIN: f32 = 0.05;
+/// cos(25.5 degrees): how far off a heading a stick keeps that heading's keys, the 22.5 degrees to
+/// its sector's edge and a margin of 3, so a stick resting on an edge doesn't flicker a key (two
+/// rising edges of forward are vanilla's double-tap sprint, `sprint.rs`).
+const SECTOR_KEEP_COS: f32 = 0.902_585_3;
+/// cos(70.5 degrees): how far from straight ahead a stick already holding forward keeps it, the
+/// 67.5 degrees of the three forward sectors and the same margin of 3.
+const FORWARD_KEEP_COS: f32 = 0.333_806_8;
+
+/// [`eight_direction_keys`] for a stick that held `previous` last tick (`[false; 4]` from rest):
+/// within the margins above it keeps them, so a stick resting on a threshold or a sector's edge
+/// doesn't flicker a key.
+pub fn eight_direction_keys_held(v: [f32; 2], previous: [bool; 4]) -> [bool; 4] {
+    let tilt = length(v);
+    if previous == [false; 4] {
+        return eight_direction_keys(v);
+    }
+    if tilt < KEY_TILT - KEY_TILT_MARGIN {
+        return [false; 4];
+    }
+    let Some(heading) = heading(previous) else {
+        return eight_direction_keys(v);
+    };
+    let along = (v[0] * heading[0] + v[1] * heading[1]) / tilt;
+    if along >= SECTOR_KEEP_COS {
+        return previous;
+    }
+    // Past the margin in angle: the keys of the sector it is in, as from rest.
+    eight_direction_keys(v)
+}
+
+/// The unit move vector (`[left, forward]`) of the heading movement keys hold, as
+/// `KeyboardInput` turns them into one; none when they cancel out.
+pub fn heading([forward, backward, left, right]: [bool; 4]) -> Option<[f32; 2]> {
+    let v = crate::input::keyboard_direction(forward, backward, left, right);
+    let len = length(v);
+    (len > 0.0).then(|| [v[0] / len, v[1] / len])
+}
+
+/// Whether a stick holds the forward key, as [`eight_direction_keys_held`] would, given whether it
+/// held it last tick: within 67.5 degrees of straight ahead, with the same margins.
+pub fn forward_key_held(v: [f32; 2], was: bool) -> bool {
+    if !was {
+        return eight_direction_keys(v)[0];
+    }
+    let tilt = length(v);
+    tilt >= KEY_TILT - KEY_TILT_MARGIN && v[1] / tilt >= FORWARD_KEEP_COS
+}
+
 /// A radial deadzone: inside it the stick is centred; beyond it the rest of
 /// the travel is rescaled to 0..1 in the same direction, so diagonals aren't
 /// clipped and the first movement past the deadzone is small.
@@ -2333,6 +2384,70 @@ bind_key.hotbar.2:north
             eight_direction_keys([1.0, 0.414_213_57]),
             [false, false, true, false]
         );
+    }
+
+    /// A stick `degrees` from forward, towards the left.
+    fn at(degrees: f32, tilt: f32) -> [f32; 2] {
+        let (s, c) = degrees.to_radians().sin_cos();
+        [tilt * s, tilt * c]
+    }
+
+    #[test]
+    fn a_stick_resting_on_a_sector_edge_or_the_key_tilt_keeps_its_keys() {
+        // Each edge from either side: 2 degrees across it the keys stay, 4 across they change.
+        for edge in (0..8).map(|i| 22.5 + 45.0 * i as f32) {
+            for side in [-1.0, 1.0] {
+                let start = eight_direction_keys(at(edge + side * 10.0, 1.0));
+                assert_eq!(
+                    eight_direction_keys_held(at(edge - side * 2.0, 1.0), start),
+                    start,
+                    "{edge} from {side}"
+                );
+                assert_ne!(
+                    eight_direction_keys_held(at(edge - side * 4.0, 1.0), start),
+                    start,
+                    "{edge} from {side}"
+                );
+            }
+        }
+        // Around the tilt that starts walking: on at 0.31, kept at 0.29, off at 0.24.
+        let walking = eight_direction_keys_held(at(0.0, 0.31), [false; 4]);
+        assert_eq!(walking, [true, false, false, false]);
+        assert_eq!(eight_direction_keys_held(at(0.0, 0.29), walking), walking);
+        assert_eq!(
+            eight_direction_keys_held(at(0.0, 0.24), walking),
+            [false; 4]
+        );
+        assert_eq!(
+            eight_direction_keys_held(at(0.0, 0.29), [false; 4]),
+            [false; 4]
+        );
+    }
+
+    #[test]
+    fn a_diagonal_tilt_past_the_key_tilt_holds_both_keys() {
+        // Per axis each part of 0.41 at 45 degrees is 0.29, under 0.3: it used to stand still.
+        assert_eq!(
+            eight_direction_keys_held(at(45.0, 0.41), [false; 4]),
+            [true, false, true, false]
+        );
+        let [left, forward] = heading([true, false, true, false]).unwrap();
+        assert!(
+            (left - forward).abs() < 1e-6 && (left * left + forward * forward - 1.0).abs() < 1e-5
+        );
+        assert_eq!(heading([true, true, false, false]), None);
+    }
+
+    #[test]
+    fn forward_is_held_within_the_forward_sectors_and_their_margin() {
+        // Hard left with a little forward isn't forward.
+        assert!(!forward_key_held(at(80.0, 1.0), false));
+        assert!(forward_key_held(at(60.0, 1.0), false));
+        // Once held, it stays to 70.5 degrees and down to 0.25 of tilt.
+        assert!(forward_key_held(at(69.5, 1.0), true));
+        assert!(!forward_key_held(at(72.0, 1.0), true));
+        assert!(forward_key_held(at(0.0, 0.27), true));
+        assert!(!forward_key_held(at(0.0, 0.24), true));
     }
 
     #[test]

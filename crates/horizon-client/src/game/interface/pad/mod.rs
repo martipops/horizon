@@ -143,6 +143,9 @@ pub(super) struct Pads {
     guide_facts: Option<(u64, horizon_client::gameplay_guide::Facts)>,
     /// The guide's rows as last drawn.
     pub(super) guide_shown: Vec<guide::Shown>,
+    /// The movement keys the stick held at the last gameplay tick, kept within a margin so a
+    /// stick resting on an edge doesn't flicker them (`gamepad::eight_direction_keys_held`).
+    stick_keys: std::cell::Cell<[bool; 4]>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -872,6 +875,7 @@ impl Game<'_> {
     /// Read only at the gameplay movement tick, not when a HUD or tutorial observes keys.
     pub(super) fn pad_move_for_tick(&self, external_server: bool) -> (Option<[f32; 2]>, bool) {
         let Some(axes) = self.pad_move_axes() else {
+            self.pad.stick_keys.set([false; 4]);
             return (None, false);
         };
         let deadzone = self.settings.controller.move_deadzone;
@@ -897,7 +901,17 @@ impl Game<'_> {
                 );
             }
         }
-        (gamepad::move_vector(axes, deadzone), false)
+        let stick = gamepad::move_vector(axes, deadzone);
+        let keys = stick.map_or([false; 4], |v| {
+            gamepad::eight_direction_keys_held(v, self.pad.stick_keys.get())
+        });
+        self.pad.stick_keys.set(keys);
+        // On a server the stick moves as the keys it holds (`tick.rs`), which a margin keeps
+        // steady: the tick gets their heading, whose keys are exactly those.
+        if external_server {
+            return (gamepad::heading(keys), false);
+        }
+        (stick, false)
     }
 
     /// The right stick turns the view, once per frame (`Entity.turn`).
