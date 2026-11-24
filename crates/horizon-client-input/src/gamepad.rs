@@ -79,8 +79,7 @@ impl Button {
     pub fn parse(name: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|b| b.name() == name)
     }
-    /// This button's bit in `PadState::buttons` and `Pulses::read`'s `wait`.
-    pub fn bit(self) -> u32 {
+    fn bit(self) -> u32 {
         1 << self as u32
     }
     /// The face button that plays this one's part on a Nintendo pad going by its letters
@@ -158,153 +157,115 @@ impl PadState {
     }
 }
 
-/// A pad at each of its events between two reads, in order, without the moments no reader can
-/// tell apart: a moving stick, or a trigger on its way from one turn to the next.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct Moments(std::collections::VecDeque<PadState>);
-/// The most moments kept for a read: the oldest go first, so the newest always show.
-const MOST_MOMENTS: usize = 256;
-impl Moments {
-    pub fn push(&mut self, state: &PadState) {
-        let state = PadState {
-            buttons: state.buttons,
-            triggers: state.triggers,
-            ..PadState::default()
-        };
-        let len = self.0.len();
-        if self.0.back() == Some(&state) {
-            return;
+/// What a pad's events passed through between two reads, for `Taps`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Seen {
+    /// The buttons (by bit) down at any of them, and at all of them.
+    any: u32,
+    all: u32,
+    /// How far each trigger was let out and pulled.
+    low: [f32; 2],
+    high: [f32; 2],
+    /// They aren't one pad's, from start to end.
+    broken: bool,
+}
+impl Default for Seen {
+    fn default() -> Self {
+        Self {
+            any: 0,
+            all: u32::MAX,
+            low: [1.0; 2],
+            high: [0.0; 2],
+            broken: false,
         }
-        // The newest lies between its neighbours: only they can cross a threshold.
-        if len >= 2 {
-            let (before, last) = (self.0[len - 2], self.0[len - 1]);
-            let on_the_way = |i: usize| {
-                let (a, b, c) = (before.triggers[i], last.triggers[i], state.triggers[i]);
-                (a <= b && b <= c) || (a >= b && b >= c)
-            };
-            if before.buttons == last.buttons
-                && last.buttons == state.buttons
-                && on_the_way(0)
-                && on_the_way(1)
-            {
-                self.0[len - 1] = state;
-                return;
-            }
-        }
-        if len == MOST_MOMENTS {
-            self.0.pop_front();
-        }
-        self.0.push_back(state);
     }
-    pub fn clear(&mut self) {
-        self.0.clear();
+}
+impl Seen {
+    /// Events that can't be one pad's tap: another pad's, or from around a disconnect.
+    pub fn broken() -> Self {
+        Self {
+            broken: true,
+            ..Self::default()
+        }
     }
-    pub fn iter(&self) -> impl Iterator<Item = &PadState> {
-        self.0.iter()
+    /// The pad after one event.
+    pub fn see(&mut self, state: &PadState) {
+        self.any |= state.buttons;
+        self.all &= state.buttons;
+        for (i, value) in state.triggers.into_iter().enumerate() {
+            self.low[i] = self.low[i].min(value);
+            self.high[i] = self.high[i].max(value);
+        }
     }
 }
 
-/// The presses and releases a pad made between two reads, kept in order: one read a frame finds
-/// only where the pad ended, so a tap let go before it, or a second tap of a button, would never
-/// happen at a low frame rate or in a hitch. What the pad held at each of its moments waits in
-/// one queue, and each read moves along it to the next press, so every press reaches `Edges` with
-/// exactly the buttons that were down with it: buttons tapped one after the other never show
-/// together. Triggers count as buttons past the threshold, with `Edges`' hysteresis.
+/// Keeps a tap that began and ended between two reads of a pad, which would find it as it was:
+/// one button that went down and up, with no other changing, is held at this read and let go at
+/// the next. Anything else is the pad as it is now, so several buttons pressed between two reads
+/// never turn into a combination, or an order, that the player didn't press.
 #[derive(Clone, Debug, Default)]
-pub struct Pulses {
-    /// The buttons the pad held at the latest moment seen.
-    last: u32,
-    /// The buttons the last read showed.
-    shown: u32,
-    /// The buttons held after each change not shown yet, oldest first, ending at `last`.
-    queue: std::collections::VecDeque<u32>,
+pub struct Taps {
+    /// The buttons (by bit, triggers past the threshold too) held at the last read of this pad.
+    held: Option<u32>,
+    /// The button (by bit) whose tap the last read showed: this one lets go of it.
+    tapped: u32,
 }
-/// The most changes that wait: a pad mashed through a long hitch gives a few taps, not a backlog
-/// that plays on for seconds. The oldest go first.
-const MOST_QUEUED: usize = 16;
-impl Pulses {
-    /// One moment of the pad between two reads, in the order its events came.
-    pub fn see(&mut self, state: &PadState, threshold: f32) {
-        let now = held_bits(state, threshold, self.last);
-        if now != self.last {
-            if self.queue.len() == MOST_QUEUED {
-                self.queue.pop_front();
-            }
-            self.queue.push_back(now);
-            self.last = now;
-        }
-    }
-    /// The state to act on at this read: `live`, the pad now, holding what it held at the next
-    /// press since the last read (or now, with none left). No button changes twice in one read.
-    /// `wait`: buttons (by bit) whose next press waits a read, such as one whose last release is
-    /// still held back for its tick.
-    pub fn read(&mut self, live: &PadState, threshold: f32, wait: u32) -> PadState {
-        self.see(live, threshold);
-        let mut moved = 0;
-        while let Some(&next) = self.queue.front() {
-            let changed = next ^ self.shown;
-            let pressed = next & !self.shown;
-            if changed & moved != 0 || pressed & wait != 0 {
-                break;
-            }
-            self.queue.pop_front();
-            self.shown = next;
-            moved |= changed;
-            if pressed != 0 {
-                break;
-            }
-        }
+impl Taps {
+    /// The state to act on at this read: `live`, the pad now, after what its events passed
+    /// through (`seen`).
+    pub fn read(&mut self, seen: &Seen, live: &PadState, threshold: f32) -> PadState {
+        let tapped = std::mem::take(&mut self.tapped);
+        let was = self.held;
+        let on_off = [threshold, (threshold - 0.1).max(0.05)];
+        let bits = |buttons, triggers, was| held_bits(buttons, triggers, was, on_off);
+        let held = bits(live.buttons, live.triggers, was.unwrap_or(0));
+        self.held = Some(held);
         let mut state = *live;
-        state.buttons = self.shown & !TRIGGER_BITS;
-        // `Edges` finds the triggers' bits again from their values.
-        let off = trigger_off(threshold);
-        for (trigger, button) in [(0, Button::LeftTrigger), (1, Button::RightTrigger)] {
-            let value = &mut state.triggers[trigger];
-            if self.shown & button.bit() != 0 {
-                *value = value.max(threshold).max(off);
-            } else if *value >= off {
-                *value = 0.0;
+        // `Edges` saw a tapped trigger go on: resting short of a press, it isn't held.
+        for (i, button) in TRIGGERS.into_iter().enumerate() {
+            if tapped == button.bit() && held & button.bit() == 0 {
+                state.triggers[i] = 0.0;
+            }
+        }
+        let Some(was) = was.filter(|_| tapped == 0 && !seen.broken) else {
+            return state;
+        };
+        // The buttons that were down at some event, and those that never came up.
+        let down = bits(seen.any, seen.high, was);
+        let kept = bits(seen.all, seen.low, was);
+        let changed = (down & !was) | (was & !kept) | (held ^ was);
+        // Up again: a trigger all the way, not only short of a press.
+        let tap = down & !was & !bits(live.buttons, live.triggers, down);
+        if changed == tap && tap.count_ones() == 1 {
+            self.tapped = tap;
+            state.buttons |= tap & !TRIGGER_BITS;
+            for (i, button) in TRIGGERS.into_iter().enumerate() {
+                if tap == button.bit() {
+                    state.triggers[i] = seen.high[i];
+                }
             }
         }
         state
     }
-    /// Changes are still to show.
-    pub fn waiting(&self) -> bool {
-        !self.queue.is_empty()
-    }
-    /// Another pad, the same one connected again, or a context change: what was still to show is
-    /// dropped, and the next read shows the pad as it is. The buttons (by bit) it holds whose
-    /// press was never shown.
-    pub fn drop_queued(&mut self) -> u32 {
-        self.queue.clear();
-        let unseen = self.last & !self.shown;
-        self.shown = self.last;
-        unseen
+    /// The pad isn't read: what it did before its next read is no tap.
+    pub fn reset(&mut self) {
+        *self = Self::default();
     }
 }
+const TRIGGERS: [Button; 2] = [Button::LeftTrigger, Button::RightTrigger];
 const TRIGGER_BITS: u32 = (1 << Button::LeftTrigger as u32) | (1 << Button::RightTrigger as u32);
 
-/// Where a trigger past `threshold` counts as let go.
-fn trigger_off(threshold: f32) -> f32 {
-    (threshold - 0.1).max(0.05)
-}
-
-/// The buttons `state` holds, triggers included past `threshold`; `was`: the buttons held
-/// before, for the triggers' hysteresis (as `Edges::update`).
-fn held_bits(state: &PadState, threshold: f32, was: u32) -> u32 {
-    let mut now = state.buttons & !TRIGGER_BITS;
-    for (trigger, button) in [(0, Button::LeftTrigger), (1, Button::RightTrigger)] {
-        let value = state.triggers[trigger];
-        let on = if was & button.bit() != 0 {
-            value >= trigger_off(threshold)
-        } else {
-            value >= threshold
-        };
-        if on {
-            now |= button.bit();
+/// `buttons` with the triggers held at `triggers`: past `on`, or still past `off` if they `was`
+/// held, as `Edges` finds them.
+fn held_bits(buttons: u32, triggers: [f32; 2], was: u32, [on, off]: [f32; 2]) -> u32 {
+    let mut held = buttons & !TRIGGER_BITS;
+    for (i, button) in TRIGGERS.into_iter().enumerate() {
+        let least = if was & button.bit() != 0 { off } else { on };
+        if triggers[i] >= least {
+            held |= button.bit();
         }
     }
-    now
+    held
 }
 
 /// Button presses and releases between successive states. Triggers count as
@@ -322,7 +283,7 @@ impl Edges {
             let was = (self.held | self.suppressed) & button.bit() != 0;
             let value = state.triggers[trigger];
             let on = if was {
-                value >= trigger_off(threshold)
+                value >= (threshold - 0.1).max(0.05)
             } else {
                 value >= threshold
             };
@@ -353,11 +314,6 @@ impl Edges {
     }
     pub fn is_held(&self, button: Button) -> bool {
         self.held & button.bit() != 0
-    }
-    /// Keep `held` (by bit) from becoming presses until they come up: buttons down when a context
-    /// was cancelled whose press it never saw (`Pulses` had not shown it yet).
-    pub fn suppress(&mut self, held: u32) {
-        self.suppressed |= held;
     }
     /// Cancel a context without turning its still-held buttons into new presses.
     pub fn cancel(&mut self) -> Vec<(Button, bool)> {
@@ -2589,26 +2545,9 @@ bind_key.hotbar.2:north
         assert_eq!(edges.release_all(), [(Button::DPadUp, false)]);
     }
 
-    /// The edges each read gives, through `Pulses` then `Edges`: `polls` lists, per read, the
-    /// pad's moments between the reads, the last being the pad at the read.
-    fn pulse_edges(start: PadState, polls: &[&[PadState]]) -> Vec<Vec<(Button, bool)>> {
-        let mut pulses = Pulses::default();
-        let mut edges = Edges::default();
-        edges.update(&pulses.read(&start, 0.4, 0), 0.4);
-        polls
-            .iter()
-            .map(|moments| {
-                let (live, between) = moments.split_last().unwrap();
-                for moment in between {
-                    pulses.see(moment, 0.4);
-                }
-                edges.update(&pulses.read(live, 0.4, 0), 0.4)
-            })
-            .collect()
-    }
-    fn holding(buttons: &[Button], triggers: [f32; 2]) -> PadState {
+    fn holding(buttons: &[Button], left_trigger: f32) -> PadState {
         let mut state = PadState {
-            triggers,
+            triggers: [left_trigger, 0.0],
             ..PadState::default()
         };
         for &button in buttons {
@@ -2616,180 +2555,112 @@ bind_key.hotbar.2:north
         }
         state
     }
-
-    #[test]
-    fn a_tap_between_two_reads_presses_then_lets_go() {
-        let (rest, a) = (PadState::default(), holding(&[Button::South], [0.0; 2]));
-        let press = vec![(Button::South, true)];
-        let release = vec![(Button::South, false)];
-        assert_eq!(
-            pulse_edges(rest, &[&[a, rest], &[rest]]),
-            [press.clone(), release.clone()]
-        );
-        // A held, let go and pressed again between two reads: a release, then the press.
-        assert_eq!(
-            pulse_edges(a, &[&[rest, a], &[a]]),
-            [release.clone(), press.clone()]
-        );
-    }
-
-    #[test]
-    fn taps_in_a_row_each_press() {
-        let (rest, a) = (PadState::default(), holding(&[Button::South], [0.0; 2]));
-        let press = vec![(Button::South, true)];
-        let release = vec![(Button::South, false)];
-        let both = [press.clone(), release.clone(), press, release];
-        // One tap before each of two reads, with no read at rest between them.
-        assert_eq!(
-            pulse_edges(rest, &[&[a, rest], &[a, rest], &[rest], &[rest]]),
-            both
-        );
-        // Two taps before one read.
-        assert_eq!(
-            pulse_edges(rest, &[&[a, rest, a, rest], &[rest], &[rest], &[rest]]),
-            both
-        );
-    }
-
-    #[test]
-    fn a_trigger_let_go_before_a_press_isnt_held_with_it() {
-        // LT held over a recipe; between two reads a stick moves (LT still down), LT comes up,
-        // then A goes down. No read may show LT and A held together (a craft).
-        let lt = holding(&[], [0.9, 0.0]);
-        let a = holding(&[Button::South], [0.0; 2]);
-        let mut pulses = Pulses::default();
-        pulses.read(&lt, 0.4, 0);
-        for moment in [lt, PadState::default()] {
-            pulses.see(&moment, 0.4);
+    /// The pad's states at a poll's events; the last is the pad at the read.
+    fn seen(events: &[PadState]) -> Seen {
+        let mut seen = Seen::default();
+        for state in events {
+            seen.see(state);
         }
-        for _ in 0..3 {
-            let read = pulses.read(&a, 0.4, 0);
-            assert!(
-                !(read.held(Button::South) && read.triggers[0] >= 0.4),
-                "{read:?}"
+        seen
+    }
+    /// Each poll's edges, read from its events through `Taps`, from a pad at `start`.
+    fn tap_edges(start: PadState, polls: &[&[PadState]]) -> Vec<Vec<(Button, bool)>> {
+        let (mut taps, mut edges) = (Taps::default(), Edges::default());
+        edges.update(&taps.read(&Seen::default(), &start, 0.4), 0.4);
+        let mut live = start;
+        polls
+            .iter()
+            .map(|events| {
+                live = *events.last().unwrap_or(&live);
+                edges.update(&taps.read(&seen(events), &live, 0.4), 0.4)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_tap_inside_one_poll_presses_then_lets_go() {
+        let (rest, a) = (holding(&[], 0.0), holding(&[Button::South], 0.0));
+        let (press, release) = (vec![(Button::South, true)], vec![(Button::South, false)]);
+        let tap: &[PadState] = &[a, rest];
+        assert_eq!(
+            tap_edges(rest, &[tap, &[], &[]]),
+            [press.clone(), release.clone(), vec![]]
+        );
+        // A second tap in the same poll, or in the next, is lost; the first still lets go.
+        assert_eq!(
+            tap_edges(rest, &[&[a, rest, a, rest], &[], &[]]),
+            [press.clone(), release.clone(), vec![]]
+        );
+        assert_eq!(
+            tap_edges(rest, &[tap, tap, tap, &[]]),
+            [press.clone(), release.clone(), press, release]
+        );
+        // With another button held all the while, and a stick on the move.
+        let lt = holding(&[], 0.9);
+        let mut lt_a = holding(&[Button::South], 0.9);
+        lt_a.left = [0.0, 1.0];
+        assert_eq!(
+            tap_edges(lt, &[&[lt_a, lt], &[]]),
+            [[(Button::South, true)], [(Button::South, false)]]
+        );
+        // A trigger.
+        assert_eq!(
+            tap_edges(rest, &[&[lt, rest], &[]]),
+            [
+                [(Button::LeftTrigger, true)],
+                [(Button::LeftTrigger, false)]
+            ]
+        );
+    }
+
+    #[test]
+    fn anything_but_one_tap_is_the_pad_as_it_is() {
+        let rest = holding(&[], 0.0);
+        let (a, b) = (
+            holding(&[Button::South], 0.0),
+            holding(&[Button::East], 0.0),
+        );
+        let (lt, lt_a) = (holding(&[], 0.9), holding(&[Button::South], 0.9));
+        let cases: &[(PadState, &[PadState])] = &[
+            // A press, a release, a hold, and a held button let go and pressed again.
+            (rest, &[a]),
+            (a, &[rest]),
+            (a, &[]),
+            (a, &[rest, a]),
+            (rest, &[a, rest, a]),
+            // Two buttons tapped, together or one after the other.
+            (rest, &[a, rest, b, rest]),
+            (rest, &[lt, lt_a, lt, rest]),
+            (rest, &[lt, rest, a, rest]),
+            // A tap while another button goes down, comes up, or does both.
+            (rest, &[a, rest, lt]),
+            (lt, &[lt_a, lt, rest]),
+            (lt, &[rest, a, rest]),
+            (lt, &[rest, a]),
+            (lt, &[lt_a, a, rest, lt]),
+            // A trigger that stops short of letting go, or of a press.
+            (rest, &[lt, holding(&[], 0.35)]),
+            (rest, &[holding(&[], 0.39), rest]),
+        ];
+        for (start, events) in cases {
+            let mut taps = Taps::default();
+            taps.read(&Seen::default(), start, 0.4);
+            let live = events.last().unwrap_or(start);
+            assert_eq!(
+                taps.read(&seen(events), live, 0.4),
+                *live,
+                "{start:?} {events:?}"
             );
         }
-    }
-
-    #[test]
-    fn a_change_waits_while_its_button_waits() {
-        let (rest, a) = (PadState::default(), holding(&[Button::South], [0.0; 2]));
-        let mut pulses = Pulses::default();
-        pulses.see(&a, 0.4);
-        pulses.see(&rest, 0.4);
-        assert!(pulses.read(&rest, 0.4, Button::South.bit()).buttons == 0);
-        assert!(pulses.read(&rest, 0.4, 0).held(Button::South));
-        assert!(!pulses.read(&rest, 0.4, 0).held(Button::South));
-    }
-
-    #[test]
-    fn a_dropped_pad_owes_nothing() {
-        let (rest, a) = (PadState::default(), holding(&[Button::South], [0.0; 2]));
-        let mut pulses = Pulses::default();
-        pulses.see(&a, 0.4);
-        pulses.see(&rest, 0.4);
-        pulses.drop_queued();
-        assert_eq!(pulses.read(&rest, 0.4, 0), rest);
-        // A tap, then held, when a context is cancelled after the tap's press was shown: the hold
-        // is no new press in the next context, and a press after it comes up is.
-        let (mut pulses, mut edges) = (Pulses::default(), Edges::default());
-        for moment in [a, rest, a] {
-            pulses.see(&moment, 0.4);
-        }
-        assert_eq!(
-            edges.update(&pulses.read(&a, 0.4, 0), 0.4),
-            [(Button::South, true)]
-        );
-        edges.suppress(pulses.drop_queued());
-        edges.cancel();
-        assert_eq!(edges.update(&pulses.read(&a, 0.4, 0), 0.4), []);
-        assert_eq!(edges.update(&pulses.read(&rest, 0.4, 0), 0.4), []);
-        assert_eq!(
-            edges.update(&pulses.read(&a, 0.4, 0), 0.4),
-            [(Button::South, true)]
-        );
-    }
-
-    #[test]
-    fn buttons_tapped_one_after_the_other_never_show_together() {
-        // LT tapped, then A, both between two reads; and the same with the last read holding LT.
-        let rest = PadState::default();
-        let (lt, a) = (
-            holding(&[], [0.9, 0.0]),
-            holding(&[Button::South], [0.0; 2]),
-        );
-        for start in [rest, lt] {
-            let mut pulses = Pulses::default();
-            pulses.read(&start, 0.4, 0);
-            for moment in [lt, rest, a, rest] {
-                pulses.see(&moment, 0.4);
-            }
-            let mut pressed = false;
-            for _ in 0..6 {
-                let read = pulses.read(&rest, 0.4, 0);
-                pressed |= read.held(Button::South);
-                assert!(
-                    !(read.held(Button::South) && read.triggers[0] >= 0.3),
-                    "{read:?}"
-                );
-            }
-            assert!(pressed, "A pressed");
-        }
-        // Held together they do, though LT comes up before A: the press has its modifier.
-        let both = holding(&[Button::South], [0.9, 0.0]);
-        let mut pulses = Pulses::default();
-        for moment in [lt, both, a, rest] {
-            pulses.see(&moment, 0.4);
-        }
-        let chord = (0..6).any(|_| {
-            let read = pulses.read(&rest, 0.4, 0);
-            read.held(Button::South) && read.triggers[0] >= 0.4
-        });
-        assert!(chord);
-    }
-
-    #[test]
-    fn a_trigger_easing_into_the_hysteresis_band_still_presses() {
-        let at = |value| holding(&[], [value, 0.0]);
-        let lt = Button::LeftTrigger;
-        // Squeezed past 0.4 and eased to 0.35, which keeps it held, then let go.
-        assert_eq!(
-            pulse_edges(at(0.0), &[&[at(0.9), at(0.35)], &[at(0.35)], &[at(0.0)]]),
-            [vec![(lt, true)], vec![], vec![(lt, false)]]
-        );
-        // Let go to 0.2 and squeezed to 0.35, short of a press: it stays up.
-        assert_eq!(
-            pulse_edges(at(0.9), &[&[at(0.2), at(0.35)], &[at(0.35)]]),
-            [vec![(lt, false)], vec![]]
-        );
-    }
-
-    #[test]
-    fn what_waits_stays_bounded_and_ends_at_the_pad_now() {
-        // Stick reports add nothing, and a trigger's travel only its turns.
-        let mut moments = Moments::default();
-        for i in 0..10_000 {
-            let mut state = holding(&[], [(i as f32 / 10_000.0).min(0.9), 0.0]);
-            state.left = [i as f32 / 10_000.0, 0.0];
-            moments.push(&state);
-        }
-        assert!(moments.iter().count() <= 2);
-        // Nor do a noisy trigger or a mashed button grow without end.
-        let (rest, a) = (PadState::default(), holding(&[Button::South], [0.0; 2]));
-        let mut moments = Moments::default();
-        for _ in 0..10_000 {
-            moments.push(&holding(&[], [0.1, 0.0]));
-            moments.push(&a);
-        }
-        assert!(moments.iter().count() <= MOST_MOMENTS);
-        let mut pulses = Pulses::default();
-        for moment in moments.iter() {
-            pulses.see(moment, 0.4);
-        }
-        for _ in 0..MOST_QUEUED + 1 {
-            pulses.read(&rest, 0.4, 0);
-        }
-        assert_eq!(pulses.read(&rest, 0.4, 0), rest);
+        // Nor is one a tap on a pad not read before, not read since, or not the same throughout.
+        let mut taps = Taps::default();
+        assert_eq!(taps.read(&seen(&[a, rest]), &rest, 0.4), rest);
+        taps.reset();
+        assert_eq!(taps.read(&seen(&[a, rest]), &rest, 0.4), rest);
+        let mut broken = Seen::broken();
+        broken.see(&a);
+        broken.see(&rest);
+        assert_eq!(taps.read(&broken, &rest, 0.4), rest);
     }
 
     #[test]

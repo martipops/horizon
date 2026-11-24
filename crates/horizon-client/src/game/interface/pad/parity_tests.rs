@@ -51,7 +51,7 @@ pub(super) fn playing(test: impl FnOnce(&mut Game)) {
 }
 
 /// No window loop runs in these gameplay input tests.
-pub(super) struct NoEventLoop;
+struct NoEventLoop;
 
 impl crate::game::event_loop::EventLoopCtl for NoEventLoop {
     fn exit(&self) {

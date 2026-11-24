@@ -4,7 +4,7 @@
 //! pad`'s virtual pad.
 use super::{
     super::{Game, Screen},
-    Between, Connection, PadEvent, Pads,
+    Connection, PadEvent, Pads,
 };
 use horizon_client::controller_ui::Device;
 use horizon_client::gamepad::{self, Button, GlyphStyle, PadState, Rumble, TriggerFeel};
@@ -352,11 +352,7 @@ impl Pads {
         };
         let active = self.devices.active;
         self.peaks = [[0.0; 2]; 2];
-        // The active pad at each of its events, in order (`Pads::between`), and whether the pad
-        // that was active went away: one connected again under its id is a new source.
-        self.between.clear();
-        let mut between_of = active;
-        let mut lost = false;
+        self.seen = gamepad::Seen::default();
         while let Some(gilrs::Event { id, event, .. }) = gilrs.next_event() {
             use gilrs::EventType as E;
             // The furthest each stick of the active pad leant between the events, which a read
@@ -391,11 +387,8 @@ impl Pads {
                     });
                     if self.devices.active == Some(id) {
                         self.devices.active = None;
-                        lost = true;
-                    }
-                    // What it did before it went belongs to a pad that is gone.
-                    if between_of == Some(id) {
-                        self.between.clear();
+                        // It may be back under its id before this read ends.
+                        self.seen = gamepad::Seen::broken();
                     }
                     if let Some(output) = &self.devices.output {
                         output.scan();
@@ -415,22 +408,19 @@ impl Pads {
                 E::ButtonChanged(_, value, _) if value > TAKEOVER => self.devices.active = Some(id),
                 _ => {}
             }
-            if self.devices.active == Some(id)
-                && matches!(
-                    event,
-                    E::ButtonPressed(..) | E::ButtonChanged(..) | E::AxisChanged(..)
-                )
-            {
-                if between_of != Some(id) {
-                    self.between.clear();
-                    between_of = Some(id);
-                }
-                self.between.push(&state_of(&gilrs.gamepad(id)));
+            if self.devices.active != Some(id) {
+                continue;
+            }
+            if active != Some(id) {
+                // It took over from another pad.
+                self.seen = gamepad::Seen::broken();
+            }
+            if moves(&event) {
+                self.seen.see(&state_of(&gilrs.gamepad(id)));
             }
         }
         // Another pad, or none: its A going away isn't a release.
-        if self.devices.active != active || lost {
-            self.pulses.drop_queued();
+        if self.devices.active != active {
             self.menu.armed = None;
             self.radial.cancel();
             self.menu.stop_craft();
@@ -468,6 +458,27 @@ impl Pads {
             .unwrap_or(xbox::Target::ANY);
         state_of(&pad)
     }
+}
+
+/// What `id`'s events passed through, begun at its first.
+fn seen_by(seen: &mut Vec<(PadId, gamepad::Seen)>, id: PadId) -> &mut gamepad::Seen {
+    let i = match seen.iter().position(|(pad, _)| *pad == id) {
+        Some(i) => i,
+        None => {
+            seen.push((id, gamepad::Seen::default()));
+            seen.len() - 1
+        }
+    };
+    &mut seen[i].1
+}
+
+/// The event can change what `state_of` reads.
+fn moves(event: &gilrs::EventType) -> bool {
+    use gilrs::EventType as E;
+    matches!(
+        event,
+        E::ButtonPressed(..) | E::ButtonReleased(..) | E::ButtonChanged(..) | E::AxisChanged(..)
+    )
 }
 
 /// The furthest each stick leant: `sticks` (left, right) where they lean further than `peaks`.
@@ -565,8 +576,8 @@ pub(in crate::game) struct PadRouter {
     rumbles: Vec<(gilrs::ff::Effect, Instant)>,
     /// The furthest each pad's sticks leant since the last `events` (`Pads::peaks`).
     peaks: Vec<(PadId, [[f32; 2]; 2])>,
-    /// Each pad at each of its events since the last `events`, in order (`Pads::between`).
-    between: Vec<(PadId, Between)>,
+    /// What each pad's events passed through since the last `events` (`Pads::seen`).
+    seen: Vec<(PadId, gamepad::Seen)>,
     /// Each player's own output while several play: gilrs' force feedback has no trigger
     /// motors, so a guest's vibration would move the grips alone. One link per pad, dropped
     /// when the pad goes or the router hands the reader back.
@@ -733,29 +744,18 @@ impl PadRouter {
         };
         let mut events = Vec::new();
         self.peaks.clear();
-        self.between.clear();
+        self.seen.clear();
         while let Some(gilrs::Event { id, event, .. }) = gilrs.next_event() {
-            use gilrs::EventType as E;
-            if matches!(event, E::AxisChanged(..)) {
+            if matches!(event, gilrs::EventType::AxisChanged(..)) {
                 let sticks = sticks_of(&gilrs.gamepad(id));
                 match self.peaks.iter_mut().find(|(pad, _)| *pad == id) {
                     Some((_, peaks)) => keep_peaks(peaks, sticks),
                     None => self.peaks.push((id, sticks)),
                 }
             }
-            if matches!(
-                event,
-                E::ButtonPressed(..) | E::ButtonChanged(..) | E::AxisChanged(..)
-            ) {
-                let i = match self.between.iter().position(|(pad, _)| *pad == id) {
-                    Some(i) => i,
-                    None => {
-                        self.between.push((id, Between::default()));
-                        self.between.len() - 1
-                    }
-                };
-                let between = &mut self.between[i].1;
-                between.moments.push(&state_of(&gilrs.gamepad(id)));
+            if moves(&event) {
+                let state = state_of(&gilrs.gamepad(id));
+                seen_by(&mut self.seen, id).see(&state);
             }
             match event {
                 gilrs::EventType::ButtonPressed(pressed, _) => {
@@ -771,15 +771,8 @@ impl PadRouter {
                     log::info!("Controller disconnected: {}", gilrs.gamepad(id).name());
                     // Its own output goes with it: a link on the old one buzzes nothing.
                     self.xbox.retain(|(pad, _)| *pad != id);
-                    // And what it did before it went: back under its id, it is a new pad.
-                    self.between.retain(|(pad, _)| *pad != id);
-                    self.between.push((
-                        id,
-                        Between {
-                            lost: true,
-                            ..Between::default()
-                        },
-                    ));
+                    // It may be back under its id before these events end.
+                    *seen_by(&mut self.seen, id) = gamepad::Seen::broken();
                     events.push(PadEvent::Gone(id));
                 }
                 gilrs::EventType::Connected => events.push(PadEvent::Back(id)),
@@ -811,20 +804,20 @@ impl PadRouter {
             .map_or([[0.0; 2]; 2], |(_, peaks)| *peaks)
     }
 
+    /// What the pad's events passed through since the last `events`.
+    pub(in crate::game) fn seen(&self, id: PadId) -> gamepad::Seen {
+        self.seen
+            .iter()
+            .find(|(pad, _)| *pad == id)
+            .map_or_else(Default::default, |(_, seen)| seen.clone())
+    }
+
     /// The pad's state now (released when it is gone).
     pub(in crate::game) fn state(&self, id: PadId) -> PadState {
         self.gilrs
             .as_ref()
             .and_then(|g| g.connected_gamepad(id))
             .map_or_else(PadState::default, |pad| state_of(&pad))
-    }
-
-    /// The pad's events since the last `events` (`Pads::between`), for the player it drives.
-    pub(in crate::game) fn take_between(&mut self, id: PadId) -> Between {
-        self.between
-            .iter_mut()
-            .find(|(pad, _)| *pad == id)
-            .map_or_else(Between::default, |(_, between)| std::mem::take(between))
     }
 
     /// Its glyphs (Xbox, PlayStation, Nintendo), as `read` finds them for the active pad.

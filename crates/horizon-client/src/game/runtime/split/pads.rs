@@ -3,9 +3,9 @@
 //! watches the controllers; otherwise P1 reads them itself, as without splitscreen.
 use super::hud::tr;
 use super::*;
-use crate::game::pad::{Between, PadEvent, PadId};
+use crate::game::pad::{PadEvent, PadId};
 use horizon_client::controller_notice::{Notice, NoticeId, Priority};
-use horizon_client::gamepad::{Button, MenuJob, PadState};
+use horizon_client::gamepad::{Button, MenuJob, PadState, Seen};
 
 /// How long a controller's offer to join stays up.
 const OFFER: Duration = Duration::from_secs(10);
@@ -141,17 +141,11 @@ impl Split<'_> {
         pad.filter(|id| !self.fresh.contains(id))
             .map_or([[0.0; 2]; 2], |id| self.pads.peaks(id))
     }
-    /// The pad at each of its events since the last frame (`Pads::between`): nothing for a pad
+    /// What the pad's events passed through since the last frame (`Pads::seen`): no tap for a pad
     /// just joined, whose events let go of the press that gave it its player.
-    fn pad_between(&mut self, pad: Option<PadId>) -> Between {
-        let Some(id) = pad else {
-            return Between::default();
-        };
-        let mut between = self.pads.take_between(id);
-        if self.fresh.contains(&id) {
-            between.moments.clear();
-        }
-        between
+    fn pad_seen(&self, pad: Option<PadId>) -> Seen {
+        pad.filter(|id| !self.fresh.contains(id))
+            .map_or_else(Seen::broken, |id| self.pads.seen(id))
     }
     /// The pad's state for its player: nothing while the press that gave it is still held.
     fn pad_state(&mut self, pad: Option<PadId>) -> PadState {
@@ -304,19 +298,20 @@ impl Split<'_> {
         if self.host.control.is_some() {
             self.pads.report_status(&mut self.host.pad, owner);
         }
-        let between = self.pad_between(owner);
+        // Before `pad_state`, which ends a pad's time as just joined.
+        let seen = self.pad_seen(owner);
         let state = self.pad_state(owner);
         let peaks = self.pad_peaks(owner);
-        self.host.pad.feed_from(owner, state, peaks, between);
+        self.host.pad.feed_from(owner, state, peaks, seen);
         for i in 0..self.guests.len() {
             let pad = self.guests[i].pad;
             if self.guests[i].game.control.is_some() {
                 self.pads.report_status(&mut self.guests[i].game.pad, pad);
             }
-            let between = self.pad_between(pad);
+            let seen = self.pad_seen(pad);
             let state = self.pad_state(pad);
             let peaks = self.pad_peaks(pad);
-            self.guests[i].game.pad.feed_from(pad, state, peaks, between);
+            self.guests[i].game.pad.feed_from(pad, state, peaks, seen);
         }
         joins
     }
