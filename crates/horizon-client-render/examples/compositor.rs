@@ -1,5 +1,6 @@
 //! Two offscreen frames presented in one window, without game resources or player data.
 //! `cargo run --profile fast -p horizon-client-render --example compositor -- --smoke`
+//! (`WGPU_BACKEND=gl` in front for the drawn path).
 use horizon_client_render::gfx::compositor::Compositor;
 use std::sync::Arc;
 use winit::{
@@ -24,9 +25,10 @@ impl Frames {
                     .with_inner_size(winit::dpi::PhysicalSize::new(640, 360)),
             )?,
         );
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_with_display_handle(
-            Box::new(window.clone()),
-        ));
+        // `WGPU_BACKEND=gl` picks OpenGL, whose surfaces take no copies: the frames are drawn.
+        let instance = wgpu::Instance::new(
+            wgpu::InstanceDescriptor::new_with_display_handle(Box::new(window.clone())).with_env(),
+        );
         let surface = instance.create_surface(window.clone())?;
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             compatible_surface: Some(&surface),
@@ -46,7 +48,10 @@ impl Frames {
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
                 format: wgpu::TextureFormat::Bgra8Unorm,
-                usage: wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST,
+                // Bound where the surface takes no copies and the frames are drawn (OpenGL).
+                usage: wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::COPY_SRC
+                    | wgpu::TextureUsages::COPY_DST,
                 view_formats: &[],
             });
             queue.write_texture(

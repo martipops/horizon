@@ -2864,7 +2864,10 @@ impl Renderer {
         } else {
             let format = wgpu::TextureFormat::Bgra8Unorm;
             let config = wgpu::SurfaceConfiguration {
+                // Bound by the splitscreen compositor where it draws the frame on a window
+                // whose surface takes no copies (`gfx/compositor.rs`).
                 usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING
                     | wgpu::TextureUsages::COPY_SRC
                     | wgpu::TextureUsages::COPY_DST,
                 format,
