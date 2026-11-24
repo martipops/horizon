@@ -2,11 +2,25 @@
 use super::*;
 
 impl<'a> Split<'a> {
+    /// The free windows whose place the system doesn't say: Wayland never does. The map shows
+    /// them side by side (`split_map::project`).
+    fn unplaced(&self) -> Vec<u8> {
+        self.windows
+            .iter()
+            .filter(|w| matches!(w.placement, Placement::Free(_)))
+            .filter_map(|w| self.surfaces.iter().find(|s| s.key == w.number))
+            .filter(|s| s.window.outer_position().is_err())
+            .map(|s| s.key)
+            .collect()
+    }
+
     /// The arrangement now, for the Setup screen: free windows where they are.
     pub(super) fn draft(&self) -> layout::Draft {
-        // Wayland never says where a window is: those are shown at their real size, side by side
-        // from the first monitor's corner, so the map never stacks them.
-        let mut shelf = self.monitors().first().map_or(0, |(_, m)| m.position().x);
+        // Where `unplaced` windows are, for their scale: the map places them itself.
+        let corner = self.monitors().first().map_or([0, 0], |(_, m)| {
+            let at = m.position();
+            [at.x, at.y]
+        });
         let windows = self
             .windows
             .iter()
@@ -22,12 +36,7 @@ impl<'a> Split<'a> {
                         };
                         let at = match s.window.outer_position() {
                             Ok(at) => [(f64::from(at.x) / k) as i32, (f64::from(at.y) / k) as i32],
-                            Err(_) => {
-                                let y = self.monitors().first().map_or(0, |(_, m)| m.position().y);
-                                let at = [shelf, y];
-                                shelf += (f64::from(s.size.width) / k) as i32 + 16;
-                                at
-                            }
+                            Err(_) => corner,
                         };
                         Placement::Free(Some((at, [s.size.width, s.size.height])))
                     }
@@ -129,6 +138,7 @@ impl<'a> Split<'a> {
         // Window/fullscreen changes during P1's turn can invalidate Windows monitor handles.
         self.refresh_monitors();
         let live = self.draft();
+        let unplaced = self.unplaced();
         let (monitors, main) = self.setup_monitors();
         // A player whose controller disconnected says so on its tile.
         let names = (0..self.players())
@@ -166,6 +176,7 @@ impl<'a> Split<'a> {
         setup.p1_pad = p1_pad;
         setup.idle = self.surfaces.is_empty();
         setup.live = Some(live);
+        setup.unplaced = unplaced;
         setup.monitors = monitors;
         setup.main = main;
         setup.names = names;

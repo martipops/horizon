@@ -5,7 +5,7 @@ use crate::{
     hud::{HudAtlas, HudBatch, rgba},
     lang,
     split_layout::{Draft, Monitor, Placement, Spot, Warning, ordered},
-    split_map::{self, BOTTOM, uncovered},
+    split_map::{self, BOTTOM},
     text::Text,
     ui,
 };
@@ -42,6 +42,8 @@ pub struct SplitUi {
     pub live: Option<Draft>,
     pub monitors: Vec<Monitor>,
     pub main: String,
+    /// The free windows whose place on the desktop the system doesn't say (the game sets them).
+    pub unplaced: Vec<u8>,
     pub names: Vec<String>,
     pub apply: Option<Draft>,
     /// Identify pressed: every view says which window it is in.
@@ -260,7 +262,7 @@ impl SplitUi {
     }
     /// `draft` on the map (the one shown, or one a drag would make).
     fn map_of(&self, draft: &Draft, w: f32, h: f32) -> split_map::Map {
-        split_map::project(draft, &self.monitors, &self.main, w, h)
+        split_map::project(draft, &self.monitors, &self.main, &self.unplaced, w, h)
     }
     fn editing(&mut self) -> Option<&mut Draft> {
         if self.edit.is_none() {
@@ -409,8 +411,11 @@ impl SplitUi {
             return out;
         }
         let (_, windows, tiles) = self.map(w, h);
+        let visible = split_map::visible(&windows, &tiles);
         let mut order: Vec<usize> = (0..tiles.len()).collect();
-        order.sort_by_key(|&i| windows.iter().position(|(n, _)| *n == tiles[i].0));
+        // One raised over the windows that cover it comes after them all.
+        let window = |i: usize| windows.iter().position(|(n, _)| *n == tiles[i].0);
+        order.sort_by_key(|&i| (visible[i].1, window(i)));
         let mut out: Vec<Button> = order
             .into_iter()
             .map(|i| {
@@ -419,11 +424,8 @@ impl SplitUi {
                     .get(i)
                     .cloned()
                     .unwrap_or_else(|| tr("player", &[&(i + 1)]));
-                // The part no later window covers: what can be seen and pressed.
-                let at = windows.iter().position(|(n, _)| *n == tiles[i].0);
-                let covers = at.map_or(&[][..], |k| &windows[k + 1..]);
-                let rect = uncovered(tiles[i].1, covers.iter().map(|(_, r)| *r));
-                (rect, name, Target::Player(i), true)
+                // What can be seen and pressed of it.
+                (visible[i].0, name, Target::Player(i), true)
             })
             .collect();
         // The move row: one button for the windows, which cycles (the next window after the
@@ -607,6 +609,7 @@ impl SplitUi {
             );
         }
         let buttons = self.buttons(w, h);
+        let visible = split_map::visible(&windows, &tiles);
         let yellow = rgba(255, 255, 85, 255);
         // Each window, then its players: a window over another covers it.
         let draft = self.draft();
@@ -630,12 +633,18 @@ impl SplitUi {
                 wh - 2.0,
                 rgba(40, 40, 40, 230),
             );
-            for b in buttons
-                .iter()
-                .filter(|b| matches!(b.2, Target::Player(i) if tiles[i].0 == number))
-            {
+            for b in buttons.iter().filter(
+                |b| matches!(b.2, Target::Player(i) if tiles[i].0 == number && !visible[i].1),
+            ) {
                 self.draw_button(batch, atlas, cursor, b);
             }
+        }
+        // What is left of a covered tile, over the windows that cover it.
+        for b in buttons
+            .iter()
+            .filter(|b| matches!(b.2, Target::Player(i) if visible[i].1))
+        {
+            self.draw_button(batch, atlas, cursor, b);
         }
         // The windows' names over everything, so another window's tiles never hide them.
         for (number, [x, y, _, _]) in windows.iter().copied().filter(|w| !emptied(w.0)) {
@@ -1344,12 +1353,6 @@ mod tests {
 
     #[test]
     fn a_tile_under_a_window_is_pressed_where_it_shows() {
-        // The left half of a tile hidden: its right half is left.
-        let r = uncovered([0.0, 0.0, 10.0, 4.0], [[-5.0, -1.0, 10.0, 9.0]].into_iter());
-        assert_eq!(r, [5.0, 0.0, 5.0, 4.0]);
-        // All of it hidden: nothing to press.
-        let r = uncovered([0.0, 0.0, 10.0, 4.0], [[-1.0, -1.0, 20.0, 9.0]].into_iter());
-        assert_eq!(r[2] * r[3], 0.0);
         // P3 in a new window over the middle of Window 1: P2's tile, partly under it, still
         // answers at the middle of what shows of it.
         let mut ui = screen(3);
@@ -1360,6 +1363,26 @@ mod tests {
         let [x, y, w, h] = rect(&ui, "P2");
         ui.click((x + w / 2.0, y + h / 2.0), SIZE, false);
         assert_eq!(ui.selected, Some(1));
+    }
+
+    /// Wayland: Window 1's place is unknown, and P2's window is to fill the monitor the map shows
+    /// it on (`Fill Monitor 1`), before and after Apply.
+    #[test]
+    fn p1_is_still_picked_with_a_window_filling_the_first_monitor() {
+        let mut ui = screen(2);
+        ui.main = String::new();
+        ui.unplaced = vec![1];
+        press(&mut ui, "P2");
+        press(&mut ui, "Fill Monitor 1");
+        press(&mut ui, "P1");
+        assert_eq!(ui.selected, Some(0));
+        press(&mut ui, "Apply");
+        ui.live = ui.apply.take();
+        press(&mut ui, "P2");
+        press(&mut ui, "P1");
+        assert_eq!(ui.selected, Some(0));
+        press(&mut ui, "Window 2");
+        assert_eq!(ui.draft().unwrap().players, [2, 2]);
     }
 
     #[test]
