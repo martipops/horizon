@@ -1,8 +1,8 @@
 //! Workstation menus for LAN guests: the screen a guest's use opens runs on
 //! the host's menu engine (`horizon_client::menu`), the one single player
 //! uses, with vanilla's packets: OpenScreen with the station's `MenuType`,
-//! container clicks, `ServerboundContainerButtonClickPacket`, the content and
-//! data slot sync after each (`broadcastChanges`), and the inputs back into
+//! container clicks, `ServerboundContainerButtonClickPacket`, the changed slots
+//! and data slots after each (`broadcastChanges`), and the inputs back into
 //! the inventory when the menu closes (`AbstractContainerMenu.clearContainer`).
 use super::{
     Game,
@@ -25,11 +25,33 @@ pub(super) struct GuestStation {
     pub(super) kind: StationKind,
     pub(super) pos: [i32; 3],
     pub(super) menu: Box<Menu>,
+    /// The menu's own slots as the client was last sent them (`remoteSlots`). The player's
+    /// inventory below them is the guest's `menu_sent`.
+    sent: Vec<Option<ItemStack>>,
     /// The data slots the client was last sent. `None` is not sent yet,
     /// which is not a cost: an anvil's signed cost may be `i32::MIN`.
     sent_data: Vec<Option<i32>>,
     /// The game time of the menu's last sound (`lastSoundTime`).
     last_sound: u64,
+}
+
+/// How a station op's outcome reaches the client.
+#[derive(Clone, Copy)]
+enum Answer<'a> {
+    /// The whole menu (`sendAllDataToRemote`).
+    Whole,
+    /// `broadcastChanges` after `handleContainerButtonClick`: the slots that differ from what
+    /// the client holds.
+    Changes,
+    /// `broadcastChanges` after `handleContainerClick`: those slots, each slot the click's
+    /// packet listed (`changedSlots`: sent again whatever it predicted there, its hash is not
+    /// compared) and the carried stack.
+    Click(&'a [usize]),
+}
+
+/// `AbstractContainerMenu.incrementStateId`.
+fn next_state(state: i32) -> i32 {
+    (state + 1) & 0x7FFF
 }
 
 /// A guest's open lectern: `LecternMenu` over the block entity, made on the
@@ -140,11 +162,12 @@ impl Game<'_> {
                 kind: station_kind,
                 pos,
                 menu,
+                sent: Vec::new(),
                 sent_data: Vec::new(),
                 last_sound: 0,
             });
         }
-        self.lan_send_station(conn);
+        self.lan_send_station(conn, Answer::Whole);
         self.player_menu_opening(conn);
         Some(Some(window))
     }
@@ -207,7 +230,7 @@ impl Game<'_> {
     }
 
     /// Runs `op` on the guest's open station (window `window`, any when
-    /// None) with their inventory in it, then sends what changed. False when
+    /// None) with their inventory in it, then sends its outcome as `answer` says. False when
     /// no such window is open. The station is out of the guest's menus while the mods are asked
     /// (`anvil_update`, `anvil_craft_pre`...), so it is busy: a hook can't open another in its
     /// place.
@@ -215,15 +238,19 @@ impl Game<'_> {
         &mut self,
         conn: u32,
         window: Option<i32>,
+        answer: Answer<'_>,
         op: impl FnOnce(&mut Menu, &horizon_client::menu::Env),
     ) -> bool {
-        self.with_station_busy(conn, |game| game.lan_station_op_busy(conn, window, op))
+        self.with_station_busy(conn, |game| {
+            game.lan_station_op_busy(conn, window, answer, op)
+        })
     }
 
     fn lan_station_op_busy(
         &mut self,
         conn: u32,
         window: Option<i32>,
+        answer: Answer<'_>,
         op: impl FnOnce(&mut Menu, &horizon_client::menu::Env),
     ) -> bool {
         let Some(mut gs) = self
@@ -354,7 +381,7 @@ impl Game<'_> {
         if let Some(host) = self.lan.as_mut() {
             *host.menus.entry(conn).or_default().station = Some(gs);
         }
-        self.lan_send_station(conn);
+        self.lan_send_station(conn, answer);
         true
     }
 
@@ -737,7 +764,7 @@ impl Game<'_> {
                 horizon_client::lan::hub::chat_filter::Place::Anvil,
             )
         {
-            self.lan_station_op(conn, None, |menu, env| {
+            self.lan_station_op(conn, None, Answer::Whole, |menu, env| {
                 menu.rename(env, name);
             });
         }
@@ -759,9 +786,19 @@ impl Game<'_> {
 
     /// A click on the guest's station window; false for other windows.
     pub(super) fn lan_station_click(&mut self, conn: u32, p: &play::ContainerClick) -> bool {
-        self.lan_station_op(conn, Some(p.container), |menu, env| {
-            let _ = menu.click(env, i32::from(p.slot), i32::from(p.button), input(p.input));
-        })
+        let listed: Vec<usize> = p
+            .changed
+            .iter()
+            .filter_map(|(slot, _)| usize::try_from(*slot).ok())
+            .collect();
+        self.lan_station_op(
+            conn,
+            Some(p.container),
+            Answer::Click(&listed),
+            |menu, env| {
+                let _ = menu.click(env, i32::from(p.slot), i32::from(p.button), input(p.input));
+            },
+        )
     }
 
     /// `ServerGamePacketListenerImpl.handleContainerButtonClick`:
@@ -830,7 +867,7 @@ impl Game<'_> {
             .and_then(|p| p.station.as_ref())
             .filter(|s| s.window == window)
             .map(|s| s.kind);
-        self.lan_station_op(conn, Some(window), |menu, env| {
+        self.lan_station_op(conn, Some(window), Answer::Changes, |menu, env| {
             selected = menu.button(env, id);
         });
         if selected && let Some((player, name)) = identity {
@@ -846,9 +883,12 @@ impl Game<'_> {
         }
     }
 
-    /// The whole station menu and its changed data slots for the client
-    /// (`sendAllDataToRemote` / `broadcastChanges`).
-    fn lan_send_station(&mut self, conn: u32) {
+    /// The station menu's slots for the client, the whole menu (`sendAllDataToRemote`) or what
+    /// `answer` leaves of it (`broadcastChanges`), then its changed data slots. A slot the
+    /// client already holds is not sent again after a click or a button: the client's
+    /// `Slot.set` runs its screen's listener, and `StonecutterScreen.containerChanged` puts the
+    /// recipe list back at the top whenever the input slot is set.
+    fn lan_send_station(&mut self, conn: u32, answer: Answer<'_>) {
         let Some(host) = self.lan.as_mut() else {
             return;
         };
@@ -858,19 +898,72 @@ impl Game<'_> {
         let Some(gs) = host.menus.get_mut(&conn).and_then(|p| p.station.as_mut()) else {
             return;
         };
-        gs.state = (gs.state + 1) & 0x7FFF;
         let own = gs.menu.slot_count() - 36;
         let mut items: Vec<Option<ItemStack>> =
             (0..own).map(|s| gs.menu.slot(s).cloned()).collect();
         let g = &host.hub.guests[gi];
         items.extend((9..36).chain(0..9).map(|i| g.inventory[i].clone()));
         let carried = g.carried.clone();
-        let packet = C::ContainerSetContent(play::ContainerSetContent {
-            container: gs.window,
-            state: gs.state,
-            items: items.iter().map(|s| host.hub.stack(s)).collect(),
-            carried: host.hub.stack(&carried),
+        let listed: Option<&[usize]> = match answer {
+            Answer::Whole => None,
+            Answer::Changes => Some(&[]),
+            Answer::Click(listed) => Some(listed),
+        };
+        // `synchronizeSlotToRemote`: the slots that differ from what the client holds, the
+        // inventory's by the inventory menu's numbers (its main rows start at 9).
+        let mut resend: Option<Vec<usize>> = listed.map(|listed| {
+            (0..items.len())
+                .filter(|&slot| {
+                    let held = if slot < own {
+                        gs.sent.get(slot)
+                    } else {
+                        g.menu_sent.get(slot - own + 9)
+                    };
+                    held != Some(&items[slot]) || listed.contains(&slot)
+                })
+                .collect()
         });
+        // The client works a result out of an input it is sent (`slotsChanged`), and that may
+        // not be the server's (a mod's hook decided it): the result follows its inputs.
+        if let Some(slots) = resend.as_mut()
+            && let Some((_, _, inputs)) = menu_of(gs.kind)
+            && inputs.end < own
+            && slots.iter().any(|slot| inputs.contains(slot))
+            && !slots.contains(&inputs.end)
+        {
+            let after_inputs = slots.partition_point(|&slot| slot < inputs.end);
+            slots.insert(after_inputs, inputs.end);
+        }
+        let mut packets = Vec::new();
+        match resend {
+            None => {
+                gs.state = next_state(gs.state);
+                packets.push(C::ContainerSetContent(play::ContainerSetContent {
+                    container: gs.window,
+                    state: gs.state,
+                    items: items.iter().map(|s| host.hub.stack(s)).collect(),
+                    carried: host.hub.stack(&carried),
+                }));
+            }
+            Some(slots) => {
+                for slot in slots {
+                    gs.state = next_state(gs.state);
+                    packets.push(C::ContainerSetSlot(play::ContainerSetSlot {
+                        container: gs.window,
+                        state: gs.state,
+                        slot: slot as i16,
+                        item: host.hub.stack(&items[slot]),
+                    }));
+                }
+                if matches!(answer, Answer::Click(_)) {
+                    packets.push(C::SetCursorItem(play::SetCursorItem {
+                        item: host.hub.stack(&carried),
+                    }));
+                }
+            }
+        }
+        items.truncate(own);
+        gs.sent = items;
         // ContainerSetData's value is a short. An anvil cost outside it
         // would change sign (`-65535` as `+1`), so the signed cost follows
         // on `horizon:anvil_cost` after that short.
@@ -896,7 +989,9 @@ impl Game<'_> {
                 value,
             }));
         }
-        host.hub.send_to(conn, &packet);
+        for packet in packets {
+            host.hub.send_to(conn, &packet);
+        }
         host.hub.guests.update(gi, |g| g.inventory_told());
         for packet in data {
             host.hub.send_to(conn, &packet);
@@ -1065,7 +1160,7 @@ impl Game<'_> {
         }
         let data = self.beacon_data(pos);
         let mut updated = None;
-        self.lan_station_op(conn, None, |menu, env| {
+        self.lan_station_op(conn, None, Answer::Whole, |menu, env| {
             menu.data.copy_from_slice(&data);
             let power = |k: usize| powers[k].as_ref().map(|(id, n)| (*id, n.as_str()));
             updated = Some(menu.beacon_update(env, power(0), power(1)));
@@ -1170,7 +1265,7 @@ impl Game<'_> {
                     && gs.menu.data[..] != data[..]
                 {
                     gs.menu.data.copy_from_slice(&data);
-                    self.lan_send_station(conn);
+                    self.lan_send_station(conn, Answer::Whole);
                 }
             }
         }
@@ -1251,3 +1346,6 @@ pub(super) fn station_inputs(gs: &GuestStation) -> Vec<ItemStack> {
 #[cfg(test)]
 #[path = "lan_stations/portable_anvil_tests.rs"]
 mod portable_anvil_tests;
+#[cfg(test)]
+#[path = "lan_stations/station_answer_tests.rs"]
+mod station_answer_tests;
