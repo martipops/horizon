@@ -39,6 +39,19 @@ fn slots_set(packets: &[C], window: i32) -> (Vec<i16>, bool) {
     (slots, whole)
 }
 
+/// The state id of the last packet about `window`, which the client's next click carries.
+fn last_state(packets: &[C], window: i32) -> i32 {
+    packets
+        .iter()
+        .rev()
+        .find_map(|packet| match packet {
+            C::ContainerSetSlot(p) if p.container == window => Some(p.state),
+            C::ContainerSetContent(p) if p.container == window => Some(p.state),
+            _ => None,
+        })
+        .expect("a packet about the window")
+}
+
 /// `handleContainerButtonClick`: `clickMenuButton` sets the result, and `broadcastChanges` sends
 /// that slot and the selected recipe. The input slot is not set again, which on the client
 /// would run `StonecutterScreen.containerChanged` and scroll the recipe list back to the top.
@@ -49,7 +62,10 @@ fn a_recipe_pick_sends_the_result_and_leaves_the_input_alone() {
         let rx = stick_guest(game);
         let window = stonecutter_with_stone(game);
         let opened = sent(&rx);
-        assert!(slots_set(&opened, window).1, "the open sends the whole menu");
+        assert!(
+            slots_set(&opened, window).1,
+            "the open sends the whole menu"
+        );
 
         game.lan_station_button(1, window, 0);
         let packets = sent(&rx);
@@ -74,11 +90,11 @@ fn a_click_in_the_inventory_sends_no_station_slot() {
     with_game(|game| {
         let rx = stick_guest(game);
         let window = stonecutter_with_stone(game);
-        sent(&rx);
+        let opened = sent(&rx);
 
         let click = play::ContainerClick {
             container: window,
-            state: 0,
+            state: last_state(&opened, window),
             slot: STICK_SLOT,
             button: 0,
             input: 0,
@@ -101,14 +117,17 @@ fn a_click_in_the_inventory_sends_no_station_slot() {
         // the client listed are sent again as the server has them, so a wrong prediction there
         // is corrected.
         let refused = play::ContainerClick {
+            state: last_state(&packets, window),
             slot: RESULT,
             changed: vec![(INPUT, None), (RESULT, None)],
             ..click
         };
         assert!(game.lan_station_click(1, &refused));
-        assert_eq!(
-            slots_set(&sent(&rx), window),
-            (vec![INPUT, RESULT], false)
-        );
+        assert_eq!(slots_set(&sent(&rx), window), (vec![INPUT, RESULT], false));
+
+        // `fullResyncNeeded`: that answer moved the state on, so a click still carrying the
+        // older one gets the whole menu.
+        assert!(game.lan_station_click(1, &refused));
+        assert_eq!(slots_set(&sent(&rx), window), (Vec::new(), true));
     });
 }

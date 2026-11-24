@@ -45,8 +45,9 @@ enum Answer<'a> {
     Changes,
     /// `broadcastChanges` after `handleContainerClick`: those slots, each slot the click's
     /// packet listed (`changedSlots`: sent again whatever it predicted there, its hash is not
-    /// compared) and the carried stack.
-    Click(&'a [usize]),
+    /// compared) and the carried stack. A click made on an older `state` than the menu's gets
+    /// the whole menu (`fullResyncNeeded`).
+    Click { state: i32, listed: &'a [usize] },
 }
 
 /// `AbstractContainerMenu.incrementStateId`.
@@ -187,8 +188,7 @@ impl Game<'_> {
     ) {
         // AnvilUpdateEvent after createResult; a cancelled take's undo
         // is no createResult.
-        let anvil_created =
-            kind == StationKind::Anvil && menu.anvil_created() && !cancelled;
+        let anvil_created = kind == StationKind::Anvil && menu.anvil_created() && !cancelled;
         if anvil_created
             && mod_api::__private::listened(mod_api::HookId::AnvilUpdate)
             && let Some(mut update) = menu.anvil_update()
@@ -381,6 +381,12 @@ impl Game<'_> {
         if let Some(host) = self.lan.as_mut() {
             *host.menus.entry(conn).or_default().station = Some(gs);
         }
+        // A spectator's click changes nothing: `sendAllDataToRemote`.
+        let answer = if guest.is_some() {
+            answer
+        } else {
+            Answer::Whole
+        };
         self.lan_send_station(conn, answer);
         true
     }
@@ -794,7 +800,10 @@ impl Game<'_> {
         self.lan_station_op(
             conn,
             Some(p.container),
-            Answer::Click(&listed),
+            Answer::Click {
+                state: p.state,
+                listed: &listed,
+            },
             |menu, env| {
                 let _ = menu.click(env, i32::from(p.slot), i32::from(p.button), input(p.input));
             },
@@ -907,7 +916,9 @@ impl Game<'_> {
         let listed: Option<&[usize]> = match answer {
             Answer::Whole => None,
             Answer::Changes => Some(&[]),
-            Answer::Click(listed) => Some(listed),
+            // `broadcastFullState`.
+            Answer::Click { state, .. } if state != gs.state => None,
+            Answer::Click { listed, .. } => Some(listed),
         };
         // `synchronizeSlotToRemote`: the slots that differ from what the client holds, the
         // inventory's by the inventory menu's numbers (its main rows start at 9).
@@ -955,7 +966,7 @@ impl Game<'_> {
                         item: host.hub.stack(&items[slot]),
                     }));
                 }
-                if matches!(answer, Answer::Click(_)) {
+                if matches!(answer, Answer::Click { .. }) {
                     packets.push(C::SetCursorItem(play::SetCursorItem {
                         item: host.hub.stack(&carried),
                     }));
