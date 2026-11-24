@@ -561,14 +561,15 @@ impl PadRouter {
     /// first. A compositor can count who holds a pad to pause its own use of it (KWin's pointer
     /// emulation), and that count goes wrong when readers overlap: gilrs opens a pad twice at
     /// once, which inotify can merge into one event, and closes it twice apart (#9730).
-    /// The pad P1 plays with, as it takes over: still P1's.
+    /// The pad P1 plays with, as it takes over: still P1's. None with P1 on the keyboard and mouse,
+    /// whatever pad it touched before: that one is offered to join.
     pub(in crate::game) fn adopt(&mut self, pads: &mut Pads) -> Option<PadId> {
         if self.started {
             return None;
         }
         self.gilrs = Some(pads.devices.gilrs.take()?);
         self.started = true;
-        pads.devices.active
+        pads.devices.active.filter(|_| pads.plays)
     }
 
     /// Play on pad `id` what its player's turn asked for, and let finished vibrations go.

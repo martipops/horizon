@@ -296,3 +296,44 @@ fn keyboard_handoff_keeps_the_attack_the_pad_holds() {
         assert!(game.left);
     });
 }
+
+/// Splitscreen, turned on, leaves P1 the pad only if it plays with it.
+#[test]
+#[ignore = "daily"]
+fn the_last_press_while_playing_says_whether_the_pad_plays() {
+    playing(|game| {
+        let tap = |game: &mut Game| {
+            game.pad.inject_button(Button::South, true);
+            game.poll_pads(&NoEventLoop);
+            game.pad.inject_button(Button::South, false);
+            game.poll_pads(&NoEventLoop);
+        };
+        let key = |game: &mut Game| {
+            let w = KeyCode::KeyW;
+            game.mapped_key(w, true, false, w, Source::Keyboard)
+                .unwrap();
+            game.mapped_key(w, false, false, w, Source::Keyboard)
+                .unwrap();
+        };
+        assert!(!game.pad.plays, "untouched");
+        tap(game);
+        assert!(game.pad.plays);
+        key(game);
+        assert!(!game.pad.plays);
+        tap(game);
+        game.mouse_mapping(MouseButton::Left, true, Source::Keyboard)
+            .unwrap();
+        game.mouse_mapping(MouseButton::Left, false, Source::Keyboard)
+            .unwrap();
+        assert!(!game.pad.plays, "the mouse too");
+
+        // In a menu neither says anything.
+        tap(game);
+        game.screen = Screen::Paused;
+        key(game);
+        assert!(game.pad.plays);
+        game.pad.plays = false;
+        tap(game);
+        assert!(!game.pad.plays);
+    });
+}

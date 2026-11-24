@@ -133,6 +133,18 @@ def keyboard(s, a):
     check('not P1\'s', s.pad_of(1), '')
 
 
+def keyboard_last(s, a):
+    """P1 pressed its controller, then plays on the mouse: it is offered, and Y keeps it"""
+    a.tap('west')
+    s.game.ctl(1, 'mouse', 'right', 'click')
+    s.switch('Off')
+    check('not P1\'s', s.pad_of(1), '')
+    a.tap('rb')
+    s.becomes('asked', lambda: s.prompt(), 'Test pad A wants to join', 3)
+    a.tap('north')
+    s.becomes('Y: P1\'s', lambda: s.pad_of(1), 'A', 5)
+
+
 def accept_twice(s, a):
     """accept, another button and accept in one poll: one player"""
     a.tap('rb')
@@ -255,6 +267,7 @@ def controllers_off(s, a):
 CASES = {
     'keep': (keep, 1, {'splitscreen': False}),
     'keyboard': (keyboard, 1, {'splitscreen': False}),
+    'keyboard_last': (keyboard_last, 1, {'splitscreen': False}),
     'accept_twice': (accept_twice, 1, {}),
     'accept_and_claim': (accept_and_claim, 1, {}),
     'lost_seat': (lost_seat, 2, {}),

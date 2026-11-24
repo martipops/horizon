@@ -233,7 +233,8 @@ and the container screen tests are unchanged).
 **Options → Horizon Settings... → Splitscreen...** turns local joining on or off at once.
 In P1's single-player world, a controller P1 isn't using can press a button, then A to join
 (or Y to play as P1, while P1 has no controller). The controller P1 plays with as the switch
-changes stays P1's: **Give Up Pad** below hands it to a friend. Each
+changes stays P1's: **Give Up Pad** below hands it to a friend. With P1 on the keyboard and mouse
+(the last press while playing, menus aside), one P1 used before asks to join like any other. Each
 player picks an instance-local profile with its own options and saved progress. LB/RB on
 the profile page move the view between shared positions, a new window or another monitor.
 A joined player's **Splitscreen Settings** in the pause menu switches profiles in place;

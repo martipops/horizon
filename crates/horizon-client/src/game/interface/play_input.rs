@@ -246,6 +246,17 @@ impl Game<'_> {
         }
         Ok(())
     }
+    /// A press from `source`: while playing, whether the pad is what plays (`Pads::plays`).
+    pub(super) fn pressed_in_play(&mut self, source: Source) {
+        let playing = gameplay_has_keyboard(
+            self.screen,
+            self.title.is_some(),
+            self.screen_over_playing(),
+        );
+        if playing && source != Source::Mod {
+            self.pad.plays = source == Source::Pad;
+        }
+    }
     /// A key event after rebinding, as the default key of its mapping (the
     /// keyboard and controllers both end here). `raw` is the physical key
     /// the event started from (`key` where the caller started from no window
@@ -261,6 +272,9 @@ impl Game<'_> {
         raw: KeyCode,
         source: Source,
     ) -> Result<()> {
+        if pressed {
+            self.pressed_in_play(source);
+        }
         if self.screen == Screen::Playing && self.replay.playing() {
             if !pressed {
                 self.keys.release(&key, source);
@@ -424,6 +438,9 @@ impl Game<'_> {
         pressed: bool,
         source: Source,
     ) -> Result<()> {
+        if pressed {
+            self.pressed_in_play(source);
+        }
         if let Some(slot) = mouse_hold_index(button) {
             if ![self.left, self.right][slot] {
                 self.agent_mouse_holds[slot] = false;

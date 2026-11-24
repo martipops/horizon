@@ -96,6 +96,9 @@ pub(super) struct Pads {
     /// A key or mouse button was pressed in play since the pad was last touched: the keyboard and
     /// mouse have it, though only moving the mouse takes the pad out of use.
     pub(super) keyboard_took_over: bool,
+    /// The last press while playing (no screen open) was the pad's, not the keyboard's or mouse's:
+    /// whether splitscreen, turned on, leaves the pad to P1. Menu clicks and keys don't count.
+    pub(super) plays: bool,
     pub(super) style: GlyphStyle,
     /// The controller driving this player, or else the first one its own reader sees.
     pub(super) device: Option<Device>,
@@ -489,6 +492,9 @@ impl Game<'_> {
             }
         }
         let edges = self.pad.edges.update(&state, threshold);
+        if edges.iter().any(|(_, down)| *down) {
+            self.pressed_in_play(Source::Pad);
+        }
         if activity && self.pad_focused() {
             self.last_input = Instant::now();
             self.pad.in_use = true;

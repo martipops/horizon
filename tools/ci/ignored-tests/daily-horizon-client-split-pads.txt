@@ -1,0 +1,3 @@
+# The daily test of who plays, keyboard or controller, as splitscreen turns on: it is #[ignore = "daily"] in its source
+# and runs once a day in the daily run, where it must pass (README.md). Rows: PACKAGE TEST TARGET daily REASON, sorted.
+horizon-client game::pad::parity_tests::the_last_press_while_playing_says_whether_the_pad_plays lib daily resources

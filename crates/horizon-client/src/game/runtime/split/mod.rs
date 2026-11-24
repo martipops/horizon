@@ -16,11 +16,11 @@
 //! data (`Resources`, the packs), one audio output and P1's server. Not one game process per
 //! player: that needs GPU textures, input and audio shared across processes.
 //!
-//! Controllers: P1 keeps the one it plays with as splitscreen turns on or off; with none, P1's is
-//! the first used in a menu. In P1's world a controller nobody has pressing a button is offered to
-//! join, on every view (A joins, Y gives it to P1, B says no); a controller that disconnects
-//! leaves its player waiting, its view dimmed, until it comes back or another takes over (`pads`;
-//! `owners` says whose each is).
+//! Controllers: P1 keeps the one it plays with as splitscreen turns on or off; with none, or P1 on
+//! the keyboard and mouse, P1's is the first used in a menu. In P1's world a controller nobody has
+//! pressing a button is offered to join, on every view (A joins, Y gives it to P1, B says no); a
+//! controller that disconnects leaves its player waiting, its view dimmed, until it comes back or
+//! another takes over (`pads`; `owners` says whose each is).
 //!
 //! Horizon Settings > Splitscreen... enables joining (off by default).
 //! `HORIZON_SPLIT=N` (testing) enables it too, and
