@@ -59,8 +59,10 @@ once per loop iteration next to winit's events.
     the system (or gilrs) never handed the pad over.
   - `Controller first input: <the same>` once per pad, at its first press or
     the first stick or trigger pushed far enough to make a pad the active one,
-    from splitscreen's reader too. With the line before and not this one, the
-    pad is listed and nothing it does reaches the game.
+    from splitscreen's reader too. A stick or trigger moved only a little can
+    work without it, so press a button. With the line before and, after a
+    press, not this one, the pad is listed and its input doesn't reach the
+    game.
 - `HORIZON_CONTROLLER_OUTPUT=0` in the environment turns off Horizon's own
   output to the pads: no HID handle to a DualSense, an Xbox One pad or a
   DualShock 4 is opened and no report is written to one ("DualSense output"

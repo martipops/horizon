@@ -157,8 +157,9 @@ fn open_reader() -> Option<gilrs::Gilrs> {
     }
 }
 
-/// The log's line for the first input a pad sends: with `Controller connected:` and no such
-/// line, the pad is listed and nothing it does reaches the game.
+/// The log's line for the first input a pad sends ([`touched`]: a press, or a stick or trigger
+/// pushed far enough). With `Controller connected:` and no such line after a button was pressed,
+/// the pad is listed and its input doesn't reach the game.
 fn log_first_input(heard: &mut Vec<gilrs::GamepadId>, id: gilrs::GamepadId, pad: &gilrs::Gamepad) {
     if !heard.contains(&id) {
         heard.push(id);
@@ -656,6 +657,8 @@ impl PadRouter {
         {
             self.started = true;
             self.gilrs = Some(gilrs);
+            // The same reader, the same pads: the log has named these.
+            self.heard = std::mem::take(&mut pads.devices.heard);
         }
     }
 
@@ -731,9 +734,10 @@ impl PadRouter {
         self.started = false;
         // Its players' own outputs stop with it: dropping a link stops its motors.
         self.xbox.clear();
-        self.heard.clear();
+        let heard = std::mem::take(&mut self.heard);
         pads.devices.routed = None;
         if let Some(gilrs) = self.gilrs.take() {
+            pads.devices.heard = heard;
             pads.devices.gilrs = Some(gilrs);
             pads.devices.started = true;
         }
