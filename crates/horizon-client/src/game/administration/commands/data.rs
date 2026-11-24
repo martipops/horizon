@@ -437,6 +437,9 @@ impl Game<'_> {
     /// `TypedEntityData.loadInto` is: a spawn egg's data on the mob it spawned.
     pub(in crate::game) fn apply_entity_nbt(&mut self, t: Target, mut tag: Tag) -> R<()> {
         let stale = || err("commands.data.merge.failed", &[]);
+        // `Entity.load` reads `Tags` into the entity's set whatever the kind, and
+        // the compound kept below is what commands and saves read it back from.
+        Self::normalize_loaded_tags(&mut tag);
         // `Entity.load` keeps only the fields it reads, so vanilla drops a key it
         // does not know on `EntityDataAccessor.setData` (and on
         // `TypedEntityData.loadInto`). `horizon:finalize` is worldgen's, and
@@ -478,7 +481,6 @@ impl Game<'_> {
                 return Err(err("commands.data.entity.invalid", &[]));
             }
             Target::Mob(id) => {
-                Self::normalize_loaded_mob_tags(&mut tag);
                 let uuid = self.uuid_for(id);
                 let kind = self
                     .mobs
@@ -1416,6 +1418,14 @@ impl Game<'_> {
     /// What `BlockDataAccessor.setData` tells the world after a load: `setChanged` and
     /// `sendBlockUpdated(3)`, even when the block state stays the same.
     pub(in crate::game) fn block_entity_updated(&mut self, key: (i32, i32, i32)) {
+        use horizon_client::block_entity_types::{WATER_CAULDRON, type_for};
+        if type_for(WATER_CAULDRON).is_some()
+            && self.res.facts().get(self.world.block(key.0, key.1, key.2)).name.as_ref()
+                == WATER_CAULDRON
+        {
+            self.after_commit(super::super::transactions::After::CauldronData(key));
+            return;
+        }
         self.mark_block_entity_updated(key);
         let state = self.world.block(key.0, key.1, key.2);
         // Redraw what shows the block entity (signs, banners).

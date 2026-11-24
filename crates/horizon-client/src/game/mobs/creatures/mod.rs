@@ -1287,6 +1287,10 @@ impl Game<'_> {
             while let Some(m) = self.mobs.get(i) {
                 let (x, z) = (m.position.x.floor() as i32, m.position.z.floor() as i32);
                 if !blocked.contains(&m.id) && self.world.loaded(x, z) && ticking(x, z) {
+                    if round.each(&m.kind.id) {
+                        i += 1;
+                        continue;
+                    }
                     let (id, kind) = (m.id, super::native_ticks::TickKind::Mob(m.kind.clone()));
                     if self.native_tick_pre_batch(&mut round, id, kind) {
                         self.sync_sleeping_mob(i);
@@ -1379,7 +1383,7 @@ impl Game<'_> {
             laps: &mut laps,
             uuid,
             level_id,
-            round: &round,
+            round: &mut round,
         });
         if dispatch_panic.is_some() {
             // The aborted pass never applies retention, including previously
@@ -2062,17 +2066,16 @@ impl Game<'_> {
                     ..EntityLootParams::default()
                 };
                 let seed = self.level.seed;
-                match loot.random_sequence(table) {
-                    Some(id) => {
-                        let random = self.rand_sequences.get(id, seed);
-                        loot.roll_entity(table, random, &params)
-                            .iter()
-                            .filter(|s| !s.is_empty())
-                            .map(from_loot)
-                            .collect()
-                    }
-                    None => Vec::new(),
-                }
+                // LootContext.Builder.create: the level's random with no sequence.
+                let rolled = match loot.random_sequence(table) {
+                    Some(id) => loot.roll_entity(table, self.rand_sequences.get(id, seed), &params),
+                    None => loot.roll_entity(table, &mut self.world.random, &params),
+                };
+                rolled
+                    .iter()
+                    .filter(|s| !s.is_empty())
+                    .map(from_loot)
+                    .collect()
             }
             _ => self
                 .res
@@ -3546,19 +3549,18 @@ impl Game<'_> {
                 } => self.fall_to_passengers(mob, distance, modifier),
                 MobEvent::ShedScute { mob, at, pitch } => {
                     // The mob already checked `shouldDropLoot` (a baby, `mob_drops`).
-                    let table = "minecraft:gameplay/armadillo_shed";
-                    let drops = self.sequence_loot(table, table, None);
-                    for d in drops {
-                        self.spawn_at_location(Vec3::new(at[0], at[1], at[2]), 0.0, d);
+                    // Armadillo.customServerAiStep: like an egg, the sound and
+                    // the game event only when the shed table gave something.
+                    if self.drop_gift_loot(mob, "minecraft:gameplay/armadillo_shed", at) {
+                        self.audio.play(
+                            "minecraft:entity.armadillo.scute_drop",
+                            Some(at),
+                            1.0,
+                            pitch,
+                        );
+                        let ctx = self.who_context(Some(Who::Mob(mob)), None);
+                        self.post_game_event("minecraft:entity_place", at, ctx);
                     }
-                    self.audio.play(
-                        "minecraft:entity.armadillo.scute_drop",
-                        Some(at),
-                        1.0,
-                        pitch,
-                    );
-                    let ctx = self.who_context(Some(Who::Mob(mob)), None);
-                    self.post_game_event("minecraft:entity_place", at, ctx);
                 }
                 MobEvent::LayEgg { mob, at, pitch } => {
                     // Chicken.aiStep: `dropFromGiftLootTable` says whether
@@ -5217,6 +5219,7 @@ impl Game<'_> {
                 .grief_hooked()
                 .then_some(self as &dyn horizon_client::mobs::MobHooks),
             owners: self,
+            can_harm_player: self,
         }
     }
     /// Dispatch with the projectile's actual owner context, including a guest shooter.
@@ -6027,7 +6030,11 @@ impl Game<'_> {
                         self.spawn_mob_raw("minecraft:endermite", [from.x, from.y, from.z], false);
                     }
                     // ServerPlayer.teleport: removeVehicle before the placement.
+                    let origin = self.player.as_ref().map(|pl| [pl.position.x, pl.position.y, pl.position.z]);
                     section_steps::teleport_player(self, to);
+                    if let Some(origin) = origin {
+                        self.acting_teleport_cause(origin, "ender_pearl");
+                    }
                     self.hurt_player_by("minecraft:ender_pearl", damage);
                     self.audio.play(
                         "minecraft:entity.player.teleport",

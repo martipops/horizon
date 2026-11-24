@@ -1403,14 +1403,18 @@ impl<'a> Plan<'a> {
                     return Err(format!("block entity type {} is already declared", kind.id).into());
                 }
                 for block in &kind.blocks {
-                    if block.starts_with("minecraft:") {
+                    let water_cauldron = block == crate::block_entity_types::WATER_CAULDRON
+                        && crate::lan::chunks::block_entity_type(block).is_none();
+                    if block.starts_with("minecraft:") && !water_cauldron {
                         return Err(format!(
                             "mod {mod_id}: block entity type {} cannot own vanilla block {block}",
                             kind.id
                         )
                         .into());
                     }
-                    if !declared_ids.contains(block.as_str()) {
+                    if !declared_ids.contains(block.as_str())
+                        && !(water_cauldron && defaults.contains_key(block))
+                    {
                         return Err(format!(
                             "block entity type {}: {block} is not a block",
                             kind.id
@@ -2167,6 +2171,29 @@ impl<'a> Plan<'a> {
                         blocks.push(v);
                     }
                 }
+                for head in &self.blocks {
+                    let Some(family) = &head.decl.growing_plant else {
+                        continue;
+                    };
+                    for id in [&family.head, &family.body] {
+                        let row = blocks
+                            .iter_mut()
+                            .find(|row| matches!(row.get("name"), Some(J::Str(name)) if name == id))
+                            .ok_or("growing-plant family has no block-behaviour row")?;
+                        let mut fields = row
+                            .get("fields")
+                            .cloned()
+                            .unwrap_or(J::Obj(Default::default()));
+                        fields.set("growingPlantHead", J::Str(family.head.clone()));
+                        fields.set("growingPlantBody", J::Str(family.body.clone()));
+                        fields.set("growingPlantKelp", J::Bool(family.kelp));
+                        fields.set(
+                            "growthDirection",
+                            J::Str(family.direction_name().to_ascii_uppercase()),
+                        );
+                        row.set("fields", fields);
+                    }
+                }
                 self.items(doc.at("items").ok_or("no items")?, false)?;
                 for odds in ["fire/burnOdds", "fire/igniteOdds"] {
                     if let Some(map) = doc.at(odds) {
@@ -2234,7 +2261,22 @@ impl<'a> Plan<'a> {
                     }
                 }
             }
-            "worldgen/blocks/survival-rules.json" => self.names(doc, false),
+            "worldgen/blocks/survival-rules.json" => {
+                self.names(doc, false);
+                for block in &self.blocks {
+                    let Some(family) = &block.decl.growing_plant else {
+                        continue;
+                    };
+                    let rule = J::Obj(vec![
+                        ("head".into(), J::Str(family.head.clone())),
+                        ("body".into(), J::Str(family.body.clone())),
+                        ("direction".into(), J::Str(family.direction_name().into())),
+                        ("kelp".into(), J::Bool(family.kelp)),
+                    ]);
+                    doc.set(&family.head, rule.clone());
+                    doc.set(&family.body, rule);
+                }
+            }
             "worldgen/blocks/placement-definitions.json" => {
                 // `SimpleBlockFeature.place` dispatches by block class to
                 // `DoublePlantBlock.placeAt` or `MossyCarpetBlock.placeAt`.
