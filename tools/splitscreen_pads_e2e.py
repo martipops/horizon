@@ -228,7 +228,7 @@ def controllers_off(s, a):
     """P1 with controllers off: a press on its own offers it to join, and No keeps it P1's"""
     s.give_p1(a)
     s.game.ctl(1, 'options', 'controller')
-    s.game.press(1, 'Gamepad: On')
+    s.game.press(1, 'Controller: On')
     s.game.close_page()
     a.tap('rb')
     s.becomes('asked', lambda: s.prompt(), 'Test pad A wants to join', 3)
