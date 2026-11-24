@@ -1098,8 +1098,10 @@ mod tests {
     /// A dead zone set by hand in the file, past the old slider's 50%, keeps its place on a nudge.
     #[test]
     fn a_wide_dead_zone_from_the_file_steps_from_where_it_is() {
-        let mut s = Settings::default();
-        s.controller = PadSettings::parse("lookDeadzone:0.8\n");
+        let mut s = Settings {
+            controller: PadSettings::parse("lookDeadzone:0.8\n"),
+            ..Settings::default()
+        };
         let mut general = ui(Page::General);
         general.set_focus(Some(Target::Row(Item::Option(Opt::PadLookDeadzone))));
         key(&mut general, &mut s, K::Enter);
