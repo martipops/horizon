@@ -432,6 +432,7 @@ impl<'a> Split<'a> {
         self.applied.clear();
         self.order.clear();
         self.setup_seats.clear();
+        self.host.split_hud.alone();
         if !watching {
             self.stop_routing();
         }

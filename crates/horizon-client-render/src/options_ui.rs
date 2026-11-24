@@ -7991,6 +7991,20 @@ mod tests {
             rows.iter().any(|r| matches!(r, Row::Big(Opt::SoundDevice))),
             "Sound page should contain Row::Big(Opt::SoundDevice)"
         );
+        // The output is P1's: another splitscreen player's row is greyed.
+        for guest in [false, true] {
+            ui.split_guest = guest;
+            let (widgets, ..) = ui.layout(&s, 480.0, 480.0);
+            let active = widgets.iter().find_map(|widget| match widget.kind {
+                WKind::Button {
+                    act: Act::Cycle(Opt::SoundDevice),
+                    active,
+                    ..
+                } => Some(active),
+                _ => None,
+            });
+            assert_eq!(active, Some(!guest));
+        }
         assert_eq!(s.sound_device, "");
         let devices = crate::audio::output_devices();
         let count = 1 + devices.len();

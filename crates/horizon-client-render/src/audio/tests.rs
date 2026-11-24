@@ -885,6 +885,20 @@ fn state_of(mixer: &Mutex<Mixer>, channel: ChannelId) -> Option<State> {
 }
 
 #[test]
+fn another_players_listener_leaves_the_output_to_the_first() {
+    let mut host = Audio::silent(&horizon_assets::resource_source::ResourceSource::directory(
+        (Path::new("/nonexistent/horizon-test-audio")).to_path_buf(),
+    ));
+    host.set_device("Speakers").unwrap();
+    let mut guest = host.share(1);
+    guest.set_device("Headphones").unwrap();
+    assert_eq!((guest.device(), host.device()), ("Speakers", "Speakers"));
+    assert!(guest._stream.is_none());
+    host.set_device("Headphones").unwrap();
+    assert_eq!(host.device(), "Headphones");
+}
+
+#[test]
 fn reusing_a_seat_does_not_reuse_its_channels_or_leave_its_camera() {
     let host = Audio::silent(&horizon_assets::resource_source::ResourceSource::directory(
         (Path::new("/nonexistent/horizon-test-audio")).to_path_buf(),

@@ -83,6 +83,15 @@ pub(in crate::game) struct Hud {
     pub(in crate::game) notice: NoticeSlot,
 }
 
+impl Hud {
+    /// Nobody else plays: no badge to tell the views apart. A question or a notice stays (who
+    /// left, a controller offered).
+    pub(super) fn alone(&mut self) {
+        self.badge = None;
+        self.place = None;
+    }
+}
+
 /// A question on a player's view, answered with its controller's buttons.
 #[derive(Clone, PartialEq)]
 pub(super) struct Prompt {

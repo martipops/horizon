@@ -168,7 +168,13 @@ impl Split<'_> {
     /// The names playing now: P1's and the joined players'.
     fn taken(&self) -> Vec<String> {
         std::iter::once(self.host.options.player_name())
-            .chain(self.guests.iter().filter_map(|g| g.name.clone()))
+            .chain(self.others_taken())
+            .collect()
+    }
+
+    /// The names playing now besides P1's, which may be a file's.
+    fn others_taken(&self) -> Vec<String> {
+        (self.guests.iter().filter_map(|g| g.name.clone()))
             // On a server: everyone in its player list.
             .chain(self.host.remote_online_names().unwrap_or_default())
             .collect()
@@ -223,9 +229,15 @@ impl Split<'_> {
 
     /// The profile pages just opened, filled: the list and who plays now.
     pub(super) fn sync_profiles(&mut self) {
-        let taken = self.taken();
+        if !self.guests.iter().any(|g| on_profiles(&g.game)) {
+            return;
+        }
+        let others = self.others_taken();
+        let now = Instant::now();
         for g in self.guests.iter_mut().filter(|g| on_profiles(&g.game)) {
-            g.game.ui.options.split_profiles.taken = taken.clone();
+            let page = &mut g.game.ui.options.split_profiles;
+            let first = page.first.name(now, || self.host.options.player_name());
+            page.taken = std::iter::once(first).chain(others.iter().cloned()).collect();
         }
         let open = |g: &Guest<'_>| on_profiles(&g.game) && !g.game.ui.options.split_profiles.filled;
         if !self.guests.iter().any(open) {
@@ -242,7 +254,6 @@ impl Split<'_> {
             if let Some(me) = g.name.as_ref().filter(|me| !names.contains(me)) {
                 page.names.insert(0, me.clone());
             }
-            page.taken = taken.clone();
             page.accounts = accounts.clone();
             page.offline_accounts = launcher::unavailable();
             page.offline_accounts.extend(

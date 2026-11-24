@@ -607,7 +607,12 @@ impl OptionsUi {
                             y += 16.0;
                         }
                         Row::Big(opt) => {
-                            out.push(option_widget(s, opt, cx - 155.0, y + 2.0, 310.0));
+                            let widget = option_widget(s, opt, cx - 155.0, y + 2.0, 310.0);
+                            out.push(if self.split_guest && opt == Opt::SoundDevice {
+                                inactive(widget)
+                            } else {
+                                widget
+                            });
                             y += 25.0;
                         }
                         Row::Pair(a, b) => {

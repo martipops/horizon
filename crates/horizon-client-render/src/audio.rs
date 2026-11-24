@@ -1948,8 +1948,13 @@ impl Audio {
         }
         Self::open(mixer)
     }
+    /// Opens the output on the device `name` (empty: the system's). Another local player's
+    /// listener ([`Self::share`]) opens none: the output is the first player's.
     #[cfg(feature = "audio")]
     pub fn set_device(&mut self, name: &str) -> Result<()> {
+        if self.backend.owner != 0 {
+            return Ok(());
+        }
         if !self.backend.live && self._stream.is_none() && !self.engine.loaded {
             self.device_name = name.to_owned();
             return Ok(());
@@ -1963,6 +1968,9 @@ impl Audio {
     }
     #[cfg(not(feature = "audio"))]
     pub fn set_device(&mut self, name: &str) -> Result<()> {
+        if self.backend.owner != 0 {
+            return Ok(());
+        }
         self.device_name = name.to_owned();
         Ok(())
     }
