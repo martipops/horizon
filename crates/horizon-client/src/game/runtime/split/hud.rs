@@ -1,12 +1,12 @@
 //! What splitscreen draws over a player's view: its badge, questions answered with the pad and
 //! notices.
 use super::*;
-use horizon_client::controller_notice::NoticeSlot;
+use horizon_client::controller_notice::{Notice, NoticeId, NoticeSlot, Priority};
 use horizon_client::gamepad::{GlyphStyle, MenuJob};
 use horizon_client::hud::HudAtlas;
 use horizon_client::hud::{HudBatch, rgba};
 use horizon_client::hud_kit::{
-    fit::ellipsize,
+    fit::{ELLIPSIS, ellipsize},
     hint::{self, HintRow},
     plate::{self, Plate},
     room::Room,
@@ -25,6 +25,18 @@ const SIDE: f32 = 12.0;
 const INNER: f32 = 8.0;
 /// GUI px after an answer's words, before the next answer's glyph.
 const BETWEEN: f32 = 12.0;
+/// How much of an error a notice says, in characters: a graphics driver's can run to a page, and
+/// a notice wraps all it is given.
+const REASON_CHARS: usize = 120;
+
+/// An error's words as a notice's body: on one line, cut after `REASON_CHARS` characters.
+fn reason(why: &str) -> String {
+    let words = why.split_whitespace().collect::<Vec<_>>().join(" ");
+    match words.char_indices().nth(REASON_CHARS) {
+        Some((end, _)) => format!("{}{ELLIPSIS}", words[..end].trim_end()),
+        None => words,
+    }
+}
 
 /// A prompt's answers as hint rows, each caption cut to an equal share of what `max` (GUI px)
 /// leaves after the glyphs and the gaps, when the whole line is wider than that.
@@ -209,15 +221,34 @@ impl Game<'_> {
 }
 
 impl<'a> Split<'a> {
-    /// The join question on every player's view in the world (a strip at the top), or gone.
-    pub(super) fn prompt_join(&mut self, prompt: Option<Prompt>) {
-        let views = std::iter::once(&mut self.host.split_hud).chain(
+    /// What splitscreen draws over the view of every player in the world: P1's, and the others'
+    /// once they have picked a profile.
+    fn huds_in_world(&mut self) -> impl Iterator<Item = &mut Hud> {
+        std::iter::once(&mut self.host.split_hud).chain(
             self.guests
                 .iter_mut()
                 .filter(|g| g.name.is_some())
                 .map(|g| &mut g.game.split_hud),
-        );
-        for hud in views {
+        )
+    }
+
+    /// A player couldn't join: the views that showed the join strip say so, with why in the
+    /// error's own words (as the profile page gives a failed pick's).
+    pub(super) fn join_failed(&mut self, why: &dyn std::fmt::Display) {
+        let why = reason(&why.to_string());
+        for hud in self.huds_in_world() {
+            hud.notice.raise(Notice::new(
+                NoticeId::JoinFailed,
+                Priority::Attention,
+                tr("join_failed", &[]),
+                why.as_str(),
+            ));
+        }
+    }
+
+    /// The join question on every player's view in the world (a strip at the top), or gone.
+    pub(super) fn prompt_join(&mut self, prompt: Option<Prompt>) {
+        for hud in self.huds_in_world() {
             match &prompt {
                 Some(p) => {
                     if hud.prompt.as_ref().is_none_or(|q| q.ask == Ask::Join) {
@@ -244,7 +275,6 @@ impl<'a> Split<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use horizon_client::hud_kit::fit::ELLIPSIS;
     use horizon_client::hud_kit::room::Keep;
     use horizon_client::hud_overlays::boss_bars_bottom;
 
@@ -286,6 +316,20 @@ mod tests {
             assert_eq!(row.glyphs, [Glyph::menu(job, places)]);
             assert!(row.caption.ends_with(ELLIPSIS) && row.caption.len() < what.len());
         }
+    }
+
+    #[test]
+    fn a_refusals_reason_is_one_line_cut_between_characters() {
+        assert_eq!(reason("no window"), "no window");
+        // A driver's error comes in lines; the notice wraps its own.
+        assert_eq!(
+            reason("In Device::create_texture\n    Not enough memory left."),
+            "In Device::create_texture Not enough memory left."
+        );
+        // A long one stops after `REASON_CHARS` characters, never inside one.
+        let long = "é".repeat(REASON_CHARS + 30);
+        let cut = format!("{}{ELLIPSIS}", "é".repeat(REASON_CHARS));
+        assert_eq!(reason(&long), cut);
     }
 
     #[test]

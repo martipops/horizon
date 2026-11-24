@@ -233,6 +233,31 @@ def scenario_join():
         g.quit()
 
 
+def scenario_refused():
+    print("refused: a player who can't join is announced on P1's view, and P1 plays on")
+    # A file where the splitscreen folder goes: the player's game can't be set up, on any machine.
+    blocked = lambda home: (home / 'splitscreen').write_text('')
+    g = Game(2, seed=blocked, ready=False, args=('--offscreen',))
+    try:
+        notice = lambda: g.ctl(1, 'pad', 'status').get('notice')
+        g.wait(lambda: g.ctl(1, 'state').get('player') is not None, 'P1 in its world', seconds=60)
+        try:
+            # The player is refused as P1 enters its world, and the notice stays 5 s.
+            g.wait(notice, "a notice on P1's view", seconds=10)
+        except RuntimeError:
+            pass
+        shown = notice() or {}
+        check('P1 is told a player could not join', shown.get('title'), "A player couldn't join")
+        check('with the reason', bool(shown.get('body')), True)
+        check('nobody joined', g.alive(2), False)
+        state = g.ctl(1, 'state')
+        check('P1 plays on', (state.get('screen'), state.get('player') is not None), ('playing', True))
+        w, h = g.size(1)
+        check('P1 has its whole window', (w, h), (2 * WIDTH, 2 * HEIGHT) if w > WIDTH else (WIDTH, HEIGHT))
+    finally:
+        g.quit()
+
+
 def scenario_four():
     print('four: quarters, and P4 disconnects')
     g = Game(4)
@@ -1446,6 +1471,7 @@ SCENARIOS = {
     'alone': scenario_alone,
     'guide': scenario_guide,
     'join': scenario_join,
+    'refused': scenario_refused,
     'controller_profiles': scenario_controller_profiles,
     'custom_skin': scenario_custom_skin,
     'four': scenario_four,

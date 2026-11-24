@@ -18,6 +18,8 @@ pub enum NoticeId {
     Connection,
     /// A splitscreen player the server sent away.
     PlayerLeft,
+    /// A splitscreen player who couldn't join.
+    JoinFailed,
     /// The stick stopped moving the player at its own angle on this server.
     Movement,
 }

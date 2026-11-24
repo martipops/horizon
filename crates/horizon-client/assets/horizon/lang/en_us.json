@@ -679,6 +679,7 @@
   "horizon.splitscreen.prompt.join.yes": "Join",
   "horizon.splitscreen.prompt.join.as_p1": "Play as P1",
   "horizon.splitscreen.prompt.join.no": "No",
+  "horizon.splitscreen.prompt.join_failed": "A player couldn't join",
   "horizon.splitscreen.prompt.lost": "%s: controller disconnected",
   "horizon.splitscreen.prompt.lost.use_another": "Use another",
   "horizon.splitscreen.prompt.lost.leave": "Leave",

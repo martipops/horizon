@@ -524,6 +524,7 @@ impl<'a> Split<'a> {
                 Err(e) => {
                     self.restore_given_up_pad(pad);
                     log::warn!("Horizon: splitscreen: a player could not join: {e}");
+                    self.join_failed(&e);
                 }
             }
         }
@@ -541,6 +542,7 @@ impl<'a> Split<'a> {
                     // One player failing doesn't stop the others: P1 keeps playing.
                     log::warn!("Horizon: splitscreen player couldn't join: {e}");
                     self.test_players = 0;
+                    self.join_failed(&e);
                 }
             }
         }
