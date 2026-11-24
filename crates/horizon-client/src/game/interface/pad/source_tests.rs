@@ -58,7 +58,7 @@ fn a_registered_source_answers_in_the_pads_place() {
     playing(|game| {
         game.player = Some(PlayerMotion::new(game.motion, Vec3::ZERO).unwrap());
         // The pad holds use and leans its look stick, and would mark a stack drop.
-        pad_press(game, Button::RightTrigger, "key.use");
+        pad_press(game, Button::LeftTrigger, "key.use");
         assert!(game.input_holds("key.use"));
         game.pad.state.right = [1.0, 0.0];
         game.pad.drop_stack = true;
