@@ -1932,6 +1932,8 @@ pub struct OptionsUi {
     /// Splitscreen: another player's options. Language and resource packs are the whole
     /// process's (every player's text and textures), so they're P1's to change.
     pub split_guest: bool,
+    /// Splitscreen: the first player's sound device, the one a guest's row shows.
+    split_output: String,
     /// The list's rows as last laid out: each row's top and bottom (GUI
     /// pixels), for the narration's row under the mouse.
     row_bands: Vec<[f32; 2]>,
@@ -2017,6 +2019,7 @@ impl Default for OptionsUi {
             size: (427.0, 240.0),
             framebuffer: [1280, 720],
             split_guest: false,
+            split_output: String::new(),
             row_bands: Vec::new(),
             wide_extras: Vec::new(),
             rev: 0,
@@ -7994,17 +7997,21 @@ mod tests {
         // The output is P1's: another splitscreen player's row is greyed.
         for guest in [false, true] {
             ui.split_guest = guest;
+            ui.set_split_output("P1's Speakers");
+            s.sound_device = "Own Headphones".into();
             let (widgets, ..) = ui.layout(&s, 480.0, 480.0);
-            let active = widgets.iter().find_map(|widget| match widget.kind {
+            let row = widgets.iter().find_map(|widget| match &widget.kind {
                 WKind::Button {
                     act: Act::Cycle(Opt::SoundDevice),
                     active,
+                    label,
                     ..
-                } => Some(active),
+                } => Some((*active, format!("{label:?}").contains("P1's Speakers"))),
                 _ => None,
             });
-            assert_eq!(active, Some(!guest));
+            assert_eq!(row, Some((!guest, guest)));
         }
+        s.sound_device.clear();
         assert_eq!(s.sound_device, "");
         let devices = crate::audio::output_devices();
         let count = 1 + devices.len();

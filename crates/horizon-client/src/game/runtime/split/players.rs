@@ -232,12 +232,11 @@ impl Split<'_> {
         if !self.guests.iter().any(|g| on_profiles(&g.game)) {
             return;
         }
-        let others = self.others_taken();
-        let now = Instant::now();
+        let mut taken = self.others_taken();
+        let options = &self.host.options;
+        taken.insert(0, self.p1_name.get(Instant::now(), || options.player_name()));
         for g in self.guests.iter_mut().filter(|g| on_profiles(&g.game)) {
-            let page = &mut g.game.ui.options.split_profiles;
-            let first = page.first.name(now, || self.host.options.player_name());
-            page.taken = std::iter::once(first).chain(others.iter().cloned()).collect();
+            g.game.ui.options.split_profiles.taken = taken.clone();
         }
         let open = |g: &Guest<'_>| on_profiles(&g.game) && !g.game.ui.options.split_profiles.filled;
         if !self.guests.iter().any(open) {

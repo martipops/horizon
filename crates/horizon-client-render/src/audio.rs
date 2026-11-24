@@ -1948,6 +1948,12 @@ impl Audio {
         }
         Self::open(mixer)
     }
+    /// Another local player's listener says the first player's device, the one it is heard on.
+    pub fn follow_device(&mut self, name: &str) {
+        if self.backend.owner != 0 && self.device_name != name {
+            name.clone_into(&mut self.device_name);
+        }
+    }
     /// Opens the output on the device `name` (empty: the system's). Another local player's
     /// listener ([`Self::share`]) opens none: the output is the first player's.
     #[cfg(feature = "audio")]

@@ -121,6 +121,8 @@ pub(super) struct Split<'a> {
     /// monitor, and P1's.
     windows: Vec<layout::Window>,
     p1_window: u8,
+    /// P1's name for the profile pages (`sync_profiles`).
+    p1_name: horizon_client::split_profiles::FirstPlayer,
     /// Seats in the order their views fill a shared window.
     order: Vec<usize>,
     /// Seats represented by the open Setup draft, to detect join/leave changes.
@@ -191,6 +193,7 @@ impl<'a> Split<'a> {
                 placement: Placement::Free(None),
             }],
             p1_window: 1,
+            p1_name: Default::default(),
             order: Vec::new(),
             setup_seats: Vec::new(),
             window1_shown: true,
@@ -807,6 +810,9 @@ impl ApplicationHandler for Split<'_> {
             self.turn(i + 1);
             // One set of speakers: P1's volume.
             self.guests[i].game.audio.master = master;
+            let device = self.host.audio.device();
+            self.guests[i].game.audio.follow_device(device);
+            self.guests[i].game.ui.options.set_split_output(device);
             self.guests[i].game.about_to_wait(event_loop);
             // A player's game stops the event loop on an error, as P1's does: say why.
             if let Some(e) = &self.guests[i].game.error {

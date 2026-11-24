@@ -895,6 +895,12 @@ fn another_players_listener_leaves_the_output_to_the_first() {
     assert_eq!((guest.device(), host.device()), ("Speakers", "Speakers"));
     assert!(guest._stream.is_none());
     host.set_device("Headphones").unwrap();
+    guest.follow_device(host.device());
+    assert_eq!(
+        (guest.device(), host.device()),
+        ("Headphones", "Headphones")
+    );
+    host.follow_device("Speakers");
     assert_eq!(host.device(), "Headphones");
 }
 

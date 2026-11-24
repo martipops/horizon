@@ -32,6 +32,13 @@ impl OptionsUi {
     pub fn layout_changed(&mut self) {
         self.relayout();
     }
+    /// Splitscreen: the first player's sound device, from the game's every frame.
+    pub fn set_split_output(&mut self, device: &str) {
+        if self.split_output != device {
+            device.clone_into(&mut self.split_output);
+            self.relayout();
+        }
+    }
     /// The Agent page's status lines and recording flag, from the game's
     /// poll: the page lays out again only when one of them changed.
     pub fn set_agent_status(&mut self, status: Vec<String>, recording: bool) {
@@ -607,11 +614,14 @@ impl OptionsUi {
                             y += 16.0;
                         }
                         Row::Big(opt) => {
-                            let widget = option_widget(s, opt, cx - 155.0, y + 2.0, 310.0);
+                            let at = (cx - 155.0, y + 2.0);
                             out.push(if self.split_guest && opt == Opt::SoundDevice {
-                                inactive(widget)
+                                // The output is P1's, whatever this player's profile keeps.
+                                let mut shown = s.clone();
+                                shown.sound_device.clone_from(&self.split_output);
+                                inactive(option_widget(&shown, opt, at.0, at.1, 310.0))
                             } else {
-                                widget
+                                option_widget(s, opt, at.0, at.1, 310.0)
                             });
                             y += 25.0;
                         }

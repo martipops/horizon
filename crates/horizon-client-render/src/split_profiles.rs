@@ -32,14 +32,14 @@ pub fn valid_name(name: &str) -> bool {
         && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
-/// The first player's name, whose offline file is read once a second while the page is open: the
-/// game asks every frame.
+/// The first player's name for every open profile page, whose offline file is read once a second:
+/// the game asks every frame.
 #[derive(Default)]
 pub struct FirstPlayer(Option<(std::time::Instant, String)>);
 impl FirstPlayer {
     const READ_AGAIN: std::time::Duration = std::time::Duration::from_secs(1);
 
-    pub fn name(&mut self, now: std::time::Instant, read: impl FnOnce() -> String) -> String {
+    pub fn get(&mut self, now: std::time::Instant, read: impl FnOnce() -> String) -> String {
         match &self.0 {
             Some((at, name)) if now.saturating_duration_since(*at) < Self::READ_AGAIN => {
                 name.clone()
@@ -51,7 +51,6 @@ impl FirstPlayer {
 
 #[derive(Default)]
 pub struct SplitProfiles {
-    pub first: FirstPlayer,
     /// The game filled the page since it opened.
     pub filled: bool,
     /// The profiles; those playing now (none can be picked twice); the signed-in Microsoft
@@ -575,7 +574,7 @@ mod tests {
         // Sixty frames a second for two seconds and one frame, the file renamed half way through.
         for frame in 0..=120_u64 {
             let now = start + std::time::Duration::from_micros(frame * 1_000_000 / 60);
-            let name = first.name(now, || {
+            let name = first.get(now, || {
                 reads += 1;
                 if frame < 30 { "Alex" } else { "Sam" }.to_owned()
             });
