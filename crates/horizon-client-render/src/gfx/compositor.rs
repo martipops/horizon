@@ -74,13 +74,16 @@ impl Compositor {
         let caps = surface.get_capabilities(adapter);
         let copies =
             caps.usages.contains(wgpu::TextureUsages::COPY_DST) && caps.formats.contains(&FRAME);
-        // The draw writes the frames' values as they are, so not on a format that would
-        // encode them again.
-        let format = match caps.formats.first() {
-            Some(_) if copies => FRAME,
-            Some(&first) => super::surface_format(&caps.formats, first),
-            None => return Err("this adapter can't present on the window".into()),
+        let format = if copies {
+            FRAME
+        } else {
+            let Some(&first) = caps.formats.first() else {
+                return Err("this adapter can't present on the window".into());
+            };
+            super::surface_format(&caps.formats, first)
         };
+        // The draw writes the frames' values as they are: not on a format that would encode
+        // them again.
         if format.is_srgb() {
             return Err(format!(
                 "splitscreen needs a surface format without sRGB encoding; this one offers {:?}",
@@ -203,7 +206,7 @@ fn clear<'a>(
     target: &wgpu::TextureView,
 ) -> wgpu::RenderPass<'a> {
     encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-        label: Some("Splitscreen compositor clear"),
+        label: Some("Splitscreen compositor"),
         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
             view: target,
             depth_slice: None,
