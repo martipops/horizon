@@ -1,0 +1,55 @@
+[host] ['launch', '--offscreen', '--no-pause'] -> {"game": "/home/martipops/Developer/horizon-proof-15444/base-worktree/target/fast/horizon-client", "home": null, "log": "/tmp/hzlan-host-3mvsyrau/c.log", "ok": true, "pid": 1353252, "resources": null, "socket": "/tmp/hzlan-host-3mvsyrau/c.sock", "source": "beside horizon-ctl", "version": null}
+[host] ['open', 'Lan', 5, 'creative'] -> {"ok": true}
+[host] ['wait-ready', '400'] -> {"block_entities": 45, "border": {"center": [0.0, 0.0], "size": 59999968.0}, "carts": [{"kind": "minecraft:chest_minecart", "position": [-94.5, 28.0625, 45.5], "velocity": [0.0, 0.0, 0.0]}, {"kind": "minecraft:chest_minecart", "position": [-65.5, 28.0625, 56.5], "velocity": [0.0, 0.0, 0.0]}, {"kind": "minecraft:chest_minecart", "position": [-57.5, 29.0625, 87.5], "velocity": [0.0, 0.0, 0.0]}, {"ki...
+[host] ['command', 'defaultgamemode survival'] -> {"chat": ["The default game mode is now Survival Mode"], "ok": true}
+[host] ['command', 'gamemode survival'] -> {"chat": ["Set own game mode to Survival Mode"], "ok": true}
+[host] ['command', 'time set day'] -> {"chat": ["Set minecraft:overworld to time marker minecraft:day"], "ok": true}
+[host] ['command', 'fill ~-8 ~-1 ~-8 ~8 ~-1 ~8 minecraft:stone'] -> {"chat": ["Successfully filled 289 block(s)"], "ok": true}
+[host] ['command', 'fill ~-8 ~ ~-8 ~8 ~6 ~8 minecraft:air'] -> {"chat": ["Successfully filled 13 block(s)"], "ok": true}
+[host] ['command', 'gamerule spawn_mobs false'] -> {"chat": ["Game rule spawn_mobs is now set to false"], "ok": true}
+[host] ['lan', 'open', 0, 'commands'] -> {"ok": true, "port": 40153}
+[host] ['lan', 'status'] -> {"force_game_mode": false, "guest_commands": true, "guests": [{"absorption": 0.0, "air": 300, "chunks": 637, "fall_flying": false, "food": [20.0, 5.0, 0.0], "game_mode": 0, "health": 20.0, "loaded": true, "name": "Player64819", "placed": true, "position": [-3.5, 72.0, 0.5], "shield_cooldown": 0, "sleeping": null, "sneaking": false, "tracked": 185, "using": null}], "host": "Player64819", "open": tr
+[guest] ['launch', '--offscreen', '--no-pause'] -> {"game": "/home/martipops/Developer/horizon-proof-15444/base-worktree/target/fast/horizon-client", "home": null, "log": "/tmp/hzlan-guest-w2lulyzy/c.log", "ok": true, "pid": 1354725, "resources": null, "socket": "/tmp/hzlan-guest-w2lulyzy/c.sock", "source": "beside horizon-ctl", "version": null}
+[guest] ['connect', '127.0.0.1:40153', 'Guest'] -> {"ok": true}
+[guest] ['wait-for', 'loaded', '--timeout', 300] -> {"ok": true, "screen": "playing", "waited_seconds": 0.953786981}
+[guest] ['wait', '40'] -> {"ok": true, "ticks": 60}
+[host] ['state'] -> {"busy": null, "dialog": {"open": null, "screen": null}, "dimension": "minecraft:overworld", "gamemode": "survival", "held": null, "input": {"counts": {"agent": 9, "game": 0, "user": 0}, "events": 9, "last_origin": "agent", "last_user_age_s": null, "recording": null, "replay": null, "user_since_agent": 0}, "looking_at": {"block": null, "entity": null, "kind": "none"}, "menu": null, "mining": null,...
+[guest] ['state'] -> {"busy": null, "dialog": {"open": null, "screen": null}, "dimension": "minecraft:overworld", "gamemode": "survival", "held": null, "input": {"counts": {"agent": 2, "game": 0, "user": 0}, "events": 2, "last_origin": "agent", "last_user_age_s": null, "recording": null, "replay": null, "user_since_agent": 0}, "looking_at": {"block": null, "entity": null, "kind": "none"}, "menu": null, "mining": null,...
+[host] ['state'] -> {"busy": null, "dialog": {"open": null, "screen": null}, "dimension": "minecraft:overworld", "gamemode": "survival", "held": null, "input": {"counts": {"agent": 9, "game": 0, "user": 0}, "events": 9, "last_origin": "agent", "last_user_age_s": null, "recording": null, "replay": null, "user_since_agent": 0}, "looking_at": {"block": null, "entity": null, "kind": "none"}, "menu": null, "mining": null,...
+[guest] ['command', 'tp @s -0.50 72.00 0.50'] -> {"ok": true}
+[guest] ['wait', '30'] -> {"ok": true, "ticks": 91}
+[host] ['look-at', '-0.50', '73.60', '0.50'] -> {"ok": true, "pitch": 0.3819662928581238, "yaw": -90.0}
+[guest] ['look-at', '-3.50', '73.60', '0.50'] -> {"ok": true, "pitch": 0.3819662928581238, "yaw": 90.0}
+[host] ['wait', '10'] -> {"ok": true, "ticks": 258}
+[host] ['screenshot', '/home/martipops/Developer/horizon-proof-15444/lan-e2e-keys-base/host-joined.png'] -> {"height": 720, "ok": true, "width": 1280}
+[guest] ['screenshot', '/home/martipops/Developer/horizon-proof-15444/lan-e2e-keys-base/guest-joined.png'] -> {"height": 720, "ok": true, "width": 1280}
+[host] ['release'] -> {"ok": true}
+[host] ['state'] -> {"busy": null, "dialog": {"open": null, "screen": null}, "dimension": "minecraft:overworld", "gamemode": "survival", "held": null, "input": {"counts": {"agent": 13, "game": 0, "user": 0}, "events": 13, "last_origin": "agent", "last_user_age_s": null, "recording": null, "replay": null, "user_since_agent": 0}, "looking_at": {"block": null, "entity": {"distance": 2.7000590516133274, "health": 20.0, "...
+[host] ['state'] -> {"busy": null, "dialog": {"open": null, "screen": null}, "dimension": "minecraft:overworld", "gamemode": "survival", "held": null, "input": {"counts": {"agent": 13, "game": 0, "user": 0}, "events": 13, "last_origin": "agent", "last_user_age_s": null, "recording": null, "replay": null, "user_since_agent": 0}, "looking_at": {"block": null, "entity": {"distance": 2.7000590516133274, "health": 20.0, "...
+[guest] ['release'] -> {"ok": true}
+[guest] ['state'] -> {"busy": null, "dialog": {"open": null, "screen": null}, "dimension": "minecraft:overworld", "gamemode": "survival", "held": null, "input": {"counts": {"agent": 7, "game": 0, "user": 0}, "events": 7, "last_origin": "agent", "last_user_age_s": null, "recording": null, "replay": null, "user_since_agent": 0}, "looking_at": {"block": null, "entity": {"distance": 2.7000590516133274, "health": 20.0, "id...
+[guest] ['state'] -> {"busy": null, "dialog": {"open": null, "screen": null}, "dimension": "minecraft:overworld", "gamemode": "survival", "held": null, "input": {"counts": {"agent": 7, "game": 0, "user": 0}, "events": 7, "last_origin": "agent", "last_user_age_s": null, "recording": null, "replay": null, "user_since_agent": 0}, "looking_at": {"block": null, "entity": {"distance": 2.7000590516133274, "health": 20.0, "id...
+[host] ['lan', 'status'] -> {"force_game_mode": false, "guest_commands": true, "guests": [{"absorption": 0.0, "air": 300, "chunks": 637, "fall_flying": false, "food": [20.0, 5.0, 0.0], "game_mode": 0, "health": 20.0, "loaded": true, "name": "Player64819", "placed": true, "position": [-3.5, 72.0, 0.5], "shield_cooldown": 0, "sleeping": null, "sneaking": false, "tracked": 190, "using": null}, {"absorption": 0.0, "air": 300, "c
+[guest] ['key', 'w', 'down'] -> {"ok": true}
+[guest] ['key', 'space', 'down'] -> {"ok": true}
+[guest] ['status'] -> {"block_entities": 45, "border": {"center": [0.0, 0.0], "size": 59999968.0}, "carts": [{"kind": "minecraft:chest_minecart", "position": [-94.5, 28.0625, 45.5], "velocity": [0.0, 0.0, 0.0]}, {"kind": "minecraft:chest_minecart", "position": [-65.5, 28.0625, 56.5], "velocity": [0.0, 0.0, 0.0]}, {"kind": "minecraft:chest_minecart", "position": [-57.5, 29.0625, 87.5], "velocity": [0.0, 0.0, 0.0]}, {"ki...
+[guest] ['disconnect'] -> {"ok": true}
+[guest] ['status'] -> {"block_entities": 0, "border": {"center": [0.0, 0.0], "size": 59999968.0}, "carts": [], "chunks": 0, "creative": false, "day_time": 1000, "debug": {"advanced_tooltips": false, "chunk_borders": false, "clipboard": null, "hitboxes": false, "overlay": false, "pause_menu": true, "pause_on_lost_focus": true}, "destroying": [], "dimension": "minecraft:overworld", "dirty_light": 0, "display": null, "fan...
+[guest] ['connect', '127.0.0.1:40153', 'Guest'] -> {"ok": true}
+[guest] ['wait-for', 'loaded', '--timeout', 300] -> {"ok": true, "screen": "playing", "waited_seconds": 0.926184528}
+[guest] ['wait', '20'] -> {"ok": true, "ticks": 145}
+[guest] ['status'] -> {"block_entities": 45, "border": {"center": [0.0, 0.0], "size": 59999968.0}, "carts": [{"kind": "minecraft:chest_minecart", "position": [-94.5, 28.0625, 45.5], "velocity": [0.0, 0.0, 0.0]}, {"kind": "minecraft:chest_minecart", "position": [-65.5, 28.0625, 56.5], "velocity": [0.0, 0.0, 0.0]}, {"kind": "minecraft:chest_minecart", "position": [-57.5, 29.0625, 87.5], "velocity": [0.0, 0.0, 0.0]}, {"ki...
+[guest] ['state'] -> {"busy": null, "dialog": {"open": null, "screen": null}, "dimension": "minecraft:overworld", "gamemode": "survival", "held": null, "input": {"counts": {"agent": 12, "game": 0, "user": 0}, "events": 12, "last_origin": "agent", "last_user_age_s": null, "recording": null, "replay": null, "user_since_agent": 0}, "looking_at": {"block": null, "entity": null, "kind": "none"}, "menu": null, "mining": nul...
+[guest] ['wait', '20'] -> {"ok": true, "ticks": 165}
+[guest] ['state'] -> {"busy": null, "dialog": {"open": null, "screen": null}, "dimension": "minecraft:overworld", "gamemode": "survival", "held": null, "input": {"counts": {"agent": 13, "game": 0, "user": 0}, "events": 13, "last_origin": "agent", "last_user_age_s": null, "recording": null, "replay": null, "user_since_agent": 0}, "looking_at": {"block": null, "entity": null, "kind": "none"}, "menu": null, "mining": nul...
+[host] ['state'] -> {"busy": null, "dialog": {"open": null, "screen": null}, "dimension": "minecraft:overworld", "gamemode": "survival", "held": null, "input": {"counts": {"agent": 14, "game": 0, "user": 0}, "events": 14, "last_origin": "agent", "last_user_age_s": null, "recording": null, "replay": null, "user_since_agent": 0}, "looking_at": {"block": null, "entity": null, "kind": "none"}, "menu": null, "mining": nul...
+[guest] ['state'] -> {"busy": null, "dialog": {"open": null, "screen": null}, "dimension": "minecraft:overworld", "gamemode": "survival", "held": null, "input": {"counts": {"agent": 13, "game": 0, "user": 0}, "events": 13, "last_origin": "agent", "last_user_age_s": null, "recording": null, "replay": null, "user_since_agent": 0}, "looking_at": {"block": null, "entity": null, "kind": "none"}, "menu": null, "mining": nul...
+[lan] keys_released: FAIL AssertionError("keys stayed down after leaving: {'held': ['KeyW', 'Space'], 'left': [], 'rejoined': ['KeyW', 'Space'], 'walked': 4.247}")
+[guest] ['quit'] -> {"ok": true}
+[host] ['quit'] -> {"ok": true}
+{
+ "keys_released": {
+  "pass": false,
+  "detail": "AssertionError(\"keys stayed down after leaving: {'held': ['KeyW', 'Space'], 'left': [], 'rejoined': ['KeyW', 'Space'], 'walked': 4.247}\")"
+ }
+}

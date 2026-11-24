@@ -1,0 +1,254 @@
+    Finished `fast` profile [optimized] target(s) in 1.20s
+[host] ['launch', '--offscreen', '--no-pause'] -> {"game": "/home/martipops/Developer/horizon/.worktrees/input-source-dude/target/fast/horizon-client", "home": null, "log": "/tmp/hzlan-host-6ypy5j4d/c.log", "ok": true, "pid": 854318, "resources": null, "socket": "/tmp/hzlan-host-6ypy5j4d/c.sock", "source": "beside horizon-ctl", "version": null}
+[host] ['open', 'Lan', 5, 'creative'] -> {"ok": true}
+[host] ['wait-ready', '400'] -> {"block_entities": 45, "border": {"center": [0.0, 0.0], "size": 59999968.0}, "carts": [{"kind": "minecraft:chest_minecart", "position": [-94.5, 28.0625, 45.5], "velocity": [0.0, 0.0, 0.0]}, {"kind": "minecraft:chest_minecart", "position": [-65.5, 28.0625, 56.5], "velocity": [0.0, 0.0, 0.0]}, {"kind": "minecraft:chest_minecart", "position": [-57.5, 29.0625, 87.5], "velocity": [0.0, 0.0, 0.0]}, {"ki...
+[host] ['command', 'defaultgamemode survival'] -> {"chat": ["The default game mode is now Survival Mode"], "ok": true}
+[host] ['command', 'gamemode survival'] -> {"chat": ["Set own game mode to Survival Mode"], "ok": true}
+[host] ['command', 'time set day'] -> {"chat": ["Set minecraft:overworld to time marker minecraft:day"], "ok": true}
+[host] ['command', 'fill ~-8 ~-1 ~-8 ~8 ~-1 ~8 minecraft:stone'] -> {"chat": ["Successfully filled 289 block(s)"], "ok": true}
+[host] ['command', 'fill ~-8 ~ ~-8 ~8 ~6 ~8 minecraft:air'] -> {"chat": ["Successfully filled 530 block(s)"], "ok": true}
+[host] ['command', 'gamerule spawn_mobs false'] -> {"chat": ["Game rule spawn_mobs is now set to false"], "ok": true}
+[host] ['lan', 'open', 0, 'commands'] -> {"ok": true, "port": 40199}
+[host] ['lan', 'status'] -> {"force_game_mode": false, "guest_commands": true, "guests": [{"absorption": 0.0, "air": 300, "chunks": 637, "fall_flying": false, "food": [20.0, 5.0, 0.0], "game_mode": 0, "health": 20.0, "loaded": true, "name": "Player90993", "placed": true, "position": [-6.5, 65.0, 5.5], "shield_cooldown": 0, "sleeping": null, "sneaking": false, "tracked": 211, "using": null}], "host": "Player90993", "open": tr
+[guest] ['launch', '--offscreen', '--no-pause'] -> {"game": "/home/martipops/Developer/horizon/.worktrees/input-source-dude/target/fast/horizon-client", "home": null, "log": "/tmp/hzlan-guest-yd15ot7z/c.log", "ok": true, "pid": 854853, "resources": null, "socket": "/tmp/hzlan-guest-yd15ot7z/c.sock", "source": "beside horizon-ctl", "version": null}
+[guest] ['connect', '127.0.0.1:40199', 'Guest'] -> {"ok": true}
+[guest] ['wait-for', 'loaded', '--timeout', 300] -> {"ok": true, "screen": "playing", "waited_seconds": 0.97319619}
+[guest] ['wait', '40'] -> {"ok": true, "ticks": 59}
+[host] ['state'] -> {"busy": null, "dialog": {"open": null, "screen": null}, "dimension": "minecraft:overworld", "gamemode": "survival", "held": null, "input": {"counts": {"agent": 9, "game": 0, "user": 0}, "events": 9, "last_origin": "agent", "last_user_age_s": null, "recording": null, "replay": null, "user_since_agent": 0}, "looking_at": {"block": null, "entity": null, "kind": "none"}, "menu": null, "mining": null,...
+[guest] ['state'] -> {"busy": null, "dialog": {"open": null, "screen": null}, "dimension": "minecraft:overworld", "gamemode": "survival", "held": null, "input": {"counts": {"agent": 2, "game": 0, "user": 0}, "events": 2, "last_origin": "agent", "last_user_age_s": null, "recording": null, "replay": null, "user_since_agent": 0}, "looking_at": {"block": null, "entity": null, "kind": "none"}, "menu": null, "mining": null,...
+[host] ['state'] -> {"busy": null, "dialog": {"open": null, "screen": null}, "dimension": "minecraft:overworld", "gamemode": "survival", "held": null, "input": {"counts": {"agent": 9, "game": 0, "user": 0}, "events": 9, "last_origin": "agent", "last_user_age_s": null, "recording": null, "replay": null, "user_since_agent": 0}, "looking_at": {"block": null, "entity": null, "kind": "none"}, "menu": null, "mining": null,...
+[guest] ['command', 'tp @s -3.50 65.00 5.50'] -> {"ok": true}
+[guest] ['wait', '30'] -> {"ok": true, "ticks": 89}
+[host] ['look-at', '-3.50', '66.60', '5.50'] -> {"ok": true, "pitch": 0.3819662928581238, "yaw": -90.0}
+[guest] ['look-at', '-6.50', '66.60', '5.50'] -> {"ok": true, "pitch": 0.3819662928581238, "yaw": 90.0}
+[host] ['wait', '10'] -> {"ok": true, "ticks": 227}
+[host] ['screenshot', '/home/martipops/Developer/horizon-proof-15444/lan-e2e/host-joined.png'] -> {"height": 720, "ok": true, "width": 1280}
+[guest] ['screenshot', '/home/martipops/Developer/horizon-proof-15444/lan-e2e/guest-joined.png'] -> {"height": 720, "ok": true, "width": 1280}
+[host] ['release'] -> {"ok": true}
+[host] ['state'] -> {"busy": null, "dialog": {"open": null, "screen": null}, "dimension": "minecraft:overworld", "gamemode": "survival", "held": null, "input": {"counts": {"agent": 13, "game": 0, "user": 0}, "events": 13, "last_origin": "agent", "last_user_age_s": null, "recording": null, "replay": null, "user_since_agent": 0}, "looking_at": {"block": null, "entity": {"distance": 2.7000590516133274, "health": 20.0, "...
+[host] ['state'] -> {"busy": null, "dialog": {"open": null, "screen": null}, "dimension": "minecraft:overworld", "gamemode": "survival", "held": null, "input": {"counts": {"agent": 13, "game": 0, "user": 0}, "events": 13, "last_origin": "agent", "last_user_age_s": null, "recording": null, "replay": null, "user_since_agent": 0}, "looking_at": {"block": null, "entity": {"distance": 2.7000590516133274, "health": 20.0, "...
+[guest] ['release'] -> {"ok": true}
+[guest] ['state'] -> {"busy": null, "dialog": {"open": null, "screen": null}, "dimension": "minecraft:overworld", "gamemode": "survival", "held": {"count": 9, "item": "minecraft:leaf_litter"}, "input": {"counts": {"agent": 7, "game": 0, "user": 0}, "events": 7, "last_origin": "agent", "last_user_age_s": null, "recording": null, "replay": null, "user_since_agent": 0}, "looking_at": {"block": null, "entity": {"distance"...
+[guest] ['state'] -> {"busy": null, "dialog": {"open": null, "screen": null}, "dimension": "minecraft:overworld", "gamemode": "survival", "held": {"count": 9, "item": "minecraft:leaf_litter"}, "input": {"counts": {"agent": 7, "game": 0, "user": 0}, "events": 7, "last_origin": "agent", "last_user_age_s": null, "recording": null, "replay": null, "user_since_agent": 0}, "looking_at": {"block": null, "entity": {"distance"...
+[guest] ['command', 'gamemode survival'] -> {"ok": true}
+[host] ['mouse-move', 1, 0] -> {"motion": [1.0, 0.0], "ok": true, "pitch": 0.3819662928581238, "yaw": -89.8499984741211}
+[host] ['mouse-move', -1, 0] -> {"motion": [-1.0, 0.0], "ok": true, "pitch": 0.3819662928581238, "yaw": -90.0}
+[guest] ['command', 'clear @s'] -> {"ok": true}
+[guest] ['command', 'give @s minecraft:diamond 10'] -> {"ok": true}
+[guest] ['wait', '5'] -> {"ok": true, "ticks": 110}
+[guest] ['key', 'e', 'tap'] -> {"ok": true}
+[guest] ['wait-for', 'screen', 'inventory', '--timeout', 10] -> {"ok": true, "screen": "inventory", "waited_seconds": 1.0219e-05}
+[guest] ['wait', '5'] -> {"ok": true, "ticks": 115}
+[guest] ['key', 'shift', 'tap'] -> {"ok": true}
+[guest] ['inventory'] -> {"armor": [{"item": null, "part": "head", "slot": 500}, {"item": null, "part": "chest", "slot": 501}, {"item": null, "part": "legs", "slot": 502}, {"item": null, "part": "feet", "slot": 503}], "carried": null, "counts": {"minecraft:diamond": 10}, "held": {"count": 10, "item": "minecraft:diamond"}, "hotbar": [{"count": 10, "item": "minecraft:diamond", "slot": 0}, {"item": null, "slot": 1}, {"item":...
+[guest] ['ui'] -> {"frame": 660, "gui_size": [427.0, 240.0], "screen": "inventory", "widgets": [{"bounds": [133.0, 179.0, 16.0, 16.0], "enabled": true, "id": "slot-0", "kind": "slot", "stack": {"count": 10, "item": "minecraft:diamond"}}, {"bounds": [151.0, 179.0, 16.0, 16.0], "enabled": true, "id": "slot-1", "kind": "slot", "stack": null}, {"bounds": [169.0, 179.0, 16.0, 16.0], "enabled": true, "id": "slot-2", "kin
+[guest] ['drag-at', '141.0', '187.0'] -> {"ok": true, "screen": "inventory"}
+[guest] ['wait', '4'] -> {"ok": true, "ticks": 119}
+[guest] ['screen'] -> {"buttons": [], "carried": {"count": 10, "item": "minecraft:diamond"}, "container": null, "craft_size": 2, "recipe_book": {"filtering": false, "known": 13, "open": false, "targets": [[229.0, 98.0, 20.0, 18.0]]}, "screen": "inventory", "slot_ids": "0-8 hotbar, 9-35 inventory, 100+ crafting grid (row-major), 200 crafting result, 300+ container, 500-503 armor, 504 offhand, 600+ station", "slots": [{"...
+[guest] ['screenshot', '/home/martipops/Developer/horizon-proof-15444/lan-e2e/guest-modifier-release-tap.png'] -> {"height": 720, "ok": true, "width": 1280}
+[guest] ['release'] -> {"ok": true}
+[guest] ['key', 'esc', 'tap'] -> {"ok": true}
+[guest] ['wait', '5'] -> {"ok": true, "ticks": 125}
+[guest] ['events'] -> {"events": [{"event": "chat", "seq": 1, "text": "Teleported Guest to -3.500000, 65.000000, 5.500000", "tick": 60}, {"delta": 9, "event": "item", "item": "minecraft:leaf_litter", "seq": 2, "tick": 60}, {"event": "chat", "seq": 3, "text": "Removed 9 item(s) from player Guest", "tick": 105}, {"event": "chat", "seq": 4, "text": "Guest has made the advancement [Diamonds!]", "tick": 105}, {"event": "cha
+[guest] ['command', 'clear @s minecraft:diamond 0'] -> {"ok": true}
+[guest] ['events', '--since', 11] -> {"events": [], "last": 11, "skipped": 0}
+[guest] ['wait', '2'] -> {"ok": true, "ticks": 127}
+[guest] ['events', '--since', 11] -> {"events": [{"event": "chat", "seq": 12, "text": "Found 10 matching item(s) on player Guest", "tick": 126}], "last": 12, "skipped": 0}
+[guest] ['command', 'clear @s'] -> {"ok": true}
+[guest] ['command', 'give @s minecraft:diamond 10'] -> {"ok": true}
+[guest] ['wait', '5'] -> {"ok": true, "ticks": 132}
+[guest] ['key', 'e', 'tap'] -> {"ok": true}
+[guest] ['wait-for', 'screen', 'inventory', '--timeout', 10] -> {"ok": true, "screen": "inventory", "waited_seconds": 8.075e-06}
+[guest] ['wait', '5'] -> {"ok": true, "ticks": 137}
+[guest] ['key', 'shift', 'down'] -> {"ok": true}
+[guest] ['release'] -> {"ok": true}
+[guest] ['inventory'] -> {"armor": [{"item": null, "part": "head", "slot": 500}, {"item": null, "part": "chest", "slot": 501}, {"item": null, "part": "legs", "slot": 502}, {"item": null, "part": "feet", "slot": 503}], "carried": null, "counts": {"minecraft:diamond": 10}, "held": {"count": 10, "item": "minecraft:diamond"}, "hotbar": [{"count": 10, "item": "minecraft:diamond", "slot": 0}, {"item": null, "slot": 1}, {"item":...
+[guest] ['ui'] -> {"frame": 789, "gui_size": [427.0, 240.0], "screen": "inventory", "widgets": [{"bounds": [133.0, 179.0, 16.0, 16.0], "enabled": true, "id": "slot-0", "kind": "slot", "stack": {"count": 10, "item": "minecraft:diamond"}}, {"bounds": [151.0, 179.0, 16.0, 16.0], "enabled": true, "id": "slot-1", "kind": "slot", "stack": null}, {"bounds": [169.0, 179.0, 16.0, 16.0], "enabled": true, "id": "slot-2", "kin
+[guest] ['drag-at', '141.0', '187.0'] -> {"ok": true, "screen": "inventory"}
+[guest] ['wait', '4'] -> {"ok": true, "ticks": 142}
+[guest] ['screen'] -> {"buttons": [], "carried": {"count": 10, "item": "minecraft:diamond"}, "container": null, "craft_size": 2, "recipe_book": {"filtering": false, "known": 13, "open": false, "targets": [[229.0, 98.0, 20.0, 18.0]]}, "screen": "inventory", "slot_ids": "0-8 hotbar, 9-35 inventory, 100+ crafting grid (row-major), 200 crafting result, 300+ container, 500-503 armor, 504 offhand, 600+ station", "slots": [{"...
+[guest] ['screenshot', '/home/martipops/Developer/horizon-proof-15444/lan-e2e/guest-modifier-release-release.png'] -> {"height": 720, "ok": true, "width": 1280}
+[guest] ['release'] -> {"ok": true}
+[guest] ['key', 'esc', 'tap'] -> {"ok": true}
+[guest] ['wait', '5'] -> {"ok": true, "ticks": 148}
+[guest] ['events'] -> {"events": [{"event": "chat", "seq": 1, "text": "Teleported Guest to -3.500000, 65.000000, 5.500000", "tick": 60}, {"delta": 9, "event": "item", "item": "minecraft:leaf_litter", "seq": 2, "tick": 60}, {"event": "chat", "seq": 3, "text": "Removed 9 item(s) from player Guest", "tick": 105}, {"event": "chat", "seq": 4, "text": "Guest has made the advancement [Diamonds!]", "tick": 105}, {"event": "cha
+[guest] ['command', 'clear @s minecraft:diamond 0'] -> {"ok": true}
+[guest] ['events', '--since', 18] -> {"events": [], "last": 18, "skipped": 0}
+[guest] ['wait', '2'] -> {"ok": true, "ticks": 150}
+[guest] ['events', '--since', 18] -> {"events": [{"event": "chat", "seq": 19, "text": "Found 10 matching item(s) on player Guest", "tick": 149}], "last": 19, "skipped": 0}
+[host] ['state'] -> {"busy": null, "dialog": {"open": null, "screen": null}, "dimension": "minecraft:overworld", "gamemode": "survival", "held": null, "input": {"counts": {"agent": 15, "game": 0, "user": 0}, "events": 15, "last_origin": "agent", "last_user_age_s": null, "recording": null, "replay": null, "user_since_agent": 0}, "looking_at": {"block": null, "entity": {"distance": 2.7000590516133274, "health": 20.0, "...
+[lan] modifier-release: PASS {'tap': ('minecraft:diamond', 10), 'release': ('minecraft:diamond', 10)}
+[host] ['release'] -> {"ok": true}
+[host] ['state'] -> {"busy": null, "dialog": {"open": null, "screen": null}, "dimension": "minecraft:overworld", "gamemode": "survival", "held": null, "input": {"counts": {"agent": 16, "game": 0, "user": 0}, "events": 16, "last_origin": "agent", "last_user_age_s": null, "recording": null, "replay": null, "user_since_agent": 0}, "looking_at": {"block": null, "entity": {"distance": 2.7000590516133274, "health": 20.0, "...
+[host] ['state'] -> {"busy": null, "dialog": {"open": null, "screen": null}, "dimension": "minecraft:overworld", "gamemode": "survival", "held": null, "input": {"counts": {"agent": 16, "game": 0, "user": 0}, "events": 16, "last_origin": "agent", "last_user_age_s": null, "recording": null, "replay": null, "user_since_agent": 0}, "looking_at": {"block": null, "entity": {"distance": 2.7000590516133274, "health": 20.0, "...
+[guest] ['release'] -> {"ok": true}
+[guest] ['state'] -> {"busy": null, "dialog": {"open": null, "screen": null}, "dimension": "minecraft:overworld", "gamemode": "survival", "held": {"count": 10, "item": "minecraft:diamond"}, "input": {"counts": {"agent": 38, "game": 0, "user": 0}, "events": 38, "last_origin": "agent", "last_user_age_s": null, "recording": null, "replay": null, "user_since_agent": 0}, "looking_at": {"block": null, "entity": {"distance":...
+[guest] ['state'] -> {"busy": null, "dialog": {"open": null, "screen": null}, "dimension": "minecraft:overworld", "gamemode": "survival", "held": {"count": 10, "item": "minecraft:diamond"}, "input": {"counts": {"agent": 38, "game": 0, "user": 0}, "events": 38, "last_origin": "agent", "last_user_age_s": null, "recording": null, "replay": null, "user_since_agent": 0}, "looking_at": {"block": null, "entity": {"distance":...
+[host] ['lan', 'status'] -> {"force_game_mode": false, "guest_commands": true, "guests": [{"absorption": 0.0, "air": 300, "chunks": 637, "fall_flying": false, "food": [20.0, 5.0, 0.0], "game_mode": 0, "health": 20.0, "loaded": true, "name": "Player90993", "placed": true, "position": [-6.5, 65.0, 5.5], "shield_cooldown": 0, "sleeping": null, "sneaking": false, "tracked": 206, "using": null}, {"absorption": 0.0, "air": 300, "c
+[guest] ['key', 'w', 'down'] -> {"ok": true}
+[guest] ['key', 'space', 'down'] -> {"ok": true}
+[guest] ['status'] -> {"block_entities": 45, "border": {"center": [0.0, 0.0], "size": 59999968.0}, "carts": [{"kind": "minecraft:chest_minecart", "position": [-94.5, 28.0625, 45.5], "velocity": [0.0, 0.0, 0.0]}, {"kind": "minecraft:chest_minecart", "position": [-65.5, 28.0625, 56.5], "velocity": [0.0, 0.0, 0.0]}, {"kind": "minecraft:chest_minecart", "position": [-57.5, 29.0625, 87.5], "velocity": [0.0, 0.0, 0.0]}, {"ki...
+[guest] ['disconnect'] -> {"ok": true}
+[guest] ['status'] -> {"block_entities": 0, "border": {"center": [0.0, 0.0], "size": 59999968.0}, "carts": [], "chunks": 0, "creative": false, "day_time": 1000, "debug": {"advanced_tooltips": false, "chunk_borders": false, "clipboard": null, "hitboxes": false, "overlay": false, "pause_menu": true, "pause_on_lost_focus": true}, "destroying": [], "dimension": "minecraft:overworld", "dirty_light": 0, "display": null, "fan...
+[guest] ['connect', '127.0.0.1:40199', 'Guest'] -> {"ok": true}
+[guest] ['wait-for', 'loaded', '--timeout', 300] -> {"ok": true, "screen": "playing", "waited_seconds": 0.715456952}
+[guest] ['wait', '20'] -> {"ok": true, "ticks": 186}
+[guest] ['status'] -> {"block_entities": 45, "border": {"center": [0.0, 0.0], "size": 59999968.0}, "carts": [{"kind": "minecraft:chest_minecart", "position": [-94.5, 28.0625, 45.5], "velocity": [0.0, 0.0, 0.0]}, {"kind": "minecraft:chest_minecart", "position": [-65.5, 28.0625, 56.5], "velocity": [0.0, 0.0, 0.0]}, {"kind": "minecraft:chest_minecart", "position": [-57.5, 29.0625, 87.5], "velocity": [0.0, 0.0, 0.0]}, {"ki...
+[guest] ['state'] -> {"busy": null, "dialog": {"open": null, "screen": null}, "dimension": "minecraft:overworld", "gamemode": "survival", "held": {"count": 10, "item": "minecraft:diamond"}, "input": {"counts": {"agent": 43, "game": 0, "user": 0}, "events": 43, "last_origin": "agent", "last_user_age_s": null, "recording": null, "replay": null, "user_since_agent": 0}, "looking_at": {"block": null, "entity": null, "kind"...
+[guest] ['wait', '20'] -> {"ok": true, "ticks": 206}
+[guest] ['state'] -> {"busy": null, "dialog": {"open": null, "screen": null}, "dimension": "minecraft:overworld", "gamemode": "survival", "held": {"count": 10, "item": "minecraft:diamond"}, "input": {"counts": {"agent": 44, "game": 0, "user": 0}, "events": 44, "last_origin": "agent", "last_user_age_s": null, "recording": null, "replay": null, "user_since_agent": 0}, "looking_at": {"block": null, "entity": null, "kind"...
+[host] ['state'] -> {"busy": null, "dialog": {"open": null, "screen": null}, "dimension": "minecraft:overworld", "gamemode": "survival", "held": null, "input": {"counts": {"agent": 17, "game": 0, "user": 0}, "events": 17, "last_origin": "agent", "last_user_age_s": null, "recording": null, "replay": null, "user_since_agent": 0}, "looking_at": {"block": null, "entity": null, "kind": "none"}, "menu": null, "mining": nul...
+[guest] ['state'] -> {"busy": null, "dialog": {"open": null, "screen": null}, "dimension": "minecraft:overworld", "gamemode": "survival", "held": {"count": 10, "item": "minecraft:diamond"}, "input": {"counts": {"agent": 44, "game": 0, "user": 0}, "events": 44, "last_origin": "agent", "last_user_age_s": null, "recording": null, "replay": null, "user_since_agent": 0}, "looking_at": {"block": null, "entity": null, "kind"...
+[lan] keys_released: FAIL AssertionError("keys stayed down after leaving: {'held': ['KeyW', 'Space'], 'left': [], 'rejoined': ['KeyW', 'Space'], 'walked': 4.309}")
+[host] ['release'] -> {"ok": true}
+[host] ['state'] -> {"busy": null, "dialog": {"open": null, "screen": null}, "dimension": "minecraft:overworld", "gamemode": "survival", "held": null, "input": {"counts": {"agent": 18, "game": 0, "user": 0}, "events": 18, "last_origin": "agent", "last_user_age_s": null, "recording": null, "replay": null, "user_since_agent": 0}, "looking_at": {"block": null, "entity": null, "kind": "none"}, "menu": null, "mining": nul...
+[host] ['state'] -> {"busy": null, "dialog": {"open": null, "screen": null}, "dimension": "minecraft:overworld", "gamemode": "survival", "held": null, "input": {"counts": {"agent": 18, "game": 0, "user": 0}, "events": 18, "last_origin": "agent", "last_user_age_s": null, "recording": null, "replay": null, "user_since_agent": 0}, "looking_at": {"block": null, "entity": null, "kind": "none"}, "menu": null, "mining": nul...
+[guest] ['release'] -> {"ok": true}
+[guest] ['state'] -> {"busy": null, "dialog": {"open": null, "screen": null}, "dimension": "minecraft:overworld", "gamemode": "survival", "held": {"count": 10, "item": "minecraft:diamond"}, "input": {"counts": {"agent": 45, "game": 0, "user": 0}, "events": 45, "last_origin": "agent", "last_user_age_s": null, "recording": null, "replay": null, "user_since_agent": 0}, "looking_at": {"block": null, "entity": null, "kind"...
+[guest] ['state'] -> {"busy": null, "dialog": {"open": null, "screen": null}, "dimension": "minecraft:overworld", "gamemode": "survival", "held": {"count": 10, "item": "minecraft:diamond"}, "input": {"counts": {"agent": 45, "game": 0, "user": 0}, "events": 45, "last_origin": "agent", "last_user_age_s": null, "recording": null, "replay": null, "user_since_agent": 0}, "looking_at": {"block": null, "entity": null, "kind"...
+[guest] ['command', 'gamemode survival'] -> {"ok": true}
+[guest] ['state'] -> {"busy": null, "dialog": {"open": null, "screen": null}, "dimension": "minecraft:overworld", "gamemode": "survival", "held": {"count": 10, "item": "minecraft:diamond"}, "input": {"counts": {"agent": 46, "game": 0, "user": 0}, "events": 46, "last_origin": "agent", "last_user_age_s": null, "recording": null, "replay": null, "user_since_agent": 0}, "looking_at": {"block": null, "entity": null, "kind"...
+[guest] ['command', 'setblock -12 65 7 minecraft:chest'] -> {"ok": true}
+[guest] ['wait', '10'] -> {"ok": true, "ticks": 218}
+[host] ['mouse-move', 1, 0] -> {"motion": [1.0, 0.0], "ok": true, "pitch": 0.3819662928581238, "yaw": -89.8499984741211}
+[host] ['mouse-move', -1, 0] -> {"motion": [-1.0, 0.0], "ok": true, "pitch": 0.3819662928581238, "yaw": -90.0}
+[guest] ['command', 'clear @s'] -> {"ok": true}
+[guest] ['command', 'give @s minecraft:diamond 32'] -> {"ok": true}
+[guest] ['command', 'item replace block -12 65 7 container.0 with minecraft:diamond 8'] -> {"ok": true}
+[guest] ['command', 'item replace block -12 65 7 container.1 with minecraft:diamond 13'] -> {"ok": true}
+[guest] ['command', 'item replace block -12 65 7 container.2 with minecraft:diamond 21'] -> {"ok": true}
+[guest] ['command', 'item replace block -12 65 7 container.3 with minecraft:coal 5'] -> {"ok": true}
+[guest] ['wait', '10'] -> {"ok": true, "ticks": 229}
+[guest] ['interact', -12, 65, 7] -> {"block": {"block": "minecraft:chest", "lid": 0.10000000149011612, "loaded": true, "pos": [-12, 65, 7], "state": "minecraft:chest[facing=north,type=single,waterlogged=false]"}, "block_before": "minecraft:chest[facing=north,type=single,waterlogged=false]", "changed": false, "inventory_change": {}, "ok": true, "screen": "container"}
+[guest] ['wait-for', 'screen', 'container', '--timeout', 10] -> {"ok": true, "screen": "container", "waited_seconds": 1.4557e-05}
+[guest] ['wait', '5'] -> {"ok": true, "ticks": 236}
+[guest] ['inventory'] -> {"armor": [{"item": null, "part": "head", "slot": 500}, {"item": null, "part": "chest", "slot": 501}, {"item": null, "part": "legs", "slot": 502}, {"item": null, "part": "feet", "slot": 503}], "carried": null, "counts": {"minecraft:diamond": 32}, "held": {"count": 32, "item": "minecraft:diamond"}, "hotbar": [{"count": 32, "item": "minecraft:diamond", "slot": 0}, {"item": null, "slot": 1}, {"item":...
+[guest] ['ui'] -> {"frame": 1378, "gui_size": [427.0, 240.0], "screen": "container", "widgets": [{"bounds": [133.0, 179.0, 16.0, 16.0], "enabled": true, "id": "slot-0", "kind": "slot", "stack": {"count": 32, "item": "minecraft:diamond"}}, {"bounds": [151.0, 179.0, 16.0, 16.0], "enabled": true, "id": "slot-1", "kind": "slot", "stack": null}, {"bounds": [169.0, 179.0, 16.0, 16.0], "enabled": true, "id": "slot-2", "ki
+[guest] ['drag-at', '141.0', '187.0'] -> {"ok": true, "screen": "container"}
+[guest] ['wait', '4'] -> {"ok": true, "ticks": 240}
+[guest] ['ui'] -> {"frame": 1449, "gui_size": [427.0, 240.0], "screen": "container", "widgets": [{"bounds": [133.0, 179.0, 16.0, 16.0], "enabled": true, "id": "slot-0", "kind": "slot", "stack": null}, {"bounds": [151.0, 179.0, 16.0, 16.0], "enabled": true, "id": "slot-1", "kind": "slot", "stack": null}, {"bounds": [169.0, 179.0, 16.0, 16.0], "enabled": true, "id": "slot-2", "kind": "slot", "stack": null}, {"bounds"
+[guest] ['key', 'shift', 'down'] -> {"ok": true}
+[guest] ['drag-at', '141.0', '62.0'] -> {"ok": true, "screen": "container"}
+[guest] ['drag-at', '141.0', '62.0'] -> {"ok": true, "screen": "container"}
+[guest] ['key', 'shift', 'up'] -> {"ok": true}
+[guest] ['wait', '10'] -> {"ok": true, "ticks": 267}
+[guest] ['screen'] -> {"buttons": [], "carried": {"count": 32, "item": "minecraft:diamond"}, "container": [-12, 65, 7], "craft_size": 2, "screen": "container", "slot_ids": "0-8 hotbar, 9-35 inventory, 100+ crafting grid (row-major), 200 crafting result, 300+ container, 500-503 armor, 504 offhand, 600+ station", "slots": [{"item": null, "slot": 0}, {"item": null, "slot": 1}, {"item": null, "slot": 2}, {"item": null, "sl...
+[guest] ['screen'] -> {"buttons": [], "carried": {"count": 32, "item": "minecraft:diamond"}, "container": [-12, 65, 7], "craft_size": 2, "screen": "container", "slot_ids": "0-8 hotbar, 9-35 inventory, 100+ crafting grid (row-major), 200 crafting result, 300+ container, 500-503 armor, 504 offhand, 600+ station", "slots": [{"item": null, "slot": 0}, {"item": null, "slot": 1}, {"item": null, "slot": 2}, {"item": null, "sl...
+[guest] ['key', 'esc', 'tap'] -> {"ok": true}
+[guest] ['wait', '5'] -> {"ok": true, "ticks": 272}
+[guest] ['events'] -> {"events": [{"event": "chat", "seq": 1, "text": "Teleported Guest to -3.500000, 65.000000, 5.500000", "tick": 60}, {"delta": 9, "event": "item", "item": "minecraft:leaf_litter", "seq": 2, "tick": 60}, {"event": "chat", "seq": 3, "text": "Removed 9 item(s) from player Guest", "tick": 105}, {"event": "chat", "seq": 4, "text": "Guest has made the advancement [Diamonds!]", "tick": 105}, {"event": "cha
+[guest] ['command', 'clear @s minecraft:diamond 0'] -> {"ok": true}
+[guest] ['events', '--since', 37] -> {"events": [], "last": 37, "skipped": 0}
+[guest] ['wait', '2'] -> {"ok": true, "ticks": 274}
+[guest] ['events', '--since', 37] -> {"events": [{"event": "chat", "seq": 38, "text": "Found 40 matching item(s) on player Guest", "tick": 273}], "last": 38, "skipped": 0}
+[guest] ['command', 'clear @s'] -> {"ok": true}
+[guest] ['command', 'give @s minecraft:diamond 32'] -> {"ok": true}
+[guest] ['command', 'item replace block -12 65 7 container.0 with minecraft:diamond 8'] -> {"ok": true}
+[guest] ['command', 'item replace block -12 65 7 container.1 with minecraft:diamond 13'] -> {"ok": true}
+[guest] ['command', 'item replace block -12 65 7 container.2 with minecraft:diamond 21'] -> {"ok": true}
+[guest] ['command', 'item replace block -12 65 7 container.3 with minecraft:coal 5'] -> {"ok": true}
+[guest] ['wait', '10'] -> {"ok": true, "ticks": 285}
+[guest] ['interact', -12, 65, 7] -> {"block": {"block": "minecraft:chest", "lid": 0.10000000149011612, "loaded": true, "pos": [-12, 65, 7], "state": "minecraft:chest[facing=north,type=single,waterlogged=false]"}, "block_before": "minecraft:chest[facing=north,type=single,waterlogged=false]", "changed": false, "inventory_change": {}, "ok": true, "screen": "container"}
+[guest] ['wait-for', 'screen', 'container', '--timeout', 10] -> {"ok": true, "screen": "container", "waited_seconds": 1.05e-05}
+[guest] ['wait', '5'] -> {"ok": true, "ticks": 292}
+[guest] ['inventory'] -> {"armor": [{"item": null, "part": "head", "slot": 500}, {"item": null, "part": "chest", "slot": 501}, {"item": null, "part": "legs", "slot": 502}, {"item": null, "part": "feet", "slot": 503}], "carried": null, "counts": {"minecraft:diamond": 32}, "held": {"count": 32, "item": "minecraft:diamond"}, "hotbar": [{"count": 32, "item": "minecraft:diamond", "slot": 0}, {"item": null, "slot": 1}, {"item":...
+[guest] ['ui'] -> {"frame": 1713, "gui_size": [427.0, 240.0], "screen": "container", "widgets": [{"bounds": [133.0, 179.0, 16.0, 16.0], "enabled": true, "id": "slot-0", "kind": "slot", "stack": {"count": 32, "item": "minecraft:diamond"}}, {"bounds": [151.0, 179.0, 16.0, 16.0], "enabled": true, "id": "slot-1", "kind": "slot", "stack": null}, {"bounds": [169.0, 179.0, 16.0, 16.0], "enabled": true, "id": "slot-2", "ki
+[guest] ['drag-at', '141.0', '187.0'] -> {"ok": true, "screen": "container"}
+[guest] ['wait', '4'] -> {"ok": true, "ticks": 296}
+[guest] ['ui'] -> {"frame": 1784, "gui_size": [427.0, 240.0], "screen": "container", "widgets": [{"bounds": [133.0, 179.0, 16.0, 16.0], "enabled": true, "id": "slot-0", "kind": "slot", "stack": null}, {"bounds": [151.0, 179.0, 16.0, 16.0], "enabled": true, "id": "slot-1", "kind": "slot", "stack": null}, {"bounds": [169.0, 179.0, 16.0, 16.0], "enabled": true, "id": "slot-2", "kind": "slot", "stack": null}, {"bounds"
+[guest] ['key', 'shift', 'down'] -> {"ok": true}
+[guest] ['drag-at', '141.0', '62.0'] -> {"ok": true, "screen": "container"}
+[guest] ['drag-at', '141.0', '62.0'] -> {"ok": true, "screen": "container"}
+[guest] ['key', 'shift', 'up'] -> {"ok": true}
+[guest] ['wait', '10'] -> {"ok": true, "ticks": 316}
+[guest] ['screen'] -> {"buttons": [], "carried": {"count": 32, "item": "minecraft:diamond"}, "container": [-12, 65, 7], "craft_size": 2, "screen": "container", "slot_ids": "0-8 hotbar, 9-35 inventory, 100+ crafting grid (row-major), 200 crafting result, 300+ container, 500-503 armor, 504 offhand, 600+ station", "slots": [{"item": null, "slot": 0}, {"item": null, "slot": 1}, {"item": null, "slot": 2}, {"item": null, "sl...
+[guest] ['screen'] -> {"buttons": [], "carried": {"count": 32, "item": "minecraft:diamond"}, "container": [-12, 65, 7], "craft_size": 2, "screen": "container", "slot_ids": "0-8 hotbar, 9-35 inventory, 100+ crafting grid (row-major), 200 crafting result, 300+ container, 500-503 armor, 504 offhand, 600+ station", "slots": [{"item": null, "slot": 0}, {"item": null, "slot": 1}, {"item": null, "slot": 2}, {"item": null, "sl...
+[guest] ['screenshot', '/home/martipops/Developer/horizon-proof-15444/lan-e2e/guest-shift-double-click.png'] -> {"height": 720, "ok": true, "width": 1280}
+[guest] ['key', 'esc', 'tap'] -> {"ok": true}
+[guest] ['wait', '5'] -> {"ok": true, "ticks": 324}
+[guest] ['events'] -> {"events": [{"event": "chat", "seq": 1, "text": "Teleported Guest to -3.500000, 65.000000, 5.500000", "tick": 60}, {"delta": 9, "event": "item", "item": "minecraft:leaf_litter", "seq": 2, "tick": 60}, {"event": "chat", "seq": 3, "text": "Removed 9 item(s) from player Guest", "tick": 105}, {"event": "chat", "seq": 4, "text": "Guest has made the advancement [Diamonds!]", "tick": 105}, {"event": "cha
+[guest] ['command', 'clear @s minecraft:diamond 0'] -> {"ok": true}
+[guest] ['events', '--since', 51] -> {"events": [], "last": 51, "skipped": 0}
+[guest] ['wait', '2'] -> {"ok": true, "ticks": 326}
+[guest] ['events', '--since', 51] -> {"events": [{"event": "chat", "seq": 52, "text": "Found 74 matching item(s) on player Guest", "tick": 325}], "last": 52, "skipped": 0}
+[guest] ['command', 'setblock -12 65 7 minecraft:air'] -> {"ok": true}
+[host] ['state'] -> {"busy": null, "dialog": {"open": null, "screen": null}, "dimension": "minecraft:overworld", "gamemode": "survival", "held": null, "input": {"counts": {"agent": 20, "game": 0, "user": 0}, "events": 20, "last_origin": "agent", "last_user_age_s": null, "recording": null, "replay": null, "user_since_agent": 0}, "looking_at": {"block": null, "entity": null, "kind": "none"}, "menu": null, "mining": nul...
+[lan] shift-double-click: PASS {'slow chest': {0: (None, None), 1: ('minecraft:diamond', 13), 2: ('minecraft:diamond', 21), 3: ('minecraft:coal', 5)}, 'slow carried': ('minecraft:diamond', 32), 'slow after': 40, 'fast chest': {0: (None, None), 1: (None, None), 2: (None, None), 3: ('minecraft:coal', 5)}, 'fast carried': ('minecraft:diamond', 32), 'fast after': 74, 'click interval ms': {'slow': 416, 'fast': 43}}
+[guest] ['quit'] -> {"ok": true}
+[host] ['quit'] -> {"ok": true}
+{
+ "modifier-release": {
+  "pass": true,
+  "skipped": false,
+  "detail": {
+   "tap": [
+    "minecraft:diamond",
+    10
+   ],
+   "release": [
+    "minecraft:diamond",
+    10
+   ]
+  }
+ },
+ "keys_released": {
+  "pass": false,
+  "detail": "AssertionError(\"keys stayed down after leaving: {'held': ['KeyW', 'Space'], 'left': [], 'rejoined': ['KeyW', 'Space'], 'walked': 4.309}\")"
+ },
+ "shift-double-click": {
+  "pass": true,
+  "skipped": false,
+  "detail": {
+   "slow chest": {
+    "0": [
+     null,
+     null
+    ],
+    "1": [
+     "minecraft:diamond",
+     13
+    ],
+    "2": [
+     "minecraft:diamond",
+     21
+    ],
+    "3": [
+     "minecraft:coal",
+     5
+    ]
+   },
+   "slow carried": [
+    "minecraft:diamond",
+    32
+   ],
+   "slow after": 40,
+   "fast chest": {
+    "0": [
+     null,
+     null
+    ],
+    "1": [
+     null,
+     null
+    ],
+    "2": [
+     null,
+     null
+    ],
+    "3": [
+     "minecraft:coal",
+     5
+    ]
+   },
+   "fast carried": [
+    "minecraft:diamond",
+    32
+   ],
+   "fast after": 74,
+   "click interval ms": {
+    "slow": 416,
+    "fast": 43
+   }
+  }
+ }
+}

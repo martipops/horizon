@@ -1,0 +1,20 @@
+Building probes...
+  cargo 1/1: dev -p horizon-client-lib 1 target: 714s, 401 crates compiled
+  machine: 16 CPUs, load (1/5/15 min) at start 23.8 15.9 9.9, end 25.3 25.7 19.5
+  compiler cache: not in use, or its counts could not be read
+Probes built in 714s.
+Running 5 harnesses, 5 at a time here...
+PASS local_input 20s
+PASS interaction_input 26s
+retry sprint_input without reused oracle results
+PASS mount_control 867s
+PASS toggle_keys 841s
+PASS sprint_input 238s
+
+5 passed, 0 failed in 14.6 min.
+RETRIED sprint_input: failed, then passed on its one retry (its first run reused oracle results; it no longer reuses them)
+
+Oracle reuse (tools/parity_shim.py):
+  Java calls: 12 (no-record 7, passthrough-version 3, passthrough-jvm-options 2)
+  Java ran 72 s, replayed 0 s; 3 calls untimed (passed straight to Java)
+  Most Java seconds not replayed: mount_control 26 s, interaction_input 18 s, local_input 15 s, toggle_keys 9 s, sprint_input 4 s

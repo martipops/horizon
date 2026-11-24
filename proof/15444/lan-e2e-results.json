@@ -1,0 +1,78 @@
+{
+  "checks": {
+    "modifier-release": {
+      "pass": true,
+      "skipped": false,
+      "detail": {
+        "tap": [
+          "minecraft:diamond",
+          10
+        ],
+        "release": [
+          "minecraft:diamond",
+          10
+        ]
+      }
+    },
+    "keys_released": {
+      "pass": false,
+      "detail": "AssertionError(\"keys stayed down after leaving: {'held': ['KeyW', 'Space'], 'left': [], 'rejoined': ['KeyW', 'Space'], 'walked': 4.309}\")"
+    },
+    "shift-double-click": {
+      "pass": true,
+      "skipped": false,
+      "detail": {
+        "slow chest": {
+          "0": [
+            null,
+            null
+          ],
+          "1": [
+            "minecraft:diamond",
+            13
+          ],
+          "2": [
+            "minecraft:diamond",
+            21
+          ],
+          "3": [
+            "minecraft:coal",
+            5
+          ]
+        },
+        "slow carried": [
+          "minecraft:diamond",
+          32
+        ],
+        "slow after": 40,
+        "fast chest": {
+          "0": [
+            null,
+            null
+          ],
+          "1": [
+            null,
+            null
+          ],
+          "2": [
+            null,
+            null
+          ],
+          "3": [
+            "minecraft:coal",
+            5
+          ]
+        },
+        "fast carried": [
+          "minecraft:diamond",
+          32
+        ],
+        "fast after": 74,
+        "click interval ms": {
+          "slow": 416,
+          "fast": 43
+        }
+      }
+    }
+  }
+}
