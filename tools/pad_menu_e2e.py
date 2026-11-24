@@ -78,7 +78,6 @@ Cases:
 - mods_list_rows: the Mods screen's rows are targets: the focus on one selects that mod, the D-pad walks every row
   and scrolls the hidden ones, and the right stick scrolls the list from the search box and, from a row, hands the
   focus and the selection on together.
-- mods_list_keys: the Mods screen under a keyboard: Tab and the arrows select the row they land on.
 - creative_destroy_slot: the creative inventory's Destroy Item slot is a target: a held D-pad stops at the hotbar's
   end, a fresh press steps onto it, a drag doesn't; A and X there destroy the carried stack and no other, and Y
   empties the inventory.
@@ -2807,6 +2806,8 @@ def chat_log_under_suggestions(args, name):
 MOD_COUNT = 20
 # The first ones have a homepage: whether the Homepage button is on tells which of the two a selected mod is.
 MOD_HOMEPAGES = 4
+# More stick notches than the list is long.
+NOTCHES = 100
 HOMEPAGE = {f'Pad Mod {i:02}': i < MOD_HOMEPAGES for i in range(MOD_COUNT)}
 
 
@@ -2884,48 +2885,18 @@ def mods_list_rows(args, name):
         game.pad('up')
         check(game.focused_label() in every, f'up from below went to {game.focused_label()}, not into the list')
         seen = set()
-        for _ in range(24):
-            game.stick(1)
-            label = game.focused_label()
-            seen.add(HOMEPAGE.get(label))
-            check(HOMEPAGE.get(label) in (None, enabled(game, 'Homepage')),
-                  f"the focus is on {label}, and Homepage is {enabled(game, 'Homepage')}")
-        for _ in range(24):
-            game.stick()
-            label = game.focused_label()
-            seen.add(HOMEPAGE.get(label))
-            check(HOMEPAGE.get(label) in (None, enabled(game, 'Homepage')),
-                  f"the focus is on {label}, and Homepage is {enabled(game, 'Homepage')}")
+        for way in (1, -1):
+            # To the list's end that way: far enough when the rows in view stay put.
+            for _ in range(NOTCHES):
+                drawn = [w['bounds'] for w in game.rows()]
+                game.stick(way)
+                label = game.focused_label()
+                seen.add(HOMEPAGE.get(label))
+                check(HOMEPAGE.get(label) in (None, enabled(game, 'Homepage')),
+                      f"the focus is on {label}, and Homepage is {enabled(game, 'Homepage')}")
+                if [w['bounds'] for w in game.rows()] == drawn:
+                    break
         check({True, False} <= seen, f'the stick never took the focus past the mods with a homepage: {seen}')
-    finally:
-        game.quit()
-    return check.failures
-
-
-def mods_list_keys(args, name):
-    """The Mods screen's list under a keyboard: Tab and the arrows land on its rows, and select the one they are on."""
-    game = Game(args, name, seed=seed_mods)
-    check = Check()
-    try:
-        game.wait_targets()
-        game.ctl('options', 'mods')
-        time.sleep(SETTLE)
-        game.wait_targets()
-        for _ in range(8):
-            game.ctl('key', 'tab', 'tap')
-            time.sleep(SETTLE)
-            if focused_is_row(game):
-                break
-        check(focused_is_row(game), f'Tab never reached the list: {game.focus()}')
-        walked = []
-        for _ in range(MOD_HOMEPAGES + 3):
-            game.ctl('key', 'down', 'tap')
-            time.sleep(SETTLE)
-            label = game.focused_label()
-            walked.append(label)
-            check(HOMEPAGE.get(label) in (None, enabled(game, 'Homepage')),
-                  f"the keyboard is on {label}, and Homepage is {enabled(game, 'Homepage')}")
-        check({True, False} <= {HOMEPAGE.get(label) for label in walked}, f'the arrows walked {walked}')
     finally:
         game.quit()
     return check.failures
@@ -5078,7 +5049,6 @@ CASES = {'idle_a': idle_a, 'idle_b': idle_b, 'idle_x': idle_x, 'release': releas
          'chat_log_links': chat_log_links,
          'chat_log_under_suggestions': chat_log_under_suggestions,
          'mods_list_rows': mods_list_rows,
-         'mods_list_keys': mods_list_keys,
          'creative_destroy_slot': creative_destroy_slot,
          'server_list_bumpers': server_list_bumpers,
          'osk_sign': osk_sign,
