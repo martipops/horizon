@@ -4,6 +4,7 @@
     python3 tools/splitscreen_e2e.py                 # every scenario
     python3 tools/splitscreen_e2e.py --only join     # some scenarios by name
     python3 tools/splitscreen_e2e.py -v --only join  # -v: every command and its reply
+    python3 tools/splitscreen_e2e.py --offscreen     # no window is shown: unattended runs
     python3 tools/splitscreen_e2e.py --only native_pointer  # macOS, real OS input; desktop must be idle
 
 How it works
@@ -17,12 +18,16 @@ How it works
   out) ends that scenario as failed.
 - Each game gets fresh scratch folders (`lab.game_env`) and runs inside them: never your real game
   data. Needs a desktop session (real windows) and the vanilla data in .local/.
+- `--offscreen` starts every game with the game's own `--offscreen`: it draws into a texture and
+  shows no window, so a run takes no focus and works on a machine nobody sits at (a desktop
+  session is still needed for the display connection). The scenarios in `NEEDS_WINDOW` can't
+  pass that way and are skipped, each with a line saying so.
 
 Adding a scenario: write `scenario_<name>()` that prints `"<name>: what it checks"` first, uses
 `Game` in a try/finally with `g.quit()`, checks with `check`, and add it to `SCENARIOS`.
 
-Don't rebuild the game while it runs: the next launch takes the new binary or times out. The
-windows are real and can take keyboard focus. The opt-in native_pointer scenario also moves
+Don't rebuild the game while it runs: the next launch takes the new binary or times out. Without
+`--offscreen` the windows are real and can take keyboard focus. The opt-in native_pointer scenario also moves
 the real pointer and sends OS keys; it requires macOS Accessibility permission and is excluded
 from the default sweep.
 
@@ -55,6 +60,11 @@ WIDTH, HEIGHT = 1000, 600
 KEYBOARD_ROWS, KEYBOARD_REACH = 280, 290
 KEYBOARD_LETTER_LEVEL, KEYBOARD_MIN_LETTERS = 200, 200
 VERBOSE = False
+# `--offscreen`: every game is started with it (`Game`).
+OFFSCREEN = False
+# Scenarios that read what a real window does (its fullscreen state, the OS pointer): skipped
+# under `--offscreen`, where the window is never shown.
+NEEDS_WINDOW = {'fullscreen', 'native_pointer'}
 
 failures = []
 
@@ -83,6 +93,8 @@ class Game:
         if pick:
             env['HORIZON_SPLIT_PICK'] = '1'
         self.env = lab.game_env(HORIZON_HOME=self.home, HORIZON_SPLIT=str(players), **env)
+        if OFFSCREEN and '--offscreen' not in args:
+            args = (*args, '--offscreen')
         if not split:
             self.env.pop("HORIZON_SPLIT", None)
         try:
@@ -1094,16 +1106,20 @@ def scenario_pack_overlay():
     g = Game(2, seed=seed, args=('--offscreen',))
     try:
         log = g.home / 'logs/latest.log'
-        stone = 'assets/minecraft/textures/block/stone.png'
-        overlays = [d for d in (g.home / '.horizon-cache/resourcepacks').iterdir() if d.is_dir()]
-        check('one overlay for the selection', len(overlays), 1)
-        check("vanilla's stone in it before", (overlays[0] / stone).exists(), True)
+        # What a player would see, not how the cache is laid out: the game reads a selection
+        # through its own source now and builds no overlay folder for this pack.
+        selected = lambda: g.ctl(1, 'options-get', 'resourcePacks')['options']['resourcePacks']['value']  # noqa: E731
+        check("P1's pack is selected", 'file/overlay.zip' in selected(), True)
         # The first shader pack of a session turns material maps on, which reloads the packs.
         g.ctl(2, 'options', 'shader-packs')
         g.press(2, 'shader.zip')
         g.wait(lambda: 'shader pack shader.zip' in log.read_text(errors='replace'), "P2's shader pack", seconds=60)
-        check("vanilla's stone in it after", (overlays[0] / stone).exists(), True)
-        check('the reload succeeded', 'resource reload failed' in log.read_text(errors='replace'), False)
+        text = log.read_text(errors='replace')
+        check("P1's pack is still selected", 'file/overlay.zip' in selected(), True)
+        check('the reload succeeded', 'resource reload failed' in text, False)
+        # The reload that deleted P1's files left "No such file or directory" for every texture.
+        check('no file went missing', 'No such file or directory' in text, False)
+        check('P1 plays on', g.ctl(1, 'state').get('player') is not None, True)
     finally:
         g.quit()
 
@@ -1486,21 +1502,36 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--only', nargs='+', choices=list(SCENARIOS), help='run only these')
     ap.add_argument('--verbose', '-v', action='store_true', help='print every command and its reply')
+    ap.add_argument('--offscreen', action='store_true',
+                    help='show no window: every game draws offscreen; scenarios that need a real window are skipped')
     args = ap.parse_args()
-    global VERBOSE
+    global VERBOSE, OFFSCREEN
     VERBOSE = args.verbose
+    OFFSCREEN = args.offscreen
     sys.stdout.reconfigure(line_buffering=True)
     if not CTL.exists():
         sys.exit(f'{CTL} is missing: cargo build --profile fast -p horizon-game')
     if not (RESOURCES / 'assets').exists():
         sys.exit(f'no prepared resources in {RESOURCES}')
+    skipped = []
     for name in args.only or [n for n in SCENARIOS if n != 'native_pointer']:
         print(f'[{name}]')
+        if OFFSCREEN and name in NEEDS_WINDOW:
+            print(f'  skip {name}: needs a real window (run it without --offscreen)')
+            skipped.append(name)
+            continue
         try:
             SCENARIOS[name]()
         except RuntimeError as e:
             print(f'  FAIL {name}: {e}')
             failures.append(name)
+        except Exception as e:  # noqa: BLE001
+            # A scenario's own mistake (a reply without the key it reads) fails that scenario:
+            # the ones after it still run.
+            print(f'  FAIL {name}: {type(e).__name__}: {e}')
+            failures.append(name)
+    if skipped:
+        print(f'skipped: {", ".join(skipped)}')
     if failures:
         sys.exit(f'{len(failures)} check(s) failed: {", ".join(failures)}')
     print('splitscreen: every check passed')
