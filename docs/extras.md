@@ -232,7 +232,8 @@ and the container screen tests are unchanged).
 
 **Options → Horizon Settings... → Splitscreen...** turns local joining on or off at once.
 In P1's single-player world, a controller P1 isn't using can press a button, then A to join
-(or Y to play as P1, while P1 has no controller). Each
+(or Y to play as P1, while P1 has no controller). The controller P1 plays with as the switch
+changes stays P1's: **Give Up Pad** below hands it to a friend. Each
 player picks an instance-local profile with its own options and saved progress. LB/RB on
 the profile page move the view between shared positions, a new window or another monitor.
 A joined player's **Splitscreen Settings** in the pause menu switches profiles in place;
@@ -264,9 +265,11 @@ window it is in.
 With a controller, A on a player's tile picks it up: left and right (or LB and RB) cycle where
 it goes, the map showing it there, A drops it, B puts it back. **Give Up Pad** (top, while P1
 has a controller in a world) frees P1's controller and offers it to join, for a friend to
-press A; if nobody joins, the offer runs out, or it's declined, it drives P1 again. A player
-whose controller disconnected shows "(no controller)" on its tile. Other players' pause menus
-say **Leave** for disconnecting. `HORIZON_SPLIT_STATS=1` logs every 5 s where a frame's time
+press A; if nobody joins, the offer runs out, or it's declined, it drives P1 again. Disconnected
+meanwhile, it is offered again when it comes back, or drives P1 if the offer ran out by then. With
+P1's controllers turned off, a press on P1's own offers it the same way. A player whose controller
+disconnected shows "(no controller)" on its tile; on Linux, when two of one model are away, neither
+is known back by itself: A on one takes the player waiting longest. Other players' pause menus say **Leave** for disconnecting. `HORIZON_SPLIT_STATS=1` logs every 5 s where a frame's time
 goes (each player's turn and render, the presents, the GPU wait) and each player's frame rate.
 On a server P1 joined on this computer or its local network (a dedicated server, another
 computer's LAN world: a loopback, private or link-local address, after the SRV redirect) the

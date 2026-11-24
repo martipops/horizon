@@ -134,7 +134,7 @@ impl<'a> Split<'a> {
         let names = (0..self.players())
             .map(|i| {
                 let name = self.name(i);
-                match self.lost.iter().any(|l| l.seat == self.seat_of(i)) {
+                match self.owners.waits(self.seat_of(i)) {
                     true => format!("{name} (no controller)"),
                     false => name,
                 }
@@ -160,7 +160,7 @@ impl<'a> Split<'a> {
             self.give_up_pad();
         }
         // Give Up Pad shows while P1 has a controller in a world others can join.
-        let p1_pad = self.p1_pad.owner.is_some() && self.in_world();
+        let p1_pad = self.owners.pad_of(super::owners::P1).is_some() && self.in_world();
         let setup = &mut self.host.ui.options.split_setup;
         setup.names_shown = names_shown;
         setup.p1_pad = p1_pad;

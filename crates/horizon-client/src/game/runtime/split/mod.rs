@@ -16,10 +16,11 @@
 //! data (`Resources`, the packs), one audio output and P1's server. Not one game process per
 //! player: that needs GPU textures, input and audio shared across processes.
 //!
-//! Controllers: P1's is the first used in a menu. In P1's world a controller it isn't using
-//! pressing a button is offered to join, on every view (A joins, Y gives it to P1, B says no); a
-//! controller that disconnects leaves its player waiting, its view dimmed, until it comes back
-//! or another takes over (`pads`).
+//! Controllers: P1 keeps the one it plays with as splitscreen turns on or off; with none, P1's is
+//! the first used in a menu. In P1's world a controller nobody has pressing a button is offered to
+//! join, on every view (A joins, Y gives it to P1, B says no); a controller that disconnects
+//! leaves its player waiting, its view dimmed, until it comes back or another takes over (`pads`;
+//! `owners` says whose each is).
 //!
 //! Horizon Settings > Splitscreen... enables joining (off by default).
 //! `HORIZON_SPLIT=N` (testing) enables it too, and
@@ -52,6 +53,7 @@ use winit::{
 mod frames;
 mod hud;
 pub(super) mod launcher;
+mod owners;
 mod pads;
 mod players;
 mod setup;
@@ -160,15 +162,11 @@ pub(super) struct Split<'a> {
     spent: [Duration; 4],
     spent_frames: u32,
     frame_started: Option<Instant>,
-    /// The controllers while several play (`pads`), and P1's.
+    /// The controllers while several play (`pads`), and whose each is.
     pads: PadRouter,
-    p1_pad: pads::P1Pad<PadId>,
+    owners: owners::Owners<PadId>,
     /// Pads whose buttons still count as the press that gave them: released first.
     fresh: Vec<PadId>,
-    /// Controllers offered to join, each since when: several may join at once.
-    offers: Vec<(PadId, Instant)>,
-    /// Players whose controller disconnected, longest waiting first.
-    lost: Vec<pads::Lost<PadId>>,
 }
 
 impl<'a> Split<'a> {
@@ -215,10 +213,8 @@ impl<'a> Split<'a> {
             spent_frames: 0,
             frame_started: None,
             pads: Default::default(),
-            p1_pad: Default::default(),
+            owners: Default::default(),
             fresh: Vec::new(),
-            offers: Vec::new(),
-            lost: Vec::new(),
         }
     }
 
@@ -521,7 +517,12 @@ impl<'a> Split<'a> {
         let mut changed = false;
         for pad in pad_joins {
             match self.join(Some(pad), None) {
-                Ok(()) => changed = true,
+                Ok(()) => {
+                    if let Some(g) = self.guests.last() {
+                        self.owners.seat(pad, g.seat);
+                    }
+                    changed = true;
+                }
                 Err(e) => {
                     self.restore_given_up_pad(pad);
                     log::warn!("Horizon: splitscreen: a player could not join: {e}");
@@ -763,11 +764,11 @@ impl ApplicationHandler for Split<'_> {
             // output (rumble, triggers) through the split's reader for P1's turn.
             let pad_joins = self.route_pads(true);
             self.turn(0);
-            if let Some(id) = self.p1_pad.owner {
+            if let Some(id) = self.owners.pad_of(owners::P1) {
                 self.pads.lend_output(&mut self.host.pad, id);
             }
             self.host.about_to_wait(event_loop);
-            if self.p1_pad.owner.is_some() {
+            if self.owners.pad_of(owners::P1).is_some() {
                 self.pads.reclaim_output(&mut self.host.pad);
             }
             if self.admit(event_loop, pad_joins) {
@@ -834,7 +835,7 @@ impl ApplicationHandler for Split<'_> {
         }
         self.pads.play_rumbles(
             &mut self.host.pad,
-            self.p1_pad.owner,
+            self.owners.pad_of(owners::P1),
             self.host.settings.controller.impulse_triggers,
             false,
         );

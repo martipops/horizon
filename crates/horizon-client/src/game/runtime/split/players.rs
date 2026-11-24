@@ -554,10 +554,8 @@ impl Split<'_> {
             let g = &mut self.guests[k];
             g.entered |= g.game.remote.is_some() && g.game.player.is_some();
             // In the world: a pad P1 gave up is this player's for good.
-            if g.entered
-                && let Some(id) = g.pad
-            {
-                self.p1_pad.joined(id);
+            if g.entered {
+                self.owners.entered(g.seat);
             }
             let g = &self.guests[k];
             // A player picking a profile has no connection yet.
@@ -598,11 +596,8 @@ impl Split<'_> {
         }
         let guest = self.guests.remove(k);
         // Gone before it got into the world: a pad P1 gave up goes back to P1.
-        if !guest.entered
-            && let Some(id) = guest.pad
-        {
-            self.restore_given_up_pad(id);
-        }
+        self.owners.left(guest.seat);
+        self.pad_effects();
         if self.focus > k + 1 {
             self.focus -= 1;
         }

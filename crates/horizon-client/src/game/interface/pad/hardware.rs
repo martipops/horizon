@@ -561,13 +561,14 @@ impl PadRouter {
     /// first. A compositor can count who holds a pad to pause its own use of it (KWin's pointer
     /// emulation), and that count goes wrong when readers overlap: gilrs opens a pad twice at
     /// once, which inotify can merge into one event, and closes it twice apart (#9730).
-    pub(in crate::game) fn adopt(&mut self, pads: &mut Pads) {
-        if !self.started
-            && let Some(gilrs) = pads.devices.gilrs.take()
-        {
-            self.started = true;
-            self.gilrs = Some(gilrs);
+    /// The pad P1 plays with, as it takes over: still P1's.
+    pub(in crate::game) fn adopt(&mut self, pads: &mut Pads) -> Option<PadId> {
+        if self.started {
+            return None;
         }
+        self.gilrs = Some(pads.devices.gilrs.take()?);
+        self.started = true;
+        pads.devices.active
     }
 
     /// Play on pad `id` what its player's turn asked for, and let finished vibrations go.
@@ -637,8 +638,8 @@ impl PadRouter {
         }
     }
 
-    /// Routing ends: P1 gets the reader back, open as it was.
-    pub(in crate::game) fn hand_back(&mut self, pads: &mut Pads) {
+    /// Routing ends: P1 gets the reader back, open as it was, and plays on with `owner`.
+    pub(in crate::game) fn hand_back(&mut self, pads: &mut Pads, owner: Option<PadId>) {
         self.started = false;
         // Its players' own outputs stop with it: dropping a link stops its motors.
         self.xbox.clear();
@@ -646,6 +647,7 @@ impl PadRouter {
         if let Some(gilrs) = self.gilrs.take() {
             pads.devices.gilrs = Some(gilrs);
             pads.devices.started = true;
+            pads.devices.active = owner;
         }
     }
 
@@ -1134,7 +1136,7 @@ mod one_reader_tests {
         assert!(router.started, "so the router won't open a second");
 
         pads.release_hardware();
-        router.hand_back(&mut pads);
+        router.hand_back(&mut pads, None);
         assert!(router.gilrs.is_none());
         assert!(pads.devices.gilrs.is_some(), "P1 holds it again");
         assert!(pads.devices.started, "so P1 won't open a second");
@@ -1157,7 +1159,7 @@ mod one_reader_tests {
         router.report_status(&mut pads, None);
         assert!(backend(&pads), "the router's reader counts");
 
-        router.hand_back(&mut pads);
+        router.hand_back(&mut pads, None);
         assert!(pads.devices.routed.is_none(), "P1 reads its own again");
         assert!(backend(&pads));
     }

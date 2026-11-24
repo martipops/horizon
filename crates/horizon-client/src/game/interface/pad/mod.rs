@@ -231,8 +231,10 @@ mod hardware {
     #[derive(Default)]
     pub(in crate::game) struct PadRouter {}
     impl PadRouter {
-        pub(in crate::game) fn adopt(&mut self, _: &mut Pads) {}
-        pub(in crate::game) fn hand_back(&mut self, _: &mut Pads) {}
+        pub(in crate::game) fn adopt(&mut self, _: &mut Pads) -> Option<PadId> {
+            None
+        }
+        pub(in crate::game) fn hand_back(&mut self, _: &mut Pads, _: Option<PadId>) {}
         pub(in crate::game) fn events(&mut self) -> Vec<super::PadEvent> {
             Vec::new()
         }
@@ -1047,6 +1049,7 @@ impl Game<'_> {
                     "notice": self.split_hud.notice.showing().map(|(title, body)| {
                         json!({ "title": title, "body": body })
                     }),
+                    "prompt": self.split_hud.asks(),
                     "menu": self.pad_menu_status(),
                     "radial": self.pad_radial_status(),
                     "guide": self.pad_guide_status(),
