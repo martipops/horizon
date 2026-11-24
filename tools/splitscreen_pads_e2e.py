@@ -224,6 +224,21 @@ def same_model(s, a, b):
     s.becomes('the other: P3\'s', lambda: s.pad_of(3), 'A', 5)
 
 
+def other_slot(s, a, b):
+    """a hand-off back in the slot an unused one of its model left is known by its first press"""
+    s.give_p1(b)
+    s.give_up()
+    a.unplug()
+    time.sleep(PLUG)
+    b.unplug()
+    time.sleep(OFFER)
+    b.plug()
+    time.sleep(2)
+    check('its slot could be A\'s: not P1\'s yet', s.prompt(), None)
+    b.tap('west')
+    s.becomes('its press: P1\'s', lambda: s.pad_of(1), 'B', 5)
+
+
 def controllers_off(s, a):
     """P1 with controllers off: a press on its own offers it to join, and No keeps it P1's"""
     s.give_p1(a)
@@ -247,6 +262,7 @@ CASES = {
     'hand_off_late': (hand_off_late, 1, {}),
     'hand_off_choosing': (hand_off_choosing, 1, {}),
     'same_model': (same_model, 2, {'same_model': True}),
+    'other_slot': (other_slot, 2, {'same_model': True}),
     'controllers_off': (controllers_off, 1, {}),
 }
 

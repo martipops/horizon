@@ -161,8 +161,9 @@ impl Split<'_> {
                 Effect::Waits(seat) => self.pad_waits(seat),
                 Effect::Leave(seat) => self.leave_waiting(seat),
                 Effect::Cancel(seat) => {
-                    // `pick_profiles` sees its page closed.
+                    // `pick_profiles` sees its page closed, and no pick from before that.
                     if let Some(g) = self.guests.iter_mut().find(|g| g.seat == seat) {
+                        g.game.ui.options.split_profiles.cancel();
                         g.game.set_screen(crate::game::Screen::Playing);
                     }
                 }

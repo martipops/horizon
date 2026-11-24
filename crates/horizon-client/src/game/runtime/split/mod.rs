@@ -515,7 +515,13 @@ impl<'a> Split<'a> {
     /// join: whether anyone did.
     fn admit(&mut self, _event_loop: &ActiveEventLoop, pad_joins: Vec<PadId>) -> bool {
         let mut changed = false;
+        // P1's turn may have left the world or turned splitscreen off since they accepted.
+        let open = self.in_world() && (self.host.settings.extras.splitscreen || self.forced);
         for pad in pad_joins {
+            if !open {
+                self.restore_given_up_pad(pad);
+                continue;
+            }
             match self.join(Some(pad), None) {
                 Ok(()) => {
                     if let Some(g) = self.guests.last() {

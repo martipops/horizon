@@ -29,18 +29,30 @@ struct Lost<Id> {
     uuid: [u8; 16],
 }
 
-/// The controller P1 gave away (Give Up Pad). Until its new player is in the world, a hand-off
-/// that ends gives that same controller back, never another player's.
+/// A controller P1 gave away (Give Up Pad). Until its new player is in the world, a hand-off that
+/// ends gives that same controller back if P1 has no other, never another player's.
 struct HandOff<Id> {
     id: Id,
-    away: Option<Away>,
+    away: Option<Away<Id>>,
 }
 
 /// It disconnected with no player driving it yet: back, it is offered again while its offer runs,
 /// else it is P1's.
-struct Away {
+struct Away<Id> {
     uuid: [u8; 16],
     offer: Option<Instant>,
+    /// The controllers of its kind connected since: it may be one of them, under another id.
+    arrived: Vec<Id>,
+}
+
+impl<Id> Away<Id> {
+    fn new(uuid: [u8; 16], offer: Option<Instant>) -> Self {
+        Self {
+            uuid,
+            offer,
+            arrived: Vec::new(),
+        }
+    }
 }
 
 /// How a controller is known back after it disconnects.
@@ -49,8 +61,8 @@ pub(super) enum Identity {
     /// Its id stays its own (Windows).
     Id,
     /// Its id goes to the next controller of its model that connects (Linux: gilrs reuses the
-    /// slot and can't tell two of one model apart), so it means nothing while two of that model
-    /// are away.
+    /// first slot of that model free, whoever had it), so it means nothing while two of that
+    /// model are disconnected.
     Slot,
     /// It gets a new id, so only its model says (macOS), while one of that model is away.
     Model,
@@ -110,7 +122,10 @@ pub(super) struct Owners<Id> {
     held: Vec<(Id, Hold)>,
     /// Longest waiting first.
     lost: Vec<Lost<Id>>,
-    given_up: Option<HandOff<Id>>,
+    given_up: Vec<HandOff<Id>>,
+    /// The disconnected controllers whose ids another may come back with (`Identity::Slot`),
+    /// whoever they had.
+    absent: Vec<(Id, [u8; 16])>,
     effects: Vec<Effect<Id>>,
     /// The join question on the views: the controllers it is about, and whether P1 may take one.
     pub(super) asked: (Vec<Id>, bool),
@@ -121,7 +136,8 @@ impl<Id> Default for Owners<Id> {
         Self {
             held: Vec::new(),
             lost: Vec::new(),
-            given_up: None,
+            given_up: Vec::new(),
+            absent: Vec::new(),
             effects: Vec::new(),
             asked: (Vec::new(), false),
         }
@@ -184,26 +200,27 @@ impl<Id: Copy + Eq> Owners<Id> {
         self.held.retain(|(_, h)| *h != Hold::Seat(seat));
         self.put(id, Hold::Seat(seat));
         // Another controller takes over: the one P1 gave up may still come back to P1.
-        let replaced = self.lost.iter().find(|l| l.seat == seat);
-        if let Some((lost, hand_off)) = replaced.zip(self.given_up.as_mut())
-            && lost.id == Some(hand_off.id)
-            && hand_off.id != id
-        {
-            hand_off.away = Some(Away {
-                uuid: lost.uuid,
-                offer: None,
-            });
+        if let Some(k) = self.lost.iter().position(|l| l.seat == seat) {
+            let lost = self.lost.remove(k);
+            if lost.id != Some(id) {
+                self.hand_off_away(lost.id, lost.uuid, None);
+            }
         }
-        self.lost.retain(|l| l.seat != seat);
         // Its id stands for another player's controller now.
         for lost in self.lost.iter_mut().filter(|l| l.id == Some(id)) {
             lost.id = None;
         }
-        if let Some(hand_off) = self.given_up.as_mut().filter(|h| h.id == id) {
+        if seat == P1 {
+            self.given_up.retain(|h| h.id != id);
+        } else if let Some(hand_off) = self.given_up.iter_mut().find(|h| h.id == id) {
             hand_off.away = None;
-            if seat == P1 {
-                self.given_up = None;
-            }
+        }
+    }
+
+    /// The controller P1 gave up, `id`, disconnected and drives nobody; nothing for another.
+    fn hand_off_away(&mut self, id: Option<Id>, uuid: [u8; 16], offer: Option<Instant>) {
+        if let Some(hand_off) = self.given_up.iter_mut().find(|h| Some(h.id) == id) {
+            hand_off.away = Some(Away::new(uuid, offer));
         }
     }
 
@@ -216,7 +233,9 @@ impl<Id: Copy + Eq> Owners<Id> {
     /// when P1 gave it up and has no other.
     pub(super) fn end_offer(&mut self, id: Id) {
         self.free(id);
-        if self.given_up.take_if(|h| h.id == id).is_some() && self.pad_of(P1).is_none() {
+        let before = self.given_up.len();
+        self.given_up.retain(|h| h.id != id);
+        if self.given_up.len() < before && self.pad_of(P1).is_none() {
             self.seat_p1(id);
         }
     }
@@ -225,7 +244,7 @@ impl<Id: Copy + Eq> Owners<Id> {
     pub(super) fn give_up(&mut self, now: Instant) {
         if let Some(id) = self.pad_of(P1) {
             self.put(id, Hold::Offered(now));
-            self.given_up = Some(HandOff { id, away: None });
+            self.given_up.push(HandOff { id, away: None });
         }
     }
 
@@ -234,7 +253,7 @@ impl<Id: Copy + Eq> Owners<Id> {
         let pad = self.pad_of(seat);
         let lost = self.lost.iter().find(|l| l.seat == seat).and_then(|l| l.id);
         self.given_up
-            .take_if(|h| Some(h.id) == pad || Some(h.id) == lost);
+            .retain(|h| Some(h.id) != pad && Some(h.id) != lost);
     }
 
     /// The player in `seat` left.
@@ -242,17 +261,9 @@ impl<Id: Copy + Eq> Owners<Id> {
         if let Some(id) = self.pad_of(seat) {
             self.end_offer(id);
         }
-        let Some(k) = self.lost.iter().position(|l| l.seat == seat) else {
-            return;
-        };
-        let lost = self.lost.remove(k);
-        if let Some(hand_off) = &mut self.given_up
-            && lost.id == Some(hand_off.id)
-        {
-            hand_off.away = Some(Away {
-                uuid: lost.uuid,
-                offer: None,
-            });
+        if let Some(k) = self.lost.iter().position(|l| l.seat == seat) {
+            let lost = self.lost.remove(k);
+            self.hand_off_away(lost.id, lost.uuid, None);
         }
     }
 
@@ -267,7 +278,7 @@ impl<Id: Copy + Eq> Owners<Id> {
         for id in self.held.iter().filter_map(ended).collect::<Vec<_>>() {
             self.end_offer(id);
         }
-        if let Some(away) = self.given_up.as_mut().and_then(|h| h.away.as_mut()) {
+        for away in self.given_up.iter_mut().filter_map(|h| h.away.as_mut()) {
             away.offer.take_if(|since| over(*since));
         }
         let p1_waits = rules.in_world && self.pad_of(P1).is_none();
@@ -284,8 +295,18 @@ impl<Id: Copy + Eq> Owners<Id> {
             Some(Hold::Seat(_) | Hold::Joining) => return,
             Some(Hold::Offered(_)) | None => {}
         }
-        // The players waiting for a controller come first: the same kind back takes back its
-        // player, another takes over the one waiting longest (`claim`).
+        // One P1 gave up, back under another id: the press only says so, whoever else waits.
+        let returning = match self.hold(id) {
+            None => self.returning(id, uuid, rules.identity),
+            Some(_) => None,
+        };
+        if let Some(k) = returning
+            && self.one_away(uuid)
+        {
+            return self.resume(k, id, rules);
+        }
+        // Then the players waiting for a controller: the same kind back takes back its player,
+        // another takes over the one waiting longest (`claim`).
         if rules.in_world {
             match self.claim(uuid, button, rules.identity) {
                 Claim::Give(seat) => {
@@ -300,9 +321,6 @@ impl<Id: Copy + Eq> Owners<Id> {
                 Claim::Pass => {}
             }
         }
-        if self.hold(id).is_none() && self.hand_off_back(id, uuid, rules.identity) {
-            return self.resume(id, rules);
-        }
         let p1_has_pad = self.pad_of(P1).is_some();
         if p1_takes(
             rules.in_world,
@@ -311,6 +329,9 @@ impl<Id: Copy + Eq> Owners<Id> {
             p1_has_pad,
         ) {
             return self.seat_p1(id);
+        }
+        if let Some(k) = returning {
+            return self.resume(k, id, rules);
         }
         match (self.hold(id), button) {
             (Some(_), Button::South) => self.put(id, Hold::Joining),
@@ -325,28 +346,23 @@ impl<Id: Copy + Eq> Owners<Id> {
 
     /// A controller disconnected. `choosing`: its player is still choosing a profile.
     pub(super) fn gone(&mut self, id: Id, uuid: [u8; 16], choosing: bool, rules: &Rules) {
+        if rules.identity == Identity::Slot {
+            self.absent.push((id, uuid));
+        }
+        for away in self.given_up.iter_mut().filter_map(|h| h.away.as_mut()) {
+            away.arrived.retain(|p| *p != id);
+        }
         let Some(hold) = self.hold(id) else {
             return;
         };
         self.free(id);
-        let hand_off = self.given_up.as_mut().filter(|h| h.id == id);
         let seat = match hold {
             Hold::Seat(seat) => seat,
-            Hold::Offered(_) | Hold::Joining => {
-                if let Some(hand_off) = hand_off {
-                    let offer = match hold {
-                        Hold::Offered(since) => Some(since),
-                        _ => None,
-                    };
-                    hand_off.away = Some(Away { uuid, offer });
-                }
-                return;
-            }
+            Hold::Offered(since) => return self.hand_off_away(Some(id), uuid, Some(since)),
+            Hold::Joining => return self.hand_off_away(Some(id), uuid, None),
         };
         if seat != P1 && choosing {
-            if let Some(hand_off) = hand_off {
-                hand_off.away = Some(Away { uuid, offer: None });
-            }
+            self.hand_off_away(Some(id), uuid, None);
             return self.effects.push(Effect::Cancel(seat));
         }
         if seat != P1 || rules.in_world {
@@ -361,50 +377,61 @@ impl<Id: Copy + Eq> Owners<Id> {
 
     /// A controller connected. One whose id says nothing (`Identity`) waits for a press.
     pub(super) fn back(&mut self, id: Id, uuid: [u8; 16], rules: &Rules) {
-        if self.hold(id).is_some()
-            || (rules.identity == Identity::Slot && self.away_of_model(uuid) > 1)
-        {
+        // Before its own is off the list: whether another could have this id.
+        let shared = self.absent.iter().filter(|(_, u)| *u == uuid).count() > 1;
+        self.absent.retain(|(p, _)| *p != id);
+        let away = self.given_up.iter_mut().filter_map(|h| h.away.as_mut());
+        for away in away.filter(|a| a.uuid == uuid && !a.arrived.contains(&id)) {
+            away.arrived.push(id);
+        }
+        if self.hold(id).is_some() || shared {
             return;
         }
         if let Some(seat) = self.lost.iter().find(|l| l.id == Some(id)).map(|l| l.seat) {
             self.seat(id, seat);
             self.effects.push(Effect::Found { seat, id });
-        } else if self.hand_off_back(id, uuid, Identity::Id) {
-            self.resume(id, rules);
+        } else if let Some(k) = self.returning(id, uuid, Identity::Id) {
+            self.resume(k, id, rules);
         }
     }
 
-    /// The controller P1 gave up is back: offered again while its offer ran, else P1's.
-    fn resume(&mut self, id: Id, rules: &Rules) {
-        let Some(hand_off) = &mut self.given_up else {
-            return;
-        };
+    /// The controller of the hand-off `k` is back as `id`: offered again while its offer runs,
+    /// else P1's.
+    fn resume(&mut self, k: usize, id: Id, rules: &Rules) {
+        // Another hand-off's, gone for good if its id is this one's now.
+        let mut hand_off = self.given_up.remove(k);
+        self.given_up.retain(|h| h.id != id);
         hand_off.id = id;
         let offer = hand_off.away.take().and_then(|away| away.offer);
-        if offer.is_some() && self.may_offer(rules) {
-            self.put(id, Hold::Offered(rules.now));
-        } else {
-            self.end_offer(id);
+        self.given_up.push(hand_off);
+        match offer {
+            Some(since) if self.may_offer(rules) => self.put(id, Hold::Offered(since)),
+            _ => self.end_offer(id),
         }
     }
 
-    /// Whether `id`, connected, is the controller P1 gave up that went away.
-    fn hand_off_back(&self, id: Id, uuid: [u8; 16], identity: Identity) -> bool {
-        self.given_up.as_ref().is_some_and(|h| {
-            h.away.is_some() && (h.id == id || (identity == Identity::Model && self.one_away(uuid)))
-        })
+    /// The hand-off whose controller, away, may be `id`: by its id, or where that says too little,
+    /// by its model.
+    fn returning(&self, id: Id, uuid: [u8; 16], identity: Identity) -> Option<usize> {
+        let by_model = |away: &Away<Id>| {
+            identity != Identity::Id
+                && uuid != [0; 16]
+                && away.uuid == uuid
+                && away.arrived.contains(&id)
+        };
+        let away = |by: &dyn Fn(&HandOff<Id>, &Away<Id>) -> bool| {
+            let matches = |h: &HandOff<Id>| h.away.as_ref().is_some_and(|away| by(h, away));
+            self.given_up.iter().position(matches)
+        };
+        away(&|h, _| h.id == id).or_else(|| away(&|_, away| by_model(away)))
     }
 
-    /// How many controllers of this kind are away.
-    fn away_of_model(&self, uuid: [u8; 16]) -> usize {
-        let given_up = self.given_up.as_ref().and_then(|h| h.away.as_ref());
-        let lost = self.lost.iter().filter(|l| l.uuid == uuid).count();
-        lost + usize::from(given_up.is_some_and(|a| a.uuid == uuid))
-    }
-
-    /// This kind of controller is known, and one of it is away.
+    /// This kind of controller is known, and one player or hand-off waits for one.
     fn one_away(&self, uuid: [u8; 16]) -> bool {
-        uuid != [0; 16] && self.away_of_model(uuid) == 1
+        let given_up = self.given_up.iter().filter_map(|h| h.away.as_ref());
+        let away = given_up.filter(|a| a.uuid == uuid).count();
+        let lost = self.lost.iter().filter(|l| l.uuid == uuid).count();
+        uuid != [0; 16] && away + lost == 1
     }
 
     /// The same kind of controller back takes back its player with any button; another takes over
@@ -882,10 +909,177 @@ mod tests {
         let mut owners = p1_with(A);
         owners.give_up(mac.now);
         gone(&mut owners, A, &mac);
+        owners.back(C, model(A), &mac);
         owners.press(C, model(A), South, &mac);
         assert_eq!(offers(&owners), [C], "its press only says it is back");
         owners.press(C, model(A), East, &mac);
         assert_eq!(owners.pad_of(P1), Some(C));
+    }
+
+    /// Its first press there, whatever the button, is not an answer for P2, who waits for another
+    /// model.
+    #[test]
+    fn a_hand_off_back_answers_no_waiting_guest() {
+        let mac = Rules {
+            identity: Identity::Model,
+            ..rules()
+        };
+        for button in [East, South] {
+            let mut owners = guests(&[B]);
+            owners.seat(A, P1);
+            owners.give_up(mac.now);
+            gone(&mut owners, A, &mac);
+            gone(&mut owners, B, &mac);
+            owners.effects();
+            owners.back(C, model(A), &mac);
+            owners.press(C, model(A), button, &mac);
+            assert_eq!(offers(&owners), [C], "{button:?}");
+            assert!(owners.waits(2), "{button:?}");
+            assert_eq!(owners.effects(), [], "{button:?}");
+        }
+        // Both of one model: nothing says whose it is, so P2's question is answered.
+        let mut owners = guests(&[B]);
+        owners.seat(A, P1);
+        owners.give_up(mac.now);
+        owners.gone(A, [7; 16], false, &mac);
+        owners.gone(B, [7; 16], false, &mac);
+        owners.back(C, [7; 16], &mac);
+        owners.press(C, [7; 16], South, &mac);
+        assert_eq!(owners.pad_of(2), Some(C));
+    }
+
+    /// Another of its model that was connected all along is not it.
+    #[test]
+    fn a_hand_off_is_not_taken_by_one_connected_all_along() {
+        let mac = Rules {
+            identity: Identity::Model,
+            ..rules()
+        };
+        let mut owners = p1_with(A);
+        owners.give_up(mac.now);
+        owners.gone(A, [7; 16], false, &mac);
+        let late = later(mac);
+        owners.expire(&late);
+        owners.press(C, [7; 16], West, &late);
+        assert_eq!((owners.pad_of(P1), offers(&owners)), (None, vec![C]));
+        owners.press(C, [7; 16], East, &late);
+        assert_eq!(owners.pad_of(P1), None, "P1 never had it");
+    }
+
+    /// Linux: an unused one of its model left a lower slot free, which it comes back in.
+    #[test]
+    fn a_hand_off_back_in_another_slot_is_known_by_a_press() {
+        let linux = Rules {
+            identity: Identity::Slot,
+            ..rules()
+        };
+        let same = [7; 16];
+        let replugged = || {
+            let mut owners = p1_with(B);
+            owners.gone(A, same, false, &linux);
+            owners.give_up(linux.now);
+            owners.gone(B, same, false, &linux);
+            owners
+        };
+        let mut owners = replugged();
+        owners.back(A, same, &linux);
+        assert_eq!(offers(&owners), NONE, "A's slot: not for sure P1's");
+        owners.press(A, same, South, &linux);
+        assert_eq!(offers(&owners), [A], "its press says it is");
+        owners.press(A, same, East, &linux);
+        assert_eq!(owners.pad_of(P1), Some(A));
+
+        let mut owners = replugged();
+        let late = later(Rules { ..rules() });
+        let late = Rules {
+            identity: Identity::Slot,
+            ..late
+        };
+        owners.expire(&late);
+        owners.back(A, same, &late);
+        owners.press(A, same, West, &late);
+        assert_eq!(owners.pad_of(P1), Some(A), "its offer ran out: P1's");
+    }
+
+    /// Linux: an unused one of its model away could come back with P2's id.
+    #[test]
+    fn an_unused_controller_away_makes_its_model_ambiguous_on_linux() {
+        let linux = Rules {
+            identity: Identity::Slot,
+            ..rules()
+        };
+        let same = [7; 16];
+        let mut owners = guests(&[A]);
+        owners.gone(A, same, false, &linux);
+        owners.gone(B, same, false, &linux);
+        owners.back(A, same, &linux);
+        assert_eq!(owners.pad_of(2), None);
+        owners.press(A, same, South, &linux);
+        assert_eq!(owners.pad_of(2), Some(A));
+        // One only, once the other is back.
+        owners.back(B, same, &linux);
+        owners.gone(A, same, false, &linux);
+        owners.back(A, same, &linux);
+        assert_eq!(owners.pad_of(2), Some(A));
+    }
+
+    /// P1 gives up A, whose player is choosing a profile, then another, B, which goes away.
+    #[test]
+    fn a_second_hand_off_leaves_the_first_its_way_back() {
+        let rules = rules();
+        let mut owners = p1_with(A);
+        owners.give_up(rules.now);
+        press(&mut owners, A, South, &rules);
+        owners.seat(A, 2);
+        press(&mut owners, B, West, &rules);
+        press(&mut owners, B, North, &rules);
+        owners.give_up(rules.now);
+        gone(&mut owners, B, &rules);
+        owners.left(2);
+        assert_eq!(owners.pad_of(P1), Some(A), "A's player cancelled");
+        owners.back(B, model(B), &rules);
+        press(&mut owners, B, East, &rules);
+        assert_eq!(owners.pad_of(P1), Some(A), "and B is nobody's");
+        assert_eq!(owners.hold(B), None);
+    }
+
+    /// The same through P1's controllers being off, with the first away.
+    #[test]
+    fn a_hand_off_away_keeps_its_way_back_while_another_is_offered() {
+        let rules = rules();
+        let off = Rules {
+            p1_controllers: false,
+            now: rules.now,
+            ..self::rules()
+        };
+        let mut owners = p1_with(A);
+        owners.give_up(rules.now);
+        gone(&mut owners, A, &rules);
+        press(&mut owners, B, West, &rules);
+        press(&mut owners, B, North, &rules);
+        press(&mut owners, B, West, &off);
+        assert_eq!(offers(&owners), [B]);
+        owners.back(A, model(A), &off);
+        assert_eq!(offers(&owners), [B, A], "A's offer still runs");
+        press(&mut owners, A, East, &off);
+        assert_eq!(owners.pad_of(P1), Some(A));
+    }
+
+    #[test]
+    fn replugging_gives_an_offer_no_more_time() {
+        let rules = rules();
+        let mut owners = p1_with(A);
+        owners.give_up(rules.now);
+        gone(&mut owners, A, &rules);
+        let soon = Rules {
+            now: rules.now + OFFER - Duration::from_secs(1),
+            ..self::rules()
+        };
+        owners.expire(&soon);
+        owners.back(A, model(A), &soon);
+        assert_eq!(offers(&owners), [A]);
+        owners.expire(&later(rules));
+        assert_eq!((owners.pad_of(P1), offers(&owners)), (Some(A), vec![]));
     }
 
     /// P1 alone waiting leaves the offer to join; with P2 waiting too, P2's answer comes first.

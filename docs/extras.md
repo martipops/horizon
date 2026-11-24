@@ -266,7 +266,8 @@ With a controller, A on a player's tile picks it up: left and right (or LB and R
 it goes, the map showing it there, A drops it, B puts it back. **Give Up Pad** (top, while P1
 has a controller in a world) frees P1's controller and offers it to join, for a friend to
 press A; if nobody joins, the offer runs out, or it's declined, it drives P1 again. Disconnected
-meanwhile, it is offered again when it comes back, or drives P1 if the offer ran out by then. With
+meanwhile, it is offered again if it comes back before the offer runs out, and drives P1 after (where
+its id doesn't say it is that one, its first press does). With
 P1's controllers turned off, a press on P1's own offers it the same way. A player whose controller
 disconnected shows "(no controller)" on its tile; on Linux, when two of one model are away, neither
 is known back by itself: A on one takes the player waiting longest. Other players' pause menus say **Leave** for disconnecting. `HORIZON_SPLIT_STATS=1` logs every 5 s where a frame's time

@@ -104,6 +104,11 @@ impl SplitProfiles {
         self.choice.take()
     }
 
+    /// The joining player is gone: Cancel, whatever it had picked.
+    pub fn cancel(&mut self) {
+        self.choice = Some(None);
+    }
+
     pub fn take_forgotten(&mut self) -> Option<String> {
         self.forgotten.take()
     }
@@ -573,6 +578,10 @@ mod tests {
         press(&mut p, &atlas, "Next");
         press(&mut p, &atlas, "Player10 (Microsoft)");
         assert_eq!(p.take_choice(), Some(Some("Player10".into())));
+        // Its controller went before the pick was taken: that player is gone.
+        press(&mut p, &atlas, "Player10 (Microsoft)");
+        p.cancel();
+        assert_eq!(p.take_choice(), Some(None));
         press(&mut p, &atlas, "Previous");
         assert!(p.buttons(427.0, 240.0).iter().any(|b| b.1 == "Player4"));
     }
