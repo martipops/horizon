@@ -308,7 +308,7 @@ impl Pads {
     pub(super) fn device_or_virtual(&self) -> Option<Device> {
         self.device.clone().or_else(|| {
             self.in_use.then(|| Device {
-                name: "Virtual controller".to_owned(),
+                name: horizon_client::lang::get_or("horizon.pad.virtual_controller", "Virtual controller"),
                 vendor: None,
                 product: None,
             })

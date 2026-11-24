@@ -482,7 +482,7 @@ impl Keyboard {
                 ui.rounded(x, y, w, KEY_H, ui_theme::radius(), plate);
                 let label = match key {
                     Key::Char(ch) => self.letter(*ch),
-                    Key::Shift if self.caps => "CAPS".into(),
+                    Key::Shift if self.caps => tr("horizon.osk.caps", "CAPS"),
                     Key::Shift => tr("horizon.osk.shift", "Shift"),
                     Key::Layer if self.symbols => "abc".into(),
                     Key::Layer => "&123".into(),

@@ -144,9 +144,9 @@ impl HintRow {
     /// The row as plain text, each glyph by its printed label ("A Type"), for a surface that
     /// draws no glyph art (the on-screen keyboard's own font).
     pub fn text(&self) -> String {
-        let labels = self.glyphs.iter().map(|g| g.label());
+        let labels = self.glyphs.iter().map(|g| g.text());
         labels
-            .chain((!self.caption.is_empty()).then_some(self.caption.as_str()))
+            .chain((!self.caption.is_empty()).then(|| self.caption.as_str().into()))
             .collect::<Vec<_>>()
             .join(" ")
     }

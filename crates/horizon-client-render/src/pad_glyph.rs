@@ -234,6 +234,15 @@ impl Glyph {
         let (family, button) = self.glyphs.on_pad(self.part);
         printed(button, family)
     }
+    /// [`Self::label`] as a player reads it: the buttons printed with a word (View, Menu, Create,
+    /// Options) in the player's language. `label` stays the English one for `pad status`.
+    pub fn text(self) -> std::borrow::Cow<'static, str> {
+        let label = self.label();
+        match printed_word_key(label) {
+            Some(key) => crate::lang::get_or(key, label).into(),
+            None => label.into(),
+        }
+    }
     /// The colour (RGB) of the button that plays the part.
     pub fn color(self) -> [u8; 3] {
         let (family, button) = self.glyphs.on_pad(self.part);
@@ -257,6 +266,16 @@ fn printed(button: Button, style: GlyphStyle) -> &'static str {
             "→",
         ][i],
     }
+}
+/// The translation key of a button printed with a word, not a letter or a symbol.
+fn printed_word_key(label: &str) -> Option<&'static str> {
+    Some(match label {
+        "View" => "horizon.pad.button.view",
+        "Menu" => "horizon.pad.button.menu",
+        "Create" => "horizon.pad.button.create",
+        "Options" => "horizon.pad.button.options",
+        _ => return None,
+    })
 }
 /// The glyph's colour (RGB): face buttons in their family's colours,
 /// the rest white.
@@ -321,7 +340,7 @@ pub fn width(atlas: &HudAtlas, glyph: Glyph) -> f32 {
     let (family, button) = glyph.glyphs.on_pad(glyph.part);
     match art(atlas, glyph).and_then(|_| source()?.width(family, button)) {
         Some(width) => width,
-        None => HudBatch::text_width(atlas, glyph.label()).ceil() + 4.0,
+        None => HudBatch::text_width(atlas, &glyph.text()).ceil() + 4.0,
     }
 }
 
@@ -347,7 +366,7 @@ pub fn draw(batch: &mut HudBatch, atlas: &HudAtlas, glyph: Glyph, x: f32, y: f32
     } else {
         let [r, g, b] = glyph.color();
         batch.fill(atlas, left, top, wide, tall, rgba(40, 40, 40, 255));
-        batch.text(atlas, glyph.label(), x + 1.0, y, rgba(r, g, b, 255), false);
+        batch.text(atlas, &glyph.text(), x + 1.0, y, rgba(r, g, b, 255), false);
     }
 }
 

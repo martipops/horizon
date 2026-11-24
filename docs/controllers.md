@@ -72,8 +72,8 @@ and bindable, as the player list is. A settings file from before these defaults
 keeps its buttons where they were and leaves the menu unbound (Controller Settings > Bindings
 offers it).
 
-Also bindable, with no default button: fullscreen, player social, quick actions, the save and load
-toolbar activators and hotbar slots 1 to 9. They act in play only: in a menu or a prompt the button
+Also bindable, with no default button: the command line, screenshot, hide HUD, cinematic camera, emote,
+fullscreen, player social, quick actions, the save and load toolbar activators and hotbar slots 1 to 9. They act in play only: in a menu or a prompt the button
 does what that screen says. A toolbar activator does nothing by itself: a creative player holds it and
 presses a hotbar slot's button, as with the keys, and a spectator's hotbar buttons drive the spectator
 menu.
@@ -278,7 +278,9 @@ Position or By Letter, saved as `nintendoLetters:true|false` in
 `horizon-controller.txt`. By position unless changed (a build for the Switch
 itself goes by letters). The row is always there, like the DualSense rows
 beside it, and changes nothing until a Nintendo controller is the one
-playing (the glyph choice alone doesn't turn it on). Bindings name the part, so a rebinding means the same on
+playing, or Glyphs is set to Nintendo: a third-party Switch-layout pad is
+seldom detected as Nintendo, so choosing its glyphs is how it goes by letters
+(the glyph choice alone, with By Position, doesn't turn letters on). Bindings name the part, so a rebinding means the same on
 either.
 
 ## Menus and inventories
@@ -596,7 +598,9 @@ Done (Menu, or the keyboard's Done key) closes the keyboard, and on the way:
 On a Steam Deck under Steam (`SteamDeck=1`), A asks Steam for its own
 keyboard instead (`steam://open/keyboard`), which types like a real keyboard;
 Steam + X opens it at any time. "On-Screen Keyboard: Auto / Horizon / Steam"
-(`keyboard:`) picks one.
+(`keyboard:`) picks one. Steam's keyboard needs Steam to have started the game
+(`SteamGameId` or `SteamAppId` set, a non-Steam shortcut's too): otherwise
+nothing may answer the link, so Steam falls back to Horizon's keyboard.
 
 ### Screens covered
 
@@ -625,7 +629,9 @@ does (a bound action or a menu job), never by a button: a rebinding or a pad's l
 |---|---|---|
 | Xbox, also Auto, Steam Deck and anything unknown | `xb_*`: a b x y, lb rb lt rt, view menu, l3 r3, up down left right | none |
 | PlayStation | `psx_*`: cross circle square triangle, l1 r1 l2 r2, create options, l3 r3, up down left right | none |
-| Nintendo | `nx_*`, by what the pad prints: b a y x at south, east, west and north, l r zl zr, minus plus, l3 r3, up down left riEach family has its own file for every picture, so a family's art can change without touching another's.
+| Nintendo | `nx_*`, by what the pad prints: b a y x at south, east, west and north, l r zl zr, minus plus, l3 r3, up down left right | none |
+
+Each family has its own file for every picture, so a family's art can change without touching another's.
 Only the sticks and the D-pad are the same picture in all three. Nintendo's letters are plain white, as the
 pad prints them, where Xbox's carry Xbox's colours. Text remains for what runs inside a line of text, and for
 an atlas without the sprite.
@@ -634,8 +640,6 @@ Nintendo's art, Xbox's View and Menu and PlayStation's Create and Options are dr
 `tools/pad_glyphs/gen.py` (standard library only: `python3 tools/pad_glyphs/gen.py` rewrites them in place,
 byte for byte); the rest is hand-made. The script measures nothing at run time: the key shapes and bevel
 were measured from the hand-made art and typed in, so the set matches.
-
- the sprite.
 
 The art is in `crates/horizon-client/assets/horizon/textures/gui/controller/`, built into the binary, one
 line of `pad_glyph::ART` per picture: a button with no line is text, and adding one is that line and its
@@ -650,8 +654,8 @@ glyph shows 12 tall, as a text glyph does: a square picture 12 wide, a bumper or
 button's label leaves room for it.
 
 Art shows on declared buttons and a focused field's A, in notices, the gameplay guide, the radial
-menu's hints and splitscreen's strips. What runs inside a line of text stays text: the recipe tooltip,
-the on-screen keyboard's hint line and the buttons on the Bindings page. Vanilla's own messages that name a key (tutorial hints) keep the keyboard's names.
+menu's hints and splitscreen's strips. What runs inside a line of text stays text: the recipe tooltip
+and the on-screen keyboard's hint line. The Bindings page's chips draw the art too. Vanilla's own messages that name a key (tutorial hints) keep the keyboard's names.
 
 The inventory crosshair is `crosshair_inv` in the same folder, drawn at 16 GUI pixels on the point it
 clicks (`pad_cursor.rs`).
@@ -706,14 +710,22 @@ lookDeadzone:0.12
 triggerThreshold:0.4
 toggleSneak:true
 glyphs:auto
-bind_key.jump:south
+nintendoLetters:false
+keyboard:auto
 craftOnServers:false
 gameplayGuide:full
-bind_pad.hotbarNext:rb
+pointerSpeed:1
+scrollSpeed:12
+repeatDelay:0.35
+repeatInterval:0.09
+bind_key.jump:east
+playInBackground:false
+radialMode:hold
+radialStick:right
 bindLayout:2
 ```
 
-Only bindings that differ from the defaults are written. A file without `bindLayout` comes from before the
+That is the default file with Jump moved to East. Only bindings that differ from the defaults are written, after the menu speeds, and the radial menu's pages only once they differ from the default ones. A file without `bindLayout` comes from before the
 current defaults and keeps its buttons where they were. A file below `bindLayout:2` comes from before the radial
 menu's opener: on its first load the opener stays off D-pad Right if the player had put another action there.
 That happens once; from layout 2 on, a conflict the player makes in the binds list stays as they made it.

@@ -132,7 +132,9 @@ fn choice_description(opt: Opt, pad: &PadSettings) -> Option<&'static str> {
                 "Opens Steam's keyboard on a Steam Deck under Steam, and Horizon's otherwise."
             }
             gamepad::TextKeyboard::Horizon => "Always opens Horizon's keyboard.",
-            gamepad::TextKeyboard::Steam => "Always opens Steam's keyboard.",
+            gamepad::TextKeyboard::Steam => {
+                "Opens Steam's keyboard when Steam started the game, and Horizon's otherwise."
+            }
         },
         Opt::PadLightbar => match pad.lightbar {
             gamepad::Lightbar::Health => {
@@ -1091,6 +1093,18 @@ mod tests {
         key(&mut general, &mut s, K::Enter);
         key(&mut general, &mut s, K::ArrowRight);
         assert!((s.controller.move_deadzone - deadzone - 0.01).abs() < 0.001);
+    }
+
+    /// A dead zone set by hand in the file, past the old slider's 50%, keeps its place on a nudge.
+    #[test]
+    fn a_wide_dead_zone_from_the_file_steps_from_where_it_is() {
+        let mut s = Settings::default();
+        s.controller = PadSettings::parse("lookDeadzone:0.8\n");
+        let mut general = ui(Page::General);
+        general.set_focus(Some(Target::Row(Item::Option(Opt::PadLookDeadzone))));
+        key(&mut general, &mut s, K::Enter);
+        key(&mut general, &mut s, K::ArrowLeft);
+        assert!((s.controller.look_deadzone - 0.79).abs() < 0.001);
     }
 
     /// Left and Right step a choice both ways, as `<` `>` show (#12332).

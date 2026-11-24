@@ -1183,7 +1183,7 @@ impl Binding {
         match &self.shown {
             Shown::Key(text) => text.clone(),
             Shown::Pad { glyph, .. } => {
-                let name = glyph.map_or_else(|| lang::get(NOT_BOUND), |g| g.label().to_owned());
+                let name = glyph.map_or_else(|| lang::get(NOT_BOUND), |g| g.text().into_owned());
                 if self.shared.is_empty() {
                     name
                 } else {
@@ -1196,7 +1196,7 @@ impl Binding {
     /// button; `None` leaves the row's own description.
     fn note(&self, waiting: bool) -> Option<String> {
         match (&self.shown, waiting) {
-            (Shown::Pad { cancel, .. }, true) => Some(lang::tr(WAITING_PAD, &[&cancel.label()])),
+            (Shown::Pad { cancel, .. }, true) => Some(lang::tr(WAITING_PAD, &[&cancel.text()])),
             (Shown::Pad { glyph: None, .. }, false) => Some(lang::get(UNBOUND)),
             _ if !self.shared.is_empty() => Some(lang::tr(SHARED, &[&self.shared.join(", ")])),
             _ => None,

@@ -14,6 +14,8 @@ use std::{
 use crate::mouse::SmoothDouble;
 
 pub const FILE: &str = "horizon-controller.txt";
+/// The widest dead zone a stick takes, from the file and from its slider alike.
+pub const DEADZONE_MAX: f32 = 0.9;
 
 /// A button by its position on the pad (gilrs' and SDL's layout): `South`
 /// is Xbox A, PlayStation ✕, Nintendo B.
@@ -628,13 +630,25 @@ impl TextKeyboard {
 
 /// Whether A on a text field asks Steam for its keyboard
 /// (`steam://open/keyboard`) instead of opening Horizon's: chosen, or `Auto`
-/// on a Steam Deck (Steam sets `SteamDeck=1` for the games it starts).
+/// on a Steam Deck (Steam sets `SteamDeck=1` for the games it starts). Only
+/// when Steam started the game: otherwise nothing may answer the link, and
+/// the player would get no keyboard at all.
 pub fn steam_keyboard(choice: TextKeyboard) -> bool {
-    match choice {
-        TextKeyboard::Steam => true,
-        TextKeyboard::Horizon => false,
-        TextKeyboard::Auto => std::env::var("SteamDeck").is_ok_and(|v| v == "1"),
-    }
+    steam_keyboard_in(choice, |name| std::env::var(name).ok())
+}
+
+/// [`steam_keyboard`] with the environment given.
+fn steam_keyboard_in(choice: TextKeyboard, var: impl Fn(&str) -> Option<String>) -> bool {
+    // Steam sets these for every game it starts, a non-Steam shortcut's too.
+    let under_steam = ["SteamGameId", "SteamAppId"]
+        .iter()
+        .any(|name| var(name).is_some_and(|v| !v.is_empty()));
+    under_steam
+        && match choice {
+            TextKeyboard::Steam => true,
+            TextKeyboard::Horizon => false,
+            TextKeyboard::Auto => var("SteamDeck").is_some_and(|v| v == "1"),
+        }
 }
 
 /// The controller settings (`horizon-controller.txt`).
@@ -744,9 +758,11 @@ fn bool_text(v: bool) -> &'static str {
     if v { "true" } else { "false" }
 }
 impl PadSettings {
-    /// A pad of `family` goes by its letters: only a Nintendo pad has letters to go by.
+    /// A pad of `family` goes by its letters: a pad detected as Nintendo, or any pad while the
+    /// player chose Nintendo glyphs (a third-party Switch-layout pad is seldom detected as one).
     pub fn by_letter(&self, family: GlyphStyle) -> bool {
-        self.nintendo_letters && family == GlyphStyle::Nintendo
+        self.nintendo_letters
+            && (family == GlyphStyle::Nintendo || self.glyphs == GlyphStyle::Nintendo)
     }
     pub fn parse(text: &str) -> Self {
         let mut s = Self::default();
@@ -790,8 +806,8 @@ impl PadSettings {
                 "lookSensitivity" => s.look_sensitivity = unit(s.look_sensitivity),
                 "invertX" => s.invert_x = flag(s.invert_x),
                 "invertY" => s.invert_y = flag(s.invert_y),
-                "moveDeadzone" => s.move_deadzone = unit(s.move_deadzone).min(0.9),
-                "lookDeadzone" => s.look_deadzone = unit(s.look_deadzone).min(0.9),
+                "moveDeadzone" => s.move_deadzone = unit(s.move_deadzone).min(DEADZONE_MAX),
+                "lookDeadzone" => s.look_deadzone = unit(s.look_deadzone).min(DEADZONE_MAX),
                 "triggerThreshold" => {
                     s.trigger_threshold = unit(s.trigger_threshold).clamp(0.1, 0.9)
                 }
@@ -2289,6 +2305,38 @@ bind_key.hotbar.2:north
     }
 
     #[test]
+    fn steams_keyboard_only_when_steam_started_the_game() {
+        let env = |vars: &'static [(&'static str, &'static str)]| {
+            move |name: &str| {
+                vars.iter()
+                    .find(|(k, _)| *k == name)
+                    .map(|(_, v)| v.to_string())
+            }
+        };
+        let steam = env(&[("SteamGameId", "123")]);
+        let deck = env(&[("SteamAppId", "123"), ("SteamDeck", "1")]);
+        let outside = env(&[]);
+        assert!(steam_keyboard_in(TextKeyboard::Steam, steam));
+        assert!(!steam_keyboard_in(TextKeyboard::Auto, steam));
+        assert!(steam_keyboard_in(TextKeyboard::Auto, deck));
+        assert!(!steam_keyboard_in(TextKeyboard::Horizon, deck));
+        // Chosen outside Steam, nothing would answer: Horizon's keyboard opens instead.
+        assert!(!steam_keyboard_in(TextKeyboard::Steam, outside));
+    }
+
+    #[test]
+    fn letters_follow_a_nintendo_pad_or_the_nintendo_glyphs_chosen() {
+        let s = |text: &str| PadSettings::parse(text);
+        // A Switch-layout pad detected as an Xbox one goes by letters once Nintendo glyphs are chosen.
+        assert!(s("glyphs:nintendo\nnintendoLetters:true\n").by_letter(GlyphStyle::Xbox));
+        // A real Nintendo pad does on any glyphs, as before.
+        assert!(s("glyphs:xbox\nnintendoLetters:true\n").by_letter(GlyphStyle::Nintendo));
+        // Neither the glyphs nor a Nintendo pad alone turn letters on.
+        assert!(!s("glyphs:nintendo\nnintendoLetters:false\n").by_letter(GlyphStyle::Xbox));
+        assert!(!s("glyphs:auto\nnintendoLetters:true\n").by_letter(GlyphStyle::Xbox));
+    }
+
+    #[test]
     fn a_stick_holds_the_keys_of_its_nearest_heading() {
         // Forward, backward, left, right, by the heading counted from forward toward left.
         let headings = [
@@ -2616,7 +2664,6 @@ bind_key.hotbar.2:north
             PadSettings::parse(&s.serialize()).keyboard,
             TextKeyboard::Horizon
         );
-        assert!(steam_keyboard(TextKeyboard::Steam) && !steam_keyboard(TextKeyboard::Horizon));
     }
 
     #[test]
