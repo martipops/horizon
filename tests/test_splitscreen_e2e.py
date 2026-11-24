@@ -1,8 +1,10 @@
 """Unit tests for tools/splitscreen_e2e.py's runner: no game is started, `Game.ctl` is faked."""
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -67,10 +69,53 @@ class Runner(unittest.TestCase):
         self.assertEqual(ran, [])
         self.assertNotIn(stopped.exception.code, (0, None))
 
+    def test_a_skip_from_inside_a_scenario_is_not_a_pass_either(self):
+        def monitor():
+            raise e.Skipped('one monitor only')
+
+        with self.assertRaises(SystemExit) as stopped:
+            self.run_main({'monitor': monitor}, '--only', 'monitor')
+        self.assertIn('one monitor only', str(stopped.exception.code))
+        self.run_main({'monitor': monitor, 'join': lambda: None})
+        self.assertIn('monitor', self.lines[-1])
+        self.assertNotEqual(self.lines[-1], 'splitscreen: every check passed')
+
+    @unittest.skipIf(os.name == 'nt', 'needs a POSIX shell script and pkill')
+    def test_a_game_that_stops_answering_fails_its_scenario_and_the_next_one_runs(self):
+        folder = Path(tempfile.mkdtemp(prefix='hz-split-e2e-test-'))
+        self.addCleanup(shutil.rmtree, folder, ignore_errors=True)
+        # horizon-ctl as a hung game leaves it: the launch answers, then nothing does.
+        ctl = folder / 'ctl'
+        ctl.write_text('#!/bin/sh\ncase "$*" in *launch*) echo \'{"pid": 1}\';; *) exec sleep 600;; esac\n')
+        ctl.chmod(0o755)
+        ran, kills = [], []
+        real = subprocess.run
+
+        def run(words, **kwargs):
+            if words[0] == 'pkill':
+                kills.append(words)
+                return None
+            return real(words, **kwargs)
+
+        scenarios = {'hung': lambda: e.Game(1), 'after': lambda: ran.append('after')}
+        start = time.monotonic()
+        with mock.patch.object(e, 'CTL', ctl), mock.patch.object(e, 'CALL_SECONDS', 0.2), \
+                mock.patch.object(e.subprocess, 'run', run), self.assertRaises(SystemExit) as stopped:
+            self.run_main(scenarios)
+        self.assertLess(time.monotonic() - start, 10)
+        self.assertEqual(ran, ['after'])
+        self.assertEqual(str(stopped.exception.code), '1 check(s) failed: hung')
+        # The hung game is killed, not left behind.
+        self.assertEqual(len(kills), 1)
+
     def test_a_launcher_scenario_that_fails_leaves_no_accounts_for_the_next_one(self):
         folder = Path(tempfile.mkdtemp(prefix='hz-split-e2e-test-'))
         self.addCleanup(shutil.rmtree, folder, ignore_errors=True)
         given = {}
+        # Whatever this process was started with stays as it was.
+        kept = mock.patch.dict(os.environ, HORIZON_ACCOUNT_SESSIONS='[]')
+        kept.start()
+        self.addCleanup(kept.stop)
 
         def game(*args, **env):
             given.update(env)
@@ -79,9 +124,9 @@ class Runner(unittest.TestCase):
         with mock.patch.object(e, 'Game', game), mock.patch.object(e.tempfile, 'mkdtemp', return_value=str(folder)):
             with self.assertRaises(KeyError):
                 e.scenario_launcher()
-        # The fake accounts went to that game, and the next scenario's game inherits none.
+        # The fake accounts went to that game, and the next scenario's game doesn't inherit them.
         self.assertIn('Ann', given['HORIZON_ACCOUNT_SESSIONS'])
-        self.assertNotIn('HORIZON_ACCOUNT_SESSIONS', os.environ)
+        self.assertEqual(os.environ['HORIZON_ACCOUNT_SESSIONS'], '[]')
 
     def launch_words(self, **kwargs):
         """The words of the `launch` a `Game` sends, with horizon-ctl faked."""

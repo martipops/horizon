@@ -21,7 +21,10 @@ How it works
 - `--offscreen` starts every game with the game's own `--offscreen`: it draws into a texture and
   shows no window, so a run takes no focus and works on a machine nobody sits at (a desktop
   session is still needed for the display connection). The scenarios in `NEEDS_WINDOW` can't
-  pass that way and are skipped, each with a line saying so.
+  pass that way and are skipped, each with a line saying so. The rest check the views' layout,
+  not what the window system shows: nothing is presented to a window.
+- A scenario that can't check anything on this machine raises `Skipped(reason)`. A run that left
+  something out names it and never says that every check passed; a run that only skipped fails.
 
 Adding a scenario: write `scenario_<name>()` that prints `"<name>: what it checks"` first, uses
 `Game` in a try/finally with `g.quit()`, checks with `check`, and add it to `SCENARIOS`.
@@ -59,12 +62,19 @@ WIDTH, HEIGHT = 1000, 600
 # Where `scenario_keyboard_after_leave` looks for the keyboard's letters, from the top middle.
 KEYBOARD_ROWS, KEYBOARD_REACH = 280, 290
 KEYBOARD_LETTER_LEVEL, KEYBOARD_MIN_LETTERS = 200, 200
+# `scenario_pack_overlay`: how many pixels of its buttons' colour make a drawn button, and how many
+# colours make a panel of drawn block icons.
+BUTTON_PIXELS, ICON_COLOURS = 1000, 200
 VERBOSE = False
 # `--offscreen`: every game is started with it (`Game`).
 OFFSCREEN = False
 # Scenarios that read what a real window does (its fullscreen state, the OS pointer): skipped
 # under `--offscreen`, where the window is never shown.
 NEEDS_WINDOW = {'fullscreen', 'native_pointer'}
+# How long one horizon-ctl command may take before the game counts as stuck. `launch --wait` gives
+# up by itself after two waits of 300 s.
+CALL_SECONDS = 60
+LAUNCH_SECONDS = 620
 
 failures = []
 
@@ -74,6 +84,14 @@ def check(name, got, want):
     print(f'  {"ok  " if ok else "FAIL"} {name}: {got}' + ('' if ok else f', expected {want}'))
     if not ok:
         failures.append(name)
+
+
+class Skipped(Exception):
+    """A scenario that can't check anything on this machine, and why."""
+
+
+class Stuck(RuntimeError):
+    """A game that didn't answer a command in time: it hangs, it isn't gone."""
 
 
 class Game:
@@ -116,8 +134,12 @@ class Game:
         # The reply through a file, not a pipe: on Windows the game `launch` starts inherits the
         # pipe, which then never closes while it runs.
         with tempfile.TemporaryFile('w+') as out:
-            subprocess.run([str(CTL), '--socket', str(socket), *words], env=self.env,
-                           cwd=self.home, stdout=out, stderr=subprocess.DEVNULL)
+            seconds = LAUNCH_SECONDS if words[0] == 'launch' else CALL_SECONDS
+            try:
+                subprocess.run([str(CTL), '--socket', str(socket), *words], env=self.env, cwd=self.home,
+                               stdout=out, stderr=subprocess.DEVNULL, timeout=seconds)
+            except subprocess.TimeoutExpired:
+                raise Stuck(f'P{n} {" ".join(words)}: no answer in {seconds} s') from None
             out.seek(0)
             reply = json.loads(out.read() or '{}')
         if VERBOSE:
@@ -189,6 +211,8 @@ class Game:
         try:
             self.ctl(n, 'status')
             return True
+        except Stuck:
+            raise
         except (RuntimeError, json.JSONDecodeError):
             return False
 
@@ -221,9 +245,10 @@ class Game:
             self.ctl(1, 'quit')
             self.wait(lambda: not self.alive(1), 'the game to quit')
         except (RuntimeError, json.JSONDecodeError):
-            # Not answering (still starting, or stuck): stop it by its socket (`--control-socket`).
+            # Not answering (still starting, or stuck): kill it by its socket (`--control-socket`).
+            # A hung game may not act on a SIGTERM.
             with contextlib.suppress(OSError):  # no pkill on Windows
-                subprocess.run(['pkill', '-f', str(self.sockets)], capture_output=True)
+                subprocess.run(['pkill', '-KILL', '-f', str(self.sockets)], capture_output=True)
         shutil.rmtree(self.sockets, ignore_errors=True)
 
 
@@ -920,8 +945,7 @@ def scenario_monitor():
         g.press(1, 'P2')
         fill = [l for l in g.labels(1) if l.startswith('Fill Monitor')]
         if not fill:
-            print('  skip one monitor only')
-            return
+            raise Skipped('one monitor only')
         g.press(1, fill[0])
         g.press(1, 'Apply')
         g.close_page(1)
@@ -1091,14 +1115,20 @@ def scenario_packs():
 
 def scenario_pack_overlay():
     print("pack_overlay: a player's pack reload leaves P1's selected pack and vanilla's files in place")
+    from server_pack_e2e import decode_png, png
     meta = {'pack': {'pack_format': 9999, 'supported_formats': {'min_inclusive': 6, 'max_inclusive': 9999},
                      'description': 'pack_overlay'}}
+    # Each version of P1's pack: the pause menu's Back to Game and its buttons' colour. The words
+    # are the whole process's (one language for every player); a player's buttons are drawn with
+    # that player's own atlas, so their colour says whose reload finished.
+    versions = {'Pack One': (255, 0, 0), 'Pack Two': (0, 255, 0), 'Pack Three': (0, 0, 255)}
 
     def write_pack(home, words):
-        """P1's pack: it renames the pause menu's Back to Game to `words`."""
         with zipfile.ZipFile(home / 'resourcepacks/overlay.zip', 'w') as z:
             z.writestr('pack.mcmeta', json.dumps(meta))
             z.writestr('assets/minecraft/lang/en_us.json', json.dumps({'menu.returnToGame': words}))
+            z.writestr('assets/minecraft/textures/gui/sprites/widget/button.png',
+                       png(200, 20, lambda x, y: (*versions[words], 255)))
 
     def seed(home):
         (home / 'resourcepacks').mkdir()
@@ -1107,12 +1137,37 @@ def scenario_pack_overlay():
 
     g = Game(2, seed=seed, args=('--offscreen',))
 
-    def back(n):
-        """What player n's pause menu calls Back to Game: the pack's words, read from the pack."""
+    def shot(n):
+        path = g.home / f'shot-{n}.png'
+        g.ctl(n, 'screenshot', str(path))
+        return decode_png(path.read_bytes())
+
+    def pack(n):
+        """The pack version player n's pause menu is drawn from: (its words, its buttons' words)."""
         if g.ctl(n, 'ui').get('screen') != 'paused':
             g.ctl(n, 'key', 'esc', 'tap')
             g.wait(lambda: g.ctl(n, 'ui').get('screen') == 'paused', f"P{n}'s pause menu", seconds=10)
-        return next((l for l in g.labels(n) if l.startswith('Pack ')), None)
+        words = next((l for l in g.labels(n) if l.startswith('Pack ')), None)
+        _, _, rows = shot(n)
+        drawn = {name: sum(row.count(colour) for row in rows) for name, colour in versions.items()}
+        most = max(drawn, key=drawn.get)
+        return words, most if drawn[most] > BUTTON_PIXELS else None
+
+    def vanilla(n):
+        """What player n's creative inventory draws from vanilla's files: the panel's own sprite,
+        and the first tab's block icons. The slots under it, which stay still and opaque."""
+        g.close_page(n)
+        g.ctl(n, 'key', 'e', 'tap')
+        g.wait(lambda: g.ctl(n, 'ui').get('screen') in ('creative', 'inventory'), f"P{n}'s inventory", seconds=10)
+        g.ctl(n, 'wait', '10')
+        width, height, rows = shot(n)
+        # CreativeModeInventoryScreen's 9 x 5 slots, in its 195 x 136 panel.
+        gui_width, gui_height = g.ctl(n, 'ui')['gui_size']
+        scale = width / gui_width
+        left, top = (gui_width - 195) // 2 + 9, (gui_height - 136) // 2 + 18
+        box = [round(v * scale) for v in (left, top, left + 9 * 18, top + 5 * 18)]
+        g.ctl(n, 'key', 'esc', 'tap')
+        return [row[box[0]:box[2]] for row in rows[box[1]:box[3]]]
 
     def reload(n):
         """F3 + T: player n reloads its resource packs."""
@@ -1125,19 +1180,25 @@ def scenario_pack_overlay():
         log = g.home / 'logs/latest.log'
         selected = lambda: g.ctl(1, 'options-get', 'resourcePacks')['options']['resourcePacks']['value']  # noqa: E731
         g.wait(lambda: g.ctl(2, 'state').get('player') is not None, 'P2 playing')
-        check("P1 reads its pack's text", back(1), 'Pack One')
+        before = {n: vanilla(n) for n in (1, 2)}
+        for n in (1, 2):
+            colours = {pixel for row in before[n] for pixel in row}
+            check(f"P{n}'s inventory shows vanilla's blocks", len(colours) > ICON_COLOURS, True)
+            check(f"P{n} reads P1's pack", pack(n), ('Pack One', 'Pack One'))
         # The pack changes on disk, so a reload that really ran shows: P2's first.
         write_pack(g.home, 'Pack Two')
         reload(2)
-        g.wait(lambda: back(2) == 'Pack Two', "P2's reload to finish", seconds=60)
-        check("P2's reload read the pack again", back(2), 'Pack Two')
+        g.wait(lambda: pack(2) == ('Pack Two', 'Pack Two'), "P2's own reload to finish", seconds=60)
+        check("P2's reload read the pack again", pack(2), ('Pack Two', 'Pack Two'))
         check("P1's pack is still selected", 'file/overlay.zip' in selected(), True)
         # P1 reloads after it, the pack changed once more so that its own reload shows: its pack
         # and vanilla's files are all still there to read.
         write_pack(g.home, 'Pack Three')
         reload(1)
-        g.wait(lambda: back(1) == 'Pack Three', "P1's reload to finish", seconds=60)
-        check("P1's reload after P2's reads its pack", back(1), 'Pack Three')
+        g.wait(lambda: pack(1) == ('Pack Three', 'Pack Three'), "P1's own reload to finish", seconds=60)
+        check("P1's reload after P2's reads its pack", pack(1), ('Pack Three', 'Pack Three'))
+        for n in (1, 2):
+            check(f"P{n}'s inventory draws vanilla's files as before", vanilla(n) == before[n], True)
         text = log.read_text(errors='replace')
         check('no reload failed', 'resource reload failed' in text, False)
         # The reload that deleted P1's files left "No such file or directory" for every texture.
@@ -1538,16 +1599,19 @@ def main():
         sys.exit(f'{CTL} is missing: cargo build --profile fast -p horizon-game')
     if not (RESOURCES / 'assets').exists():
         sys.exit(f'no prepared resources in {RESOURCES}')
-    skipped, ran = [], 0
+    skipped, ran = {}, 0
     for name in args.only or [n for n in SCENARIOS if n != 'native_pointer']:
         print(f'[{name}]')
         if OFFSCREEN and name in NEEDS_WINDOW:
-            print(f'  skip {name}: needs a real window (run it without --offscreen)')
-            skipped.append(name)
+            skipped[name] = 'needs a real window (run it without --offscreen)'
+            print(f'  skip {name}: {skipped[name]}')
             continue
-        ran += 1
         try:
             SCENARIOS[name]()
+            ran += 1
+        except Skipped as reason:
+            skipped[name] = str(reason)
+            print(f'  skip {name}: {reason}')
         except RuntimeError as e:
             print(f'  FAIL {name}: {e}')
             failures.append(name)
@@ -1558,10 +1622,11 @@ def main():
             failures.append(name)
     if failures:
         sys.exit(f'{len(failures)} check(s) failed: {", ".join(failures)}')
+    not_run = '; '.join(f'{name}: {why}' for name, why in skipped.items())
     if skipped and not ran:
-        sys.exit(f'nothing ran: every selected scenario needs a real window ({", ".join(skipped)}); run without --offscreen')
+        sys.exit(f'nothing ran ({not_run})')
     if skipped:
-        print(f'splitscreen: every check that ran passed; not run (they need a real window): {", ".join(skipped)}')
+        print(f'splitscreen: every check that ran passed; not run ({not_run})')
     else:
         print('splitscreen: every check passed')
 
