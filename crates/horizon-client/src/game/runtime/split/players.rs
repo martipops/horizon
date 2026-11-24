@@ -417,9 +417,9 @@ impl Split<'_> {
                     let picked = match self.can_join(&name) {
                         // The page's own answer: they pick again, nothing failed.
                         Err(why) => Err(why.into()),
-                        Ok(()) if joining => self
-                            .enter(i, name)
-                            .inspect_err(|why| self.join_failed(why)),
+                        Ok(()) if joining => {
+                            self.enter(i, name).inspect_err(|why| self.join_failed(why))
+                        }
                         Ok(()) => self.switch(i, name),
                     };
                     match picked {
