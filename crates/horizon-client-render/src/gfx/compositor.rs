@@ -74,23 +74,24 @@ impl Compositor {
         let caps = surface.get_capabilities(adapter);
         let copies =
             caps.usages.contains(wgpu::TextureUsages::COPY_DST) && caps.formats.contains(&FRAME);
-        let format = if copies {
-            FRAME
-        } else {
-            let Some(&first) = caps.formats.first() else {
+        // The draw writes the frames' values as they are, so it takes 8-bit formats without sRGB
+        // encoding: an sRGB one would encode them again, and wgpu shows a float one as linear light.
+        let format = match [FRAME, wgpu::TextureFormat::Rgba8Unorm]
+            .into_iter()
+            .find(|format| caps.formats.contains(format))
+        {
+            Some(format) => format,
+            None if caps.formats.is_empty() => {
                 return Err("this adapter can't present on the window".into());
-            };
-            super::surface_format(&caps.formats, first)
+            }
+            None => {
+                return Err(format!(
+                    "splitscreen needs a {FRAME:?} or Rgba8Unorm surface; this one offers {:?}",
+                    caps.formats
+                )
+                .into());
+            }
         };
-        // The draw writes the frames' values as they are: not on a format that would encode
-        // them again.
-        if format.is_srgb() {
-            return Err(format!(
-                "splitscreen needs a surface format without sRGB encoding; this one offers {:?}",
-                caps.formats
-            )
-            .into());
-        }
         let mut usage = wgpu::TextureUsages::RENDER_ATTACHMENT;
         if copies {
             usage |= wgpu::TextureUsages::COPY_DST;
@@ -408,10 +409,12 @@ mod tests {
         const WIDTH: u32 = 12;
         const HEIGHT: u32 = 8;
         let _gpu = crate::gfx::test_gpu::lock();
-        let Some((_, device, queue)) = crate::gfx::test_gpu::optional_device() else {
-            eprintln!("skipped: no GPU adapter");
+        let Some(adapter) = crate::gfx::test_gpu::adapter() else {
             return;
         };
+        let info = adapter.get_info();
+        eprintln!("drawn on {} ({:?})", info.name, info.backend);
+        let (device, queue) = crate::gfx::test_gpu::device(&adapter);
         // A surface that offers Rgba8Unorm alone: the frames' channels swap on the way.
         let format = wgpu::TextureFormat::Rgba8Unorm;
         let target = device.create_texture(&wgpu::TextureDescriptor {
