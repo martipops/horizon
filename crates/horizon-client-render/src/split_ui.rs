@@ -42,8 +42,8 @@ pub struct SplitUi {
     pub live: Option<Draft>,
     pub monitors: Vec<Monitor>,
     pub main: String,
-    /// The free windows whose place on the desktop the system doesn't say (the game sets them).
-    pub unplaced: Vec<u8>,
+    /// The system doesn't say where free windows are on the desktop (the game sets it).
+    pub unplaced: bool,
     pub names: Vec<String>,
     pub apply: Option<Draft>,
     /// Identify pressed: every view says which window it is in.
@@ -262,7 +262,7 @@ impl SplitUi {
     }
     /// `draft` on the map (the one shown, or one a drag would make).
     fn map_of(&self, draft: &Draft, w: f32, h: f32) -> split_map::Map {
-        split_map::project(draft, &self.monitors, &self.main, &self.unplaced, w, h)
+        split_map::project(draft, &self.monitors, &self.main, self.unplaced, w, h)
     }
     fn editing(&mut self) -> Option<&mut Draft> {
         if self.edit.is_none() {
@@ -411,7 +411,7 @@ impl SplitUi {
             return out;
         }
         let (_, windows, tiles) = self.map(w, h);
-        let visible = split_map::visible(&windows, &tiles);
+        let visible = split_map::visible(&windows, &tiles, w, h);
         let mut order: Vec<usize> = (0..tiles.len()).collect();
         // One raised over the windows that cover it comes after them all.
         let window = |i: usize| windows.iter().position(|(n, _)| *n == tiles[i].0);
@@ -609,7 +609,7 @@ impl SplitUi {
             );
         }
         let buttons = self.buttons(w, h);
-        let visible = split_map::visible(&windows, &tiles);
+        let visible = split_map::visible(&windows, &tiles, w, h);
         let yellow = rgba(255, 255, 85, 255);
         // Each window, then its players: a window over another covers it.
         let draft = self.draft();
@@ -1371,7 +1371,7 @@ mod tests {
     fn p1_is_still_picked_with_a_window_filling_the_first_monitor() {
         let mut ui = screen(2);
         ui.main = String::new();
-        ui.unplaced = vec![1];
+        ui.unplaced = true;
         press(&mut ui, "P2");
         press(&mut ui, "Fill Monitor 1");
         press(&mut ui, "P1");
@@ -1383,6 +1383,31 @@ mod tests {
         assert_eq!(ui.selected, Some(0));
         press(&mut ui, "Window 2");
         assert_eq!(ui.draft().unwrap().players, [2, 2]);
+    }
+
+    /// Windows on one another, as a desktop that reports places can have them: each player's
+    /// button is its own, for a click and for a controller.
+    #[test]
+    fn players_in_windows_on_the_same_place_are_each_picked() {
+        for n in [2, 4, 16] {
+            let mut ui = screen(n);
+            let window = |number| crate::split_layout::Window {
+                number,
+                placement: Placement::Free(Some(([0, 0], [1000, 600]))),
+            };
+            let draft = ui.live.as_mut().unwrap();
+            draft.windows = (1..=n as u8).map(window).collect();
+            draft.players = (1..=n as u8).collect();
+            for i in 0..n {
+                let (x, y) = centre(&ui, &format!("P{}", i + 1));
+                ui.click((x, y), SIZE, false);
+                assert_eq!(ui.selected, Some(i), "{n} players");
+                ui.release();
+                assert!(ui.pad_pick_up((x, y)));
+                assert_eq!(ui.held.as_ref().map(|h| h.player), Some(i), "{n} players");
+                ui.held = None;
+            }
+        }
     }
 
     #[test]

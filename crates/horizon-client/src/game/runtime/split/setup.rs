@@ -2,21 +2,17 @@
 use super::*;
 
 impl<'a> Split<'a> {
-    /// The free windows whose place the system doesn't say: Wayland never does. The map shows
-    /// them side by side (`split_map::project`).
-    fn unplaced(&self) -> Vec<u8> {
-        self.windows
-            .iter()
-            .filter(|w| matches!(w.placement, Placement::Free(_)))
-            .filter_map(|w| self.surfaces.iter().find(|s| s.key == w.number))
-            .filter(|s| s.window.outer_position().is_err())
-            .map(|s| s.key)
-            .collect()
+    /// The system doesn't say where windows are: Wayland never does. The map shows the free ones
+    /// in rows (`split_map::project`).
+    fn unplaced(&self) -> bool {
+        self.surfaces
+            .first()
+            .is_some_and(|s| s.window.outer_position().is_err())
     }
 
     /// The arrangement now, for the Setup screen: free windows where they are.
     pub(super) fn draft(&self) -> layout::Draft {
-        // Where `unplaced` windows are, for their scale: the map places them itself.
+        // Where an unplaced window is, for its scale: the map places it itself.
         let corner = self.monitors().first().map_or([0, 0], |(_, m)| {
             let at = m.position();
             [at.x, at.y]

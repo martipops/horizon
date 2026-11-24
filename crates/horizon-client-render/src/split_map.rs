@@ -4,8 +4,10 @@ use crate::split_layout::{Draft, Monitor, Placement};
 /// Map area: below the title and above the move row and footer.
 pub const TOP: f32 = 30.0;
 pub const BOTTOM: f32 = 80.0;
-/// Between windows whose place nobody knows, side by side on the map (desktop pixels).
+/// Between windows whose place nobody knows, in rows on the map (desktop pixels).
 const SHELF_GAP: f64 = 16.0;
+/// Another row of them only for a map this much larger: it holds still otherwise.
+const ROW_GAIN: f64 = 1.05;
 /// The least of a player's tile left to see and press, where the tile is as big itself.
 const MIN_TILE: [f32; 2] = [24.0, 14.0];
 pub type Rect = [f32; 4];
@@ -15,25 +17,62 @@ fn overlap([ax, ay, aw, ah]: [f64; 4], [bx, by, bw, bh]: [f64; 4]) -> bool {
     ax < bx + bw && bx < ax + aw && ay < by + bh && by < ay + ah
 }
 
-/// The next place on the shelf for a window of `size`: from `at` rightwards, past every monitor a
-/// window fills.
-fn on_shelf(at: [f64; 2], [w, h]: [f64; 2], filled: &[[f64; 4]]) -> [f64; 4] {
-    let mut rect = [at[0], at[1], w, h];
-    // Each step passes a filled monitor for good, so this ends.
-    while let Some(f) = filled.iter().find(|f| overlap(rect, **f)) {
-        rect[0] = f[0] + f[2] + SHELF_GAP;
+/// Windows of these sizes in `rows` rows from `start`, each past every monitor a window fills.
+fn shelve(sizes: &[[f64; 2]], rows: usize, start: [f64; 2], filled: &[[f64; 4]]) -> Vec<[f64; 4]> {
+    let mut y = start[1];
+    let mut out = Vec::with_capacity(sizes.len());
+    for row in sizes.chunks(sizes.len().div_ceil(rows).max(1)) {
+        let mut x = start[0];
+        let mut below = y;
+        for &[w, h] in row {
+            let mut rect = [x, y, w, h];
+            // Each step passes a filled monitor for good, so this ends.
+            while let Some(f) = filled.iter().find(|f| overlap(rect, **f)) {
+                rect[0] = f[0] + f[2] + SHELF_GAP;
+            }
+            x = rect[0] + w + SHELF_GAP;
+            below = below.max(y + h + SHELF_GAP);
+            out.push(rect);
+        }
+        y = below;
     }
-    rect
+    out
 }
 
-/// Monitor, window and player rectangles in UI coordinates, in their drawing order. `unplaced`:
-/// the free windows whose place the system doesn't say (Wayland's), and where they aren't known
-/// they go side by side, from the first monitor no window fills.
+/// The rectangle around all of these.
+fn bounds(rects: impl Iterator<Item = [f64; 4]>) -> [f64; 4] {
+    let mut out = [f64::MAX, f64::MAX, f64::MIN, f64::MIN];
+    for [x, y, w, h] in rects {
+        out = [
+            out[0].min(x),
+            out[1].min(y),
+            out[2].max(x + w),
+            out[3].max(y + h),
+        ];
+    }
+    out
+}
+
+/// Where the map is drawn, in UI coordinates.
+fn area(w: f32, h: f32) -> [f64; 4] {
+    [
+        20.0,
+        f64::from(TOP) + 4.0,
+        f64::from(w) - 40.0,
+        // Room under the monitors for their names, and always for the move row: the map
+        // doesn't jump when a player is picked (a drop back to where its tile was misses).
+        (f64::from(h - TOP - BOTTOM) - 18.0).max(10.0),
+    ]
+}
+
+/// Monitor, window and player rectangles in UI coordinates, in their drawing order. `unplaced`: the
+/// system doesn't say where free windows are (Wayland), so they go in rows from the first monitor
+/// no window fills.
 pub fn project(
     draft: &Draft,
     monitors: &[Monitor],
     main: &str,
-    unplaced: &[u8],
+    unplaced: bool,
     w: f32,
     h: f32,
 ) -> Map {
@@ -72,41 +111,54 @@ pub fn project(
     let free = desk
         .iter()
         .find(|m| !filled.iter().any(|f| overlap(**m, *f)));
-    let mut shelf = free.or(desk.first()).map_or([0.0; 2], |m| [m[0], m[1]]);
-    for (number, rect) in &mut on_desk {
-        let Some(win) = draft.windows.iter().find(|w| w.number == *number) else {
-            continue;
-        };
-        let unknown = match win.placement {
-            Placement::Free(Some(_)) => unplaced.contains(&win.number),
-            // A new window opens in the middle of Window 1's monitor: shown there if it can be.
-            Placement::Free(None) => filled.iter().any(|f| overlap(*rect, *f)),
-            Placement::Fill(_) => false,
-        };
-        if unknown {
-            *rect = on_shelf(shelf, [rect[2], rect[3]], &filled);
-            shelf[0] = rect[0] + rect[2] + SHELF_GAP;
+    let start = free.or(desk.first()).map_or([0.0; 2], |m| [m[0], m[1]]);
+    let unknown: Vec<usize> = (0..on_desk.len())
+        .filter(|&i| {
+            let (number, rect) = on_desk[i];
+            let placement = draft.windows.iter().find(|w| w.number == number);
+            unplaced
+                && match placement.map(|w| &w.placement) {
+                    Some(Placement::Free(Some(_))) => true,
+                    // A new window opens in the middle of Window 1's monitor: shown there if it
+                    // can be.
+                    Some(Placement::Free(None)) => filled.iter().any(|f| overlap(rect, *f)),
+                    Some(Placement::Fill(_)) | None => false,
+                }
+        })
+        .collect();
+    let [left, top, aw, ah] = area(w, h);
+    let scale_of = |[x0, y0, x1, y1]: [f64; 4]| (aw / (x1 - x0)).min(ah / (y1 - y0));
+    let sizes: Vec<[f64; 2]> = unknown
+        .iter()
+        .map(|&i| [on_desk[i].1[2], on_desk[i].1[3]])
+        .collect();
+    // As many rows as make the map the largest.
+    let known = (0..on_desk.len()).filter(|i| !unknown.contains(i));
+    let known: Vec<[f64; 4]> = known.map(|i| on_desk[i].1).collect();
+    let mut best: Option<(f64, Vec<[f64; 4]>)> = None;
+    for rows in 1..=sizes.len() {
+        let shelf = shelve(&sizes, rows, start, &filled);
+        let k = scale_of(bounds(desk.iter().chain(&known).chain(&shelf).copied()));
+        if best.as_ref().is_none_or(|(b, _)| k > b * ROW_GAIN) {
+            best = Some((k, shelf));
         }
     }
+    for (i, rect) in unknown
+        .iter()
+        .zip(best.map_or(Vec::new(), |(_, shelf)| shelf))
+    {
+        on_desk[*i].1 = rect;
+    }
     // The monitors, and windows past them (Wayland's, whose place is unknown) still shown.
-    let all = || desk.iter().chain(on_desk.iter().map(|(_, d)| d));
-    let x0 = all().map(|d| d[0]).fold(f64::MAX, f64::min);
-    let y0 = all().map(|d| d[1]).fold(f64::MAX, f64::min);
-    let x1 = all().map(|d| d[0] + d[2]).fold(f64::MIN, f64::max);
-    let y1 = all().map(|d| d[1] + d[3]).fold(f64::MIN, f64::max);
+    let around = bounds(desk.iter().copied().chain(on_desk.iter().map(|(_, d)| *d)));
+    let [x0, y0, x1, y1] = around;
     if desk.is_empty() || x1 <= x0 || y1 <= y0 {
         return Default::default();
     }
-    let (aw, ah) = (
-        f64::from(w) - 40.0,
-        // Room under the monitors for their names, and always for the move row: the map
-        // doesn't jump when a player is picked (a drop back to where its tile was misses).
-        (f64::from(h - TOP - BOTTOM) - 18.0).max(10.0),
-    );
-    let k = (aw / (x1 - x0)).min(ah / (y1 - y0));
+    let k = scale_of(around);
     let (ox, oy) = (
-        (f64::from(w) - (x1 - x0) * k) / 2.0,
-        f64::from(TOP) + 4.0 + (ah - (y1 - y0) * k) / 2.0,
+        left + (aw - (x1 - x0) * k) / 2.0,
+        top + (ah - (y1 - y0) * k) / 2.0,
     );
     let to_map = |[x, y, dw, dh]: [f64; 4]| {
         [
@@ -165,56 +217,75 @@ pub fn uncovered(mut r: [f32; 4], covers: impl Iterator<Item = [f32; 4]>) -> [f3
     r
 }
 
+/// The least of `tile` to press.
+fn least([_, _, w, h]: Rect) -> [f32; 2] {
+    [w.min(MIN_TILE[0]), h.min(MIN_TILE[1])]
+}
+
+/// Whether `part` of a tile is too little of it to press.
+fn sliver(part: Rect, tile: Rect) -> bool {
+    let [w, h] = least(tile);
+    part != tile && (part[2] < w || part[3] < h)
+}
+
+/// A piece of `tile` to press, over none of the pieces `taken`: around what shows of it (`part`),
+/// else in the tile, else the nearest place on the map.
+fn piece(tile: Rect, part: Rect, taken: &[Rect], area: Rect) -> Rect {
+    let [w, h] = least(tile);
+    let inside = |[x, y, rw, rh]: Rect, [px, py]: [f32; 2]| {
+        let (right, bottom) = (x.max(x + rw - w), y.max(y + rh - h));
+        [px.clamp(x, right), py.clamp(y, bottom), w, h]
+    };
+    let cells = |[x, y, rw, rh]: Rect| {
+        let (across, down) = ((rw / w).ceil() as usize, (rh / h).ceil() as usize);
+        (0..down).flat_map(move |r| (0..across).map(move |c| [x + c as f32 * w, y + r as f32 * h]))
+    };
+    let clear = |r: &Rect| taken.iter().all(|t| uncovered(*r, [*t].into_iter()) == *r);
+    let shows = inside(tile, [part[0], part[1]]);
+    let from = |[x, y, ..]: Rect| (x - shows[0]).powi(2) + (y - shows[1]).powi(2);
+    let nearest = |of: Rect| {
+        cells(of)
+            .map(|at| inside(of, at))
+            .filter(clear)
+            .min_by(|a, b| from(*a).total_cmp(&from(*b)))
+    };
+    Some(shows)
+        .filter(clear)
+        .or_else(|| nearest(tile))
+        .or_else(|| nearest(area))
+        .unwrap_or(shows)
+}
+
 /// What shows of every player's tile, in `tiles`' order, and whether it shows over the windows
 /// that cover it: a tile with no more than a sliver left keeps a piece that can be pressed, and
-/// the tiles that piece is over make room for it.
-pub fn visible(windows: &[(u8, Rect)], tiles: &[(u8, Rect)]) -> Vec<(Rect, bool)> {
-    let least = |[_, _, w, h]: Rect| [w.min(MIN_TILE[0]), h.min(MIN_TILE[1])];
-    let mut out: Vec<(Rect, bool)> = Vec::with_capacity(tiles.len());
-    let mut raised: Vec<Rect> = Vec::new();
-    for &(number, tile) in tiles {
-        // The part no later window covers.
-        let at = windows.iter().position(|(n, _)| *n == number);
-        let covers = at.map_or(&[][..], |k| &windows[k + 1..]);
-        let part = uncovered(tile, covers.iter().map(|(_, r)| *r));
-        let [least_w, least_h] = least(tile);
-        if part == tile || (part[2] >= least_w && part[3] >= least_h) {
-            out.push((part, false));
-            continue;
-        }
-        let [x, y, w, h] = tile;
-        let size = [part[2].max(least_w), part[3].max(least_h)];
-        // Around the sliver, or in a corner of the tile where none is raised yet.
-        let (left, right) = (x, x + w - size[0]);
-        let (top, bottom) = (y, y + h - size[1]);
-        let places = [
-            [
-                part[0].clamp(left, right.max(left)),
-                part[1].clamp(top, bottom.max(top)),
-            ],
-            [left, top],
-            [right, top],
-            [left, bottom],
-            [right, bottom],
-        ];
-        let piece = |[px, py]: [f32; 2]| [px, py, size[0], size[1]];
-        let clear = |r: &Rect| raised.iter().all(|o| uncovered(*r, [*o].into_iter()) == *r);
-        let rect = places
-            .into_iter()
-            .map(piece)
-            .find(clear)
-            .unwrap_or(piece(places[0]));
-        raised.push(rect);
-        out.push((rect, true));
+/// the tiles that piece is over make room for it. No two are over one another. `w` and `h`: the
+/// screen, as `project` had it.
+pub fn visible(windows: &[(u8, Rect)], tiles: &[(u8, Rect)], w: f32, h: f32) -> Vec<(Rect, bool)> {
+    let area = area(w, h).map(|v| v as f32);
+    // The part of each no later window covers.
+    let parts: Vec<Rect> = tiles
+        .iter()
+        .map(|&(number, tile)| {
+            let at = windows.iter().position(|(n, _)| *n == number);
+            let covers = at.map_or(&[][..], |k| &windows[k + 1..]);
+            uncovered(tile, covers.iter().map(|(_, r)| *r))
+        })
+        .collect();
+    let mut raised: Vec<Option<Rect>> = vec![None; tiles.len()];
+    // A piece raised over another tile can leave a sliver of that one: it is raised too. Each
+    // turn raises one, so this ends.
+    loop {
+        let taken: Vec<Rect> = raised.iter().flatten().copied().collect();
+        let shown = |i: usize| uncovered(parts[i], taken.iter().copied());
+        let Some(i) =
+            (0..tiles.len()).find(|&i| raised[i].is_none() && sliver(shown(i), tiles[i].1))
+        else {
+            return (0..tiles.len())
+                .map(|i| raised[i].map_or_else(|| (shown(i), false), |r| (r, true)))
+                .collect();
+        };
+        raised[i] = Some(piece(tiles[i].1, parts[i], &taken, area));
     }
-    for (rect, _) in out.iter_mut().filter(|(_, raised)| !raised) {
-        let part = uncovered(*rect, raised.iter().copied());
-        let [least_w, least_h] = least(*rect);
-        if part[2] >= least_w && part[3] >= least_h {
-            *rect = part;
-        }
-    }
-    out
 }
 
 #[cfg(test)]
@@ -266,7 +337,7 @@ mod tests {
                     placement: fill(name),
                 });
             }
-            let (_, windows, _) = project(&draft, &monitors, "", &[1, 3], 427.0, 300.0);
+            let (_, windows, _) = project(&draft, &monitors, "", true, 427.0, 300.0);
             let of = |n: u8| windows.iter().find(|w| w.0 == n).unwrap().1.map(f64::from);
             for n in [1, 3, 4] {
                 for (k, name) in names.iter().enumerate() {
@@ -289,12 +360,96 @@ mod tests {
         ];
         let mut draft =
             Draft::everyone_here(2, Placement::Free(Some(([100, 100], [1280, 720]))), 0, 0);
-        let before = project(&draft, &monitors, "A", &[], 427.0, 300.0).1[0];
+        let before = project(&draft, &monitors, "A", false, 427.0, 300.0).1[0];
         draft.place_player(1, Spot::Fill("B".into()));
         assert_eq!(
-            project(&draft, &monitors, "A", &[], 427.0, 300.0).1[0],
+            project(&draft, &monitors, "A", false, 427.0, 300.0).1[0],
             before
         );
+    }
+
+    /// Sixteen players, one filling the only monitor and every other in a window of its own whose
+    /// place nobody knows, and three monitors besides: each tile is big enough to press.
+    #[test]
+    fn fifteen_windows_of_unknown_place_stay_big_enough_to_press() {
+        for (monitors, w, h) in [(1, 427.0, 301.0), (3, 427.0, 301.0), (1, 320.0, 240.0)] {
+            let monitors: Vec<Monitor> = (0..monitors)
+                .map(|i| monitor(&format!("M{i}"), [1920 * i, 0], [1920, 1080]))
+                .collect();
+            let window = Placement::Free(Some(([0, 0], [854, 480])));
+            let mut draft = Draft::everyone_here(16, window.clone(), 0, 0);
+            draft.windows = (1..=15)
+                .map(|number| Window {
+                    number,
+                    placement: window.clone(),
+                })
+                .collect();
+            draft.windows.push(Window {
+                number: 16,
+                placement: Placement::Fill("M0".into()),
+            });
+            draft.players = (1..=16).collect();
+            let (_, windows, tiles) = project(&draft, &monitors, "", true, w, h);
+            let shown = visible(&windows, &tiles, w, h);
+            assert_eq!(shown.len(), 16);
+            for (rect, raised) in &shown {
+                assert!(
+                    !raised && rect[2] >= MIN_TILE[0] && rect[3] >= MIN_TILE[1],
+                    "{rect:?}"
+                );
+            }
+            apart(&shown);
+        }
+    }
+
+    /// A system that says where windows are: a new one is shown in the middle of Window 1's
+    /// monitor, a filled monitor next to it or not.
+    #[test]
+    fn a_new_window_moves_aside_only_where_places_are_unknown() {
+        let monitors = [
+            monitor("A", [0, 0], [800, 600]),
+            monitor("B", [800, 0], [1920, 1080]),
+        ];
+        let mut draft = Draft::everyone_here(3, Placement::Free(Some(([0, 0], [400, 300]))), 0, 0);
+        draft.place_player(1, Spot::Fill("B".into()));
+        draft.place_player(2, Spot::New);
+        let new = |unplaced| {
+            let (screens, windows, _) = project(&draft, &monitors, "A", unplaced, 427.0, 300.0);
+            (windows[2].1[0] - screens[0][0]) / screens[0][2] * 800.0
+        };
+        assert!(new(false) < 800.0, "{}", new(false));
+        assert!(new(true) >= 800.0 + 1920.0, "{}", new(true));
+    }
+
+    /// No two of these are over one another, and each is on the screen.
+    fn apart(shown: &[(Rect, bool)]) {
+        for (i, (a, _)) in shown.iter().enumerate() {
+            assert!(a[2] > 0.0 && a[3] > 0.0, "{i}: {a:?}");
+            for (b, _) in &shown[i + 1..] {
+                assert_eq!(uncovered(*a, [*b].into_iter()), *a, "{a:?} and {b:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn windows_on_the_very_same_place_leave_every_player_a_piece_of_its_own() {
+        let every = [
+            [100.0, 100.0, 80.0, 40.0],
+            // Too small for a piece each: the others go beside it.
+            [100.0, 100.0, 26.0, 16.0],
+            [20.0, 34.0, 387.0, 172.0],
+        ];
+        for at in every {
+            for n in [2, 4, 16] {
+                let windows: Vec<(u8, Rect)> = (1..=n).map(|i| (i, at)).collect();
+                let shown = visible(&windows, &windows, 427.0, 300.0);
+                apart(&shown);
+                let [w, h] = least(at);
+                for (rect, _) in &shown {
+                    assert!(rect[2] >= w && rect[3] >= h, "{n} at {at:?}: {rect:?}");
+                }
+            }
+        }
     }
 
     #[test]
@@ -302,14 +457,14 @@ mod tests {
         // The 4 px strip of issue #20928, and a tile with nothing left at all.
         let strip = [21.0, 85.0, 58.0, 76.0];
         let cover = [21.0, 85.0, 113.0, 72.0];
-        for (tile, sliver) in [(strip, true), ([30.0, 90.0, 60.0, 40.0], false)] {
+        for (tile, strip) in [(strip, true), ([30.0, 90.0, 60.0, 40.0], false)] {
             let windows = [(1, tile), (2, cover)];
-            let shown = visible(&windows, &windows);
+            let shown = visible(&windows, &windows, 427.0, 300.0);
             let ([x, y, w, h], raised) = shown[0];
             assert!(raised && w >= MIN_TILE[0] && h >= MIN_TILE[1], "{shown:?}");
             assert!(x >= tile[0] && x + w <= tile[0] + tile[2] + 0.01);
             assert!(y >= tile[1] && y + h <= tile[1] + tile[3] + 0.01);
-            if sliver {
+            if strip {
                 assert!((y + h - 161.0).abs() < 0.01, "around the strip: {shown:?}");
             }
             // The other tile makes room: a press on its middle is its own.
@@ -321,10 +476,10 @@ mod tests {
         // Enough left, or nothing over it: only what shows, under the other.
         let half = [(1, [0.0, 0.0, 100.0, 60.0]), (2, [0.0, 0.0, 60.0, 60.0])];
         let expected = [([60.0, 0.0, 40.0, 60.0], false), (half[1].1, false)];
-        assert_eq!(visible(&half, &half), expected);
+        assert_eq!(visible(&half, &half, 427.0, 300.0), expected);
         // A tile that is small itself is left as it is.
         let small = [(1, [0.0, 0.0, 10.0, 6.0])];
-        assert_eq!(visible(&small, &small), [(small[0].1, false)]);
+        assert_eq!(visible(&small, &small, 427.0, 300.0), [(small[0].1, false)]);
     }
 
     #[test]
@@ -345,20 +500,24 @@ mod tests {
         ];
         let mut draft =
             Draft::everyone_here(2, Placement::Free(Some(([0, 0], [2000, 1200]))), 0, 0);
-        let (_, windows, tiles) = project(&draft, &monitors, "Desk", &[], 427.0, 300.0);
+        let (_, windows, tiles) = project(&draft, &monitors, "Desk", false, 427.0, 300.0);
         assert_eq!(windows.len(), 1);
         let (a, b) = (tiles[0].1, tiles[1].1);
         assert!((a[2] - b[2]).abs() < 0.01);
         assert!((a[0] + a[2] - b[0]).abs() < 0.01);
         draft.place_player(1, Spot::Fill("TV".into()));
-        let (screens, windows, tiles) = project(&draft, &monitors, "Desk", &[], 427.0, 300.0);
+        let (screens, windows, tiles) = project(&draft, &monitors, "Desk", false, 427.0, 300.0);
         assert!(screens[1][0] < screens[0][0]);
         assert_eq!(windows.len(), 2);
         assert_eq!((tiles[0].0, tiles[1].0), (1, 2));
-        let (_, windows, tiles) = project(&draft, &monitors[..1], "Desk", &[], 427.0, 300.0);
+        let (_, windows, tiles) = project(&draft, &monitors[..1], "Desk", false, 427.0, 300.0);
         assert_eq!(windows.len(), 1);
         assert_eq!((tiles[0].0, tiles[1].0), (1, 1));
-        assert!(project(&draft, &[], "Desk", &[], 427.0, 300.0).0.is_empty());
+        assert!(
+            project(&draft, &[], "Desk", false, 427.0, 300.0)
+                .0
+                .is_empty()
+        );
     }
 
     #[test]
