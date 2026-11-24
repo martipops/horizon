@@ -446,6 +446,51 @@ impl ModsScreen {
     fn current(&self) -> Option<&Entry> {
         self.entries.get(self.selected?)
     }
+    /// How wide the list's rows are: its width less the margins, and the scrollbar when it has one.
+    fn row_width(&self, g: &Geo) -> i32 {
+        let scrollable = Scroll::max(self.list_content(), g.list[3]) > 0;
+        g.list[2] - 6 - if scrollable { SCROLLBAR_W } else { 0 }
+    }
+    /// The mod whose row of the list is under a point, as an index into `entries`.
+    fn row_at(&self, g: &Geo, x: f64, y: f64) -> Option<usize> {
+        let [lx, ly, ..] = g.list;
+        let rows = f64::from(lx + 3)..f64::from(lx + 3 + self.row_width(g));
+        if !hit(g.list, x, y) || !rows.contains(&x) {
+            return None;
+        }
+        let below = y - f64::from(ly + 2) + self.list.amount;
+        let row = (below >= 0.0).then(|| (below / f64::from(ROW_H)) as usize)?;
+        self.shown.get(row).copied()
+    }
+    /// `AbstractSelectionList.setFocused`: a controller's focus landed on the row at this point,
+    /// so that mod is selected, as the arrow keys select the row they reach, and the search box
+    /// lets go of the typing. Whether a row was there.
+    pub fn focus_row(&mut self, x: f64, y: f64) -> bool {
+        let Some(entry) = self.row_at(&self.geo(), x, y) else {
+            return false;
+        };
+        self.search.focused = false;
+        self.list_focused = true;
+        self.select(entry);
+        true
+    }
+    /// Where the right stick's wheel lands while a controller's hidden pointer is at `at`, on the
+    /// focused widget: over the list or the panel it stays, and anywhere else it is the middle of
+    /// the one in its column, so the stick scrolls the list from the search box and the panel from
+    /// its buttons.
+    pub fn stick_scroll_point(&self, at: (f32, f32)) -> (f32, f32) {
+        let g = self.geo();
+        let (x, y) = (f64::from(at.0), f64::from(at.1));
+        if hit(g.list, x, y) || hit(g.panel, x, y) {
+            return at;
+        }
+        let [ax, ay, aw, ah] = if at.0 < g.panel[0] as f32 {
+            g.list
+        } else {
+            g.panel
+        };
+        ((ax + aw / 2) as f32, (ay + ah / 2) as f32)
+    }
     /// The up and down keys: the previous or next mod in the list.
     pub fn step(&mut self, delta: i32) {
         let Some(last) = self.shown.len().checked_sub(1) else {
@@ -709,23 +754,16 @@ impl ModsScreen {
             self.refresh();
             return (Action::None, true);
         }
-        let [lx, ly, lw, lh] = g.list;
+        let [lx, _, lw, lh] = g.list;
         if hit(g.list, x, y) {
             self.list_focused = true;
-            let content = self.list_content();
-            let scrollable = Scroll::max(content, lh) > 0;
+            let scrollable = Scroll::max(self.list_content(), lh) > 0;
             if scrollable && x >= f64::from(lx + lw - SCROLLBAR_W) {
                 self.list.held = Some(y);
                 return (Action::None, false);
             }
-            let row_w = lw - 6 - if scrollable { SCROLLBAR_W } else { 0 };
-            if (f64::from(lx + 3)..f64::from(lx + 3 + row_w)).contains(&x) {
-                let below = y - f64::from(ly + 2) + self.list.amount;
-                if below >= 0.0
-                    && let Some(&entry) = self.shown.get((below / f64::from(ROW_H)) as usize)
-                {
-                    self.select(entry);
-                }
+            if let Some(entry) = self.row_at(&g, x, y) {
+                self.select(entry);
             }
             return (Action::None, false);
         }
@@ -1082,8 +1120,7 @@ impl ModsScreen {
             y1: y + h,
         });
         let content = self.list_content();
-        let scrollable = Scroll::max(content, h) > 0;
-        let row_w = w - 6 - if scrollable { SCROLLBAR_W } else { 0 };
+        let row_w = self.row_width(g);
         let left = x + 3;
         for (position, &i) in self.shown.iter().enumerate() {
             let top = y + 2 - amount + position as i32 * ROW_H;
@@ -1091,6 +1128,13 @@ impl ModsScreen {
                 continue;
             }
             let e = &self.entries[i];
+            // A row a controller's focus can land on, while its middle, where a press goes, is in
+            // view; the control socket's widget tree names it.
+            if (y..y + h).contains(&(top + ROW_H / 2)) {
+                let rect = [left as f32, top as f32, row_w as f32, ROW_H as f32];
+                crate::widgets::record_as(&e.name, rect, true, crate::widgets::Kind::Row);
+                crate::widgets::target_as(rect, crate::widgets::Kind::Row);
+            }
             if self.selected == Some(i) {
                 let border = if self.list_focused { -1 } else { -8355712 };
                 d::fill(out, left, top, left + row_w, top + ROW_H, border);
@@ -1148,6 +1192,12 @@ impl ModsScreen {
             [32, 2],
         );
         self.list.draw(out, x + w - SCROLLBAR_W, y, content, h);
+        // A focus step off the rows in view scrolls the list before it leaves it.
+        let max = Scroll::max(content, h);
+        if max > 0 {
+            let rect = [x as f32, y as f32, w as f32, h as f32];
+            crate::widgets::scroll_area(rect, self.list.amount as f32, max as f32);
+        }
     }
 }
 
@@ -1553,6 +1603,120 @@ mod tests {
         screen.step(-30);
         assert_eq!(screen.current().map(|e| e.name.as_str()), Some("Horizon"));
         assert_eq!(screen.list.amount, 0.0);
+    }
+
+    /// The rows a frame registered for a controller's focus: what each says and where it is.
+    fn drawn_rows(screen: &ModsScreen, m: &Measure, frame: u64) -> Vec<(String, [f32; 4])> {
+        screen.draw(m, (0, 0), 0, 0);
+        crate::widgets::end_frame(frame);
+        let rows: Vec<_> = crate::widgets::last_labelled()
+            .into_iter()
+            .filter(|w| w.kind == crate::widgets::Kind::Row)
+            .map(|w| (w.label, [w.x, w.y, w.w, w.h]))
+            .collect();
+        // Each is a target as well as a name.
+        let targets = crate::widgets::last_targets();
+        for (name, rect) in &rows {
+            let kind = crate::widgets::Kind::Row;
+            let target = crate::widgets::Target { rect: *rect, kind };
+            assert!(targets.contains(&target), "{name}");
+        }
+        rows
+    }
+    fn row_names(rows: &[(String, [f32; 4])]) -> Vec<&str> {
+        rows.iter().map(|(name, _)| name.as_str()).collect()
+    }
+
+    #[test]
+    fn a_controller_focuses_the_rows_in_view_and_the_focus_selects_one() {
+        let atlas = atlas();
+        let m = Measure(&atlas.font);
+        let list: Vec<_> = (0..20)
+            .map(|i| installed(&format!("m{i:02}"), &format!("Mod {i:02}"), None))
+            .collect();
+        let mut screen = ModsScreen::new(427, 240, false, &mods(&list));
+        // Six 28 px rows have their middle in the 169 px the list shows at this size.
+        let rows = drawn_rows(&screen, &m, 1);
+        let first_six = [
+            "Horizon",
+            "Minecraft",
+            "Mod 00",
+            "Mod 01",
+            "Mod 02",
+            "Mod 03",
+        ];
+        assert_eq!(row_names(&rows), first_six);
+        // A step off them scrolls the list first: it can go down, not up.
+        let areas = crate::widgets::last_scroll_areas();
+        assert_eq!(areas.len(), 1);
+        assert!(areas[0].down && !areas[0].up);
+        assert!(rows.iter().all(|(_, rect)| areas[0].holds(rect)));
+
+        // Nothing is selected until the focus lands on a row, which selects that mod.
+        assert!(screen.current().is_none());
+        let [x, y, w, h] = rows[2].1;
+        let middle = (f64::from(x + w / 2.0), f64::from(y + h / 2.0));
+        assert!(screen.focus_row(middle.0, middle.1));
+        assert_eq!(screen.current().map(|e| e.name.as_str()), Some("Mod 00"));
+        assert!(screen.list_focused && !screen.search_focused());
+        // The search box above the list is no row.
+        let search = centre(screen.geo().search);
+        assert!(!screen.focus_row(search.0, search.1));
+        assert_eq!(screen.current().map(|e| e.name.as_str()), Some("Mod 00"));
+
+        // Scrolled two rows and a half on, the six in view start at the third, half hidden, and
+        // each is found where it is drawn.
+        screen.scroll(middle.0, middle.1, -f64::from(ROW_H) * 2.5 / WHEEL_STEP);
+        let rows = drawn_rows(&screen, &m, 2);
+        assert_eq!(rows.first().map(|(name, _)| name.as_str()), Some("Mod 00"));
+        assert_eq!(rows.len(), 6);
+        let [x, y, w, h] = rows[0].1;
+        assert!(screen.focus_row((x + w / 2.0).into(), (y + h / 2.0).into()));
+        assert_eq!(screen.current().map(|e| e.name.as_str()), Some("Mod 00"));
+        let [x, y, w, h] = rows[5].1;
+        assert!(screen.focus_row((x + w / 2.0).into(), (y + h / 2.0).into()));
+        assert_eq!(screen.current().map(|e| e.name.as_str()), Some("Mod 05"));
+        assert!(crate::widgets::last_scroll_areas()[0].up);
+    }
+
+    #[test]
+    fn a_list_that_fits_registers_its_rows_and_nothing_to_scroll() {
+        let atlas = atlas();
+        let m = Measure(&atlas.font);
+        let screen = ModsScreen::new(427, 240, false, &ModList::default());
+        let rows = drawn_rows(&screen, &m, 1);
+        assert_eq!(row_names(&rows), ["Horizon", "Minecraft"]);
+        assert!(crate::widgets::last_scroll_areas().is_empty());
+    }
+
+    #[test]
+    fn the_stick_scrolls_the_list_or_the_panel_of_the_focused_column() {
+        let list: Vec<_> = (0..20)
+            .map(|i| installed(&format!("m{i:02}"), &format!("Mod {i:02}"), None))
+            .collect();
+        let mut screen = ModsScreen::new(427, 240, false, &mods(&list));
+        let g = screen.geo();
+        let at = |r: [i32; 4]| {
+            let (x, y) = centre(r);
+            (x as f32, y as f32)
+        };
+        let inside = |r: [i32; 4], (x, y): (f32, f32)| hit(r, x.into(), y.into());
+        // Over the list or the panel, the pointer stays where it is.
+        assert_eq!(screen.stick_scroll_point(at(g.list)), at(g.list));
+        assert_eq!(screen.stick_scroll_point(at(g.panel)), at(g.panel));
+        // From the search box and the sort button, the list; from the panel's buttons, the panel.
+        assert!(inside(g.list, screen.stick_scroll_point(at(g.search))));
+        assert!(inside(g.list, screen.stick_scroll_point(at(g.sort))));
+        for button in g.buttons {
+            assert!(inside(g.panel, screen.stick_scroll_point(at(button))));
+        }
+        // So the wheel sent there scrolls the list, which the search box's own place does not.
+        let (x, y) = at(g.search);
+        screen.scroll(x.into(), y.into(), -1.0);
+        assert_eq!(screen.list.amount, 0.0);
+        let (x, y) = screen.stick_scroll_point(at(g.search));
+        screen.scroll(x.into(), y.into(), -1.0);
+        assert_eq!(screen.list.amount, WHEEL_STEP);
     }
 
     #[test]

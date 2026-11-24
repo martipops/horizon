@@ -369,6 +369,41 @@ pub struct Chat {
 /// the chat screen itself (`ChatListener.acceptNextDelayedMessage`).
 pub const QUEUE_EXPAND_ID: &str = "minecraft:internal/expand_chat_queue";
 
+/// How tall the queue row's clickable band is, under the messages (`chatBottom + 1 .. + 10`).
+const QUEUE_ROW_HEIGHT: i32 = 9;
+/// The room a press target keeps around its text for the focus outline, which is drawn on the
+/// target's edge: a pixel left of the first glyph and a pixel under the line. The last glyph's
+/// advance and the line's top row leave as much on the other two sides.
+const PRESS_TARGET_ROOM: i32 = 1;
+
+/// The stretches of a chat line a press does something on, as (text, left, right) in the line's
+/// own pixels: each run of text sharing one click event and, with `copy`, each run with none
+/// that isn't blank.
+fn pressable_runs(font: &crate::font::Font, content: &Text, copy: bool) -> Vec<(String, f32, f32)> {
+    let content = content.resolve_legacy();
+    let mut runs: Vec<(Option<&ClickEvent>, String, f32, f32)> = Vec::new();
+    let mut x = 0.0;
+    for span in &content.spans {
+        let (click, left) = (span.click_event(), x);
+        x += span
+            .text
+            .chars()
+            .map(|c| font.advance(c, &span.style))
+            .sum::<f32>();
+        match runs.last_mut() {
+            Some((last, text, _, right)) if *last == click => {
+                text.push_str(&span.text);
+                *right = x;
+            }
+            _ => runs.push((click, span.text.clone(), left, x)),
+        }
+    }
+    runs.into_iter()
+        .filter(|(click, text, ..)| click.is_some() || (copy && !text.trim().is_empty()))
+        .map(|(_, text, left, right)| (text, left, right))
+        .collect()
+}
+
 /// `ChatComponent`'s queue row: how many messages Chat Delay holds, with the
 /// style that shows the next one (a click, and `chat.queue.tooltip` on hover).
 pub fn queue_line(queued: usize) -> Text {
@@ -1175,6 +1210,60 @@ impl Chat {
             }
         }
         None
+    }
+    /// What a press does something on in the open chat, for a controller's focus to land on: the
+    /// text and the GUI-pixel rectangle of each stretch of the lines in view that has a click
+    /// event, and of the queue row. With `copy` (PvP & HUD's copy on click) the text between
+    /// them too, which copies its message. A press at a rectangle's middle is the one
+    /// [`Chat::style_at`], [`Chat::queue_style_at`] and [`Chat::message_at`] find there.
+    pub fn press_targets(
+        &self,
+        font: &crate::font::Font,
+        height: i32,
+        copy: bool,
+    ) -> Vec<(String, [f32; 4])> {
+        let scale = self.options.scale as f32;
+        let chat_bottom = hud_layout::floor((height - 40) as f32 / scale);
+        let entry_height = self.options.line_height();
+        let max_width = self.max_width() as f32;
+        let mut out = Vec::new();
+        // GUI pixels from the lines' own (`layout`'s scale and 4 px margin), `rows` tall from
+        // `top`, the row above the text.
+        let room = PRESS_TARGET_ROOM as f32;
+        let mut row = |content: &Text, top: i32, rows: i32, copy: bool| {
+            for (text, left, right) in pressable_runs(font, content, copy) {
+                let width = right.min(max_width) - left;
+                if width > 0.0 {
+                    let rect = [
+                        left + 4.0 - room,
+                        top as f32,
+                        width + room,
+                        rows as f32 + room,
+                    ];
+                    out.push((text, rect.map(|v| v * scale)));
+                }
+            }
+        };
+        let visible = self
+            .lines
+            .len()
+            .saturating_sub(self.scroll)
+            .min(self.lines_per_page(true));
+        for i in 0..visible {
+            let line = &self.lines[i + self.scroll];
+            let pressable = copy || line.content.spans.iter().any(|s| s.click_event().is_some());
+            if pressable {
+                let top = chat_bottom - (i as i32 + 1) * entry_height;
+                row(&line.content, top, entry_height, copy);
+            }
+        }
+        if self.queue > 0 && !self.lines.is_empty() {
+            // Its text starts on its band's first row, a line's on its second.
+            let top = chat_bottom + 1 - PRESS_TARGET_ROOM;
+            let rows = QUEUE_ROW_HEIGHT + PRESS_TARGET_ROOM;
+            row(&queue_line(self.queue), top, rows, false);
+        }
+        out
     }
     /// `DrawingFocusedGraphicsAccess.handleTag` and `handleTagIcon` with the
     /// cursor at GUI position `(x, y)` while chat is focused: the tooltip of

@@ -1240,6 +1240,115 @@ fn a_click_on_the_queue_row_is_the_next_held_message() {
     assert!(at(&chat, 0.5, bottom + 2.0).is_none());
 }
 
+/// A piece of chat text that does `click` when pressed.
+fn link(text: &str, click: &ClickEvent, color: Option<u32>) -> Text {
+    Text::styled(
+        text,
+        Style {
+            click: Some(click.clone()),
+            color,
+            ..Style::default()
+        },
+    )
+}
+
+fn middle([x, y, w, h]: [f32; 4]) -> (f64, f64) {
+    (f64::from(x + w / 2.0), f64::from(y + h / 2.0))
+}
+
+/// What a controller's focus lands on in the open chat: each link, as wide as its text and as tall
+/// as its line, and a press at its middle is that link's click.
+#[test]
+fn the_links_of_the_lines_in_view_are_press_targets() {
+    let font = font();
+    let run = ClickEvent::RunCommand("/say hi".into());
+    let fill = ClickEvent::SuggestCommand("/tp 1 2 3".into());
+    let height = 361;
+    for scale in [0.5, 1.0] {
+        let mut chat = Chat::default();
+        chat.options.scale = scale;
+        add(&mut chat, &font, Text::literal("no link here"));
+        // One link in two colours, then another on the same line.
+        let line = Text::literal("Run ")
+            .append(link("[cli", &run, None))
+            .append(link("ck]", &run, Some(text::GREEN)))
+            .append(Text::literal(" or "))
+            .append(link("[fill]", &fill, None));
+        add(&mut chat, &font, line);
+
+        let targets = chat.press_targets(&font, height, false);
+        let texts: Vec<&str> = targets.iter().map(|(text, _)| text.as_str()).collect();
+        assert_eq!(texts, ["[click]", "[fill]"]);
+        let scale = scale as f32;
+        let line_height = chat.options.line_height() as f32;
+        let bottom = ((height - 40) as f32 / scale).floor();
+        let mut left = 4.0 + font.width("Run ");
+        for ((text, rect), click) in targets.iter().zip([&run, &fill]) {
+            let width = font.width(text);
+            // The text's own place, with a pixel left of it and one under the line for the
+            // focus outline.
+            let top = bottom - line_height;
+            let expected = [left - 1.0, top, width + 1.0, line_height + 1.0].map(|v| v * scale);
+            assert_eq!(*rect, expected, "{text} at scale {scale}");
+            let (x, y) = middle(*rect);
+            assert_eq!(chat.click_at(&font, height, x, y).as_ref(), Some(click));
+            left += width + font.width(" or ");
+        }
+
+        // PvP & HUD's copy on click: the text between the links copies its message, so it is a
+        // target too, on the older line above as well.
+        let targets = chat.press_targets(&font, height, true);
+        let texts: Vec<&str> = targets.iter().map(|(text, _)| text.as_str()).collect();
+        assert_eq!(texts, ["Run ", "[click]", " or ", "[fill]", "no link here"]);
+        for (text, rect) in &targets {
+            let (x, y) = middle(*rect);
+            let plain = !text.starts_with('[');
+            assert_eq!(
+                chat.click_at(&font, height, x, y).is_none(),
+                plain,
+                "{text}"
+            );
+            assert!(chat.message_at(height, x, y).is_some(), "{text}");
+        }
+    }
+}
+
+/// Lines scrolled out of the open chat are no targets, and the queue row under the messages is
+/// one while it holds something.
+#[test]
+fn press_targets_follow_the_scroll_and_the_queue_row() {
+    let font = font();
+    let mut chat = Chat::default();
+    let height = 361;
+    let command = |i: usize| ClickEvent::RunCommand(format!("/line {i}"));
+    for i in 0..30 {
+        add(&mut chat, &font, link("[go]", &command(i), None));
+    }
+    let page = chat.lines_per_page(true);
+    for scroll in [0, 5] {
+        chat.scroll = scroll;
+        let targets = chat.press_targets(&font, height, false);
+        assert_eq!(targets.len(), page);
+        // From the newest line in view up.
+        for (row, (_, rect)) in targets.iter().enumerate() {
+            let (x, y) = middle(*rect);
+            let expected = Some(command(29 - scroll - row));
+            assert_eq!(chat.click_at(&font, height, x, y), expected);
+        }
+    }
+
+    chat.queue = 2;
+    let targets = chat.press_targets(&font, height, false);
+    assert_eq!(targets.len(), page + 1);
+    let (x, y) = middle(targets[page].1);
+    let style = chat.queue_style_at(&font, height, x, y);
+    assert!(matches!(
+        style.and_then(|s| s.click),
+        Some(ClickEvent::Custom { id, .. }) if id.as_str() == QUEUE_EXPAND_ID
+    ));
+    assert_eq!(chat.click_at(&font, height, x, y), None);
+}
+
 /// A repeat merged by compact chat leaves a reader scrolled up where they were.
 #[test]
 fn a_compact_repeat_keeps_the_scrolled_view_still() {

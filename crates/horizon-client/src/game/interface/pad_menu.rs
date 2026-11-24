@@ -268,6 +268,19 @@ fn beside(rect: Rect, targets: &[Rect]) -> Option<usize> {
         .map(|(i, _)| i)
 }
 
+/// The side of an inventory slot (GUI pixels).
+const SLOT_SIZE: f32 = 16.0;
+
+/// Where the focus starts on the chat: Leave Bed in a bed (`leave_bed`, its bounds), else the
+/// chat box. The log's links are targets above both.
+fn chat_first_target(targets: &[Target], leave_bed: Option<Rect>) -> Option<Target> {
+    let same = |a: Rect, b: Rect| a.iter().zip(b).all(|(a, b)| (a - b).abs() < SAME_RECT);
+    leave_bed
+        .and_then(|bed| targets.iter().find(|t| same(t.rect, bed)))
+        .or_else(|| targets.iter().find(|t| t.kind == Kind::Field))
+        .copied()
+}
+
 /// Where letting go of A clicks: the armed button, if the focus is still on it. A row scrolled
 /// into view under A (`pad_reveal`) is found again a fraction of a pixel off.
 fn armed_click(armed: Option<Rect>, focus: Option<Target>) -> Option<(f32, f32)> {
@@ -432,7 +445,7 @@ impl Game<'_> {
             return targets;
         };
         let slot = |x: f32, y: f32| Target {
-            rect: [x, y, 16.0, 16.0],
+            rect: [x, y, SLOT_SIZE, SLOT_SIZE],
             kind: Kind::Slot,
         };
         match self.screen {
@@ -459,6 +472,8 @@ impl Game<'_> {
                         let (x, y) = self.slot_position(i);
                         slot(ox + x, oy + y)
                     }));
+                    // Destroy Item is no slot of the menu, and is clicked like one.
+                    targets.extend(self.pad_destroy_slot());
                 } else {
                     for r in 0..5 {
                         for c in 0..9 {
@@ -489,6 +504,20 @@ impl Game<'_> {
         targets
     }
 
+    /// The creative inventory's Destroy Item slot, while its tab is open: A empties the hand
+    /// there and Y, a Shift click, the whole inventory, as the mouse does.
+    fn pad_destroy_slot(&self) -> Option<Target> {
+        let batch = self
+            .gui_batch()
+            .filter(|_| self.creative_inventory_open())?;
+        let (ox, oy) = Self::creative_origin(&batch);
+        let (x, y) = Creative::TRASH_POSITION;
+        Some(Target {
+            rect: [ox + x, oy + y, SLOT_SIZE, SLOT_SIZE],
+            kind: Kind::Slot,
+        })
+    }
+
     /// Where focus starts when a menu opens: the held hotbar slot in an
     /// inventory, else the first button, else the first target that isn't
     /// a tab.
@@ -499,6 +528,14 @@ impl Game<'_> {
         }
         if self.prompt_open() {
             return self.pad_prompt_first(targets).or(targets.first().copied());
+        }
+        // The chat opens on its own controls, wherever the pad left it last: a link of the log
+        // comes first in reading order and would take the first press.
+        if self.title.is_none()
+            && self.screen == Screen::Chat
+            && let Some(own) = chat_first_target(targets, self.leave_bed_rect())
+        {
+            return Some(own);
         }
         let rects: Vec<Rect> = targets.iter().map(|t| t.rect).collect();
         // Back on a screen the pad left: where it was, as vanilla keeps a
@@ -1102,9 +1139,11 @@ impl Game<'_> {
                 && (t.center().0 - from.0).abs() <= 0.5
                 && (t.center().1 - from.1).abs() <= 0.5
         });
+        // Destroy Item sits a slot's step past the hotbar: a held direction stops before it too.
+        let to_slot = targets[i].kind == Kind::Slot && Some(targets[i]) != self.pad_destroy_slot();
         if self.pad.menu.repeats > 0
             && on_slot
-            && gamepad::repeat_crosses_slots(from, centres[i], targets[i].kind == Kind::Slot)
+            && gamepad::repeat_crosses_slots(from, centres[i], to_slot)
         {
             return;
         }
@@ -1264,8 +1303,14 @@ impl Game<'_> {
             return;
         }
         let size = self.gui_size();
-        if let Some(title) = self.title.as_mut().filter(|t| t.focus_selects_row()) {
-            title.focus_world_row(target.center(), size);
+        let (x, y) = target.center();
+        if self.screen == Screen::Options && self.ui.options.page() == Page::Mods {
+            // The Mods list: the panel beside it shows the mod the focus is on.
+            if let Some(mods) = self.ui.options.mods_screen.as_mut() {
+                mods.focus_row(x.into(), y.into());
+            }
+        } else if let Some(title) = self.title.as_mut().filter(|t| t.focus_selects_row()) {
+            title.focus_world_row((x, y), size);
         }
     }
 
@@ -2481,6 +2526,29 @@ mod tests {
         assert_eq!(armed_click(Some(rect), moved), None);
         assert_eq!(armed_click(Some(rect), None), None);
         assert_eq!(armed_click(None, focus), None);
+    }
+
+    #[test]
+    fn the_chat_opens_on_its_box_or_on_leave_bed_not_on_a_link_above() {
+        let t = |rect, kind| Target { rect, kind };
+        // A link of the log, Leave Bed and the chat box, as a 427x240 screen draws them.
+        let link = t([28.0, 191.0, 42.0, 9.0], Kind::Row);
+        let bed = t([113.0, 200.0, 200.0, 20.0], Kind::Button);
+        let field = t([4.0, 228.0, 419.0, 12.0], Kind::Field);
+        // Reading order starts on the link, where the first A would press it.
+        let order = key_focus::tab_step(&[link, field], None, true);
+        assert_eq!(order, Some(0));
+        assert_eq!(chat_first_target(&[link, field], None), Some(field));
+        assert_eq!(
+            chat_first_target(&[link, bed, field], Some(bed.rect)),
+            Some(bed)
+        );
+        // Leave Bed not drawn yet: the box.
+        assert_eq!(
+            chat_first_target(&[link, field], Some(bed.rect)),
+            Some(field)
+        );
+        assert_eq!(chat_first_target(&[link], None), None);
     }
 
     #[test]

@@ -71,6 +71,12 @@ Cases:
 - osk_sign_done: on a sign Done (Menu) closes the sign with what was typed, as its Done button.
 - osk_chat_suggestions: over chat with the keyboard open, RT fills in the selected command suggestion (Tab) and the
   right stick picks another first (Up and Down), without closing the keyboard.
+- chat_log_links: a link in the chat log is a target: the chat opens on its box, the D-pad reaches the link from
+  there, A on one fills the box in and on the next runs its command.
+- mods_list_rows: the Mods screen's rows are targets: the focus on one selects that mod, the D-pad walks every row
+  and scrolls the hidden ones, and the right stick scrolls the list from the search box.
+- creative_destroy_slot: the creative inventory's Destroy Item slot is a target: a held D-pad stops at the hotbar's
+  end, a fresh press steps onto it, and A there destroys the carried stack.
 - osk_labels: the on-screen keyboard over chat draws its keys' labels, in Horizon's look and with no menu style given
   (`HORIZON_MENU_STYLE=vanilla`, where the overlays have no fonts of their own and use the pack's).
 Needs built fast binaries (`cargo build --profile fast -p horizon-game -p horizon-client-lib --bins`)
@@ -2714,6 +2720,193 @@ def chat_suggestion_rows(args, name):
     return check.failures
 
 
+# One chat line with two links: the first fills the chat box in, the second runs a command. The empty text
+# leads, as a list's first part hands its click event to the rest.
+CHAT_FILLED = 'filled by the pad'
+# `/list` runs at once from a click: any player may send it and it signs nothing, so nothing asks first.
+CHAT_RAN = 'players online'
+CHAT_LINKS = ('tellraw @s ["",{text:"[fill]",click_event:{action:"suggest_command",command:"%s"}}," then ",'
+              '{text:"[run]",click_event:{action:"run_command",command:"/list"}}]' % CHAT_FILLED)
+
+
+def chat_log_links(args, name):
+    """The chat log's links are targets: the chat still opens on its box, the D-pad reaches a link from there, and
+    A presses the one focused."""
+    game = Game(args, name, world=True)
+    check = Check()
+    try:
+        game.ctl('command', CHAT_LINKS)
+        time.sleep(SETTLE)
+        game.pad('up')
+        time.sleep(1.5)
+        check(game.menu()['keyboard'], 'the pad opened no keyboard over chat')
+        game.pad('east')
+        menu = game.menu()
+        field = next((tuple(t['rect']) for t in menu['targets'] if t['kind'] == 'field'), None)
+        check(menu['mode'] == 'focus' and field and game.focus() == field,
+              f"the chat did not open on its box: {menu['mode']}, focus {menu['focus']}")
+        links = {w.get('label'): tuple(w['bounds']) for w in game.widgets()}
+        fill, run = links.get('[fill]'), links.get('[run]')
+        check(fill and run, f'the links are no widgets: {sorted(map(str, links))}')
+        if fill and run:
+            rects = game.rects()
+            check(fill in rects and run in rects, f'the links are no targets: {rects}')
+            game.pad('up')
+            check(game.focus() == fill, f'up from the chat box landed on {game.focus()}, not on [fill] at {fill}')
+            shot(game, 'chat-log-link')
+            game.pad('south')
+            typed = game.ctl('screen').get('chat_input')
+            check(typed == CHAT_FILLED, f'A on [fill] left the chat box holding {typed!r}')
+            game.pad('right')
+            check(game.focus() == run, f'right landed on {game.focus()}, not on [run] at {run}')
+            game.pad('south')
+            time.sleep(1)
+            log = ' '.join(map(str, game.ctl('chat-log', 3)['chat']))
+            check(CHAT_RAN in log, f'A on [run] ran nothing: {log}')
+    finally:
+        game.quit()
+    return check.failures
+
+
+# More rows than the list shows on any screen the cases run at.
+MOD_COUNT = 20
+
+
+def seed_mods(game_home):
+    """More installed mods than the Mods screen's list shows at once, each with a homepage."""
+    folder = game_home / 'horizon-mods'
+    folder.mkdir()
+    for i in range(MOD_COUNT):
+        manifest = (f'id = "padmod{i:02}"\nname = "Pad Mod {i:02}"\nversion = "1.0.0"\n'
+                    'description = "A row of the Mods list"\napi = "0.2"\nside = "both"\n'
+                    'capabilities = ["registries"]\nhomepage = "https://example.org"\n')
+        with zipfile.ZipFile(folder / f'padmod{i:02}.hmod', 'w') as archive:
+            archive.writestr('horizon-mod.toml', manifest)
+
+
+def enabled(game, label):
+    return next((w['enabled'] for w in game.widgets() if w.get('label') == label), None)
+
+
+def mods_list_rows(args, name):
+    """The Mods screen's list: its rows are targets, the focus on one selects that mod (its Homepage button comes
+    on), the D-pad walks every row, scrolling the hidden ones, and the right stick scrolls the list from the
+    search box."""
+    game = Game(args, name, seed=seed_mods)
+    check = Check()
+    try:
+        game.wait_targets()
+        game.title_buttons()
+        game.pad('west')
+        game.ctl('options', 'mods')
+        time.sleep(SETTLE)
+        game.wait_targets()
+        every = ['Horizon', 'Minecraft'] + [f'Pad Mod {i:02}' for i in range(MOD_COUNT)]
+        shown = [w['label'] for w in game.rows()]
+        check(shown and shown == every[:len(shown)] and len(shown) < len(every), f'rows in view: {shown}')
+        if not shown:
+            return check.failures
+        kinds = [t['kind'] for t in game.menu()['targets']]
+        check(kinds.count('row') == len(shown), f'the rows are no targets: {kinds}')
+        check(enabled(game, 'Homepage') is False, 'Homepage is on with no mod selected')
+        # From the search box, which is over the list and not in it, the stick scrolls the list, and back.
+        search = next(tuple(t['rect']) for t in game.menu()['targets'] if t['kind'] == 'field')
+        if game.focus() is None:
+            game.pad('down')
+        for _ in range(3):
+            if game.focus() == search:
+                break
+            game.pad('up')
+        check(game.focus() == search, f'the focus is on {game.focus()}, not the search box at {search}')
+        for _ in range(4):
+            game.stick()
+        check(game.rows()[0]['label'] != every[0], f'the right stick did not scroll the list: {every[0]} still on top')
+        check(game.focus() == search, f'the focus left the search box for {game.focus()}')
+        for _ in range(8):
+            game.stick(1)
+        check(game.rows()[0]['label'] == every[0], f"the right stick did not scroll back: {game.rows()[0]['label']}")
+        # Down the list: every mod in turn, the hidden ones scrolled into view.
+        walked = []
+        for _ in range(len(every) + 4):
+            game.pad('down')
+            label = game.focused_label()
+            if label not in every:
+                break
+            if label not in walked:
+                walked.append(label)
+            if label == 'Pad Mod 00':
+                shot(game, 'mods-list-row')
+                check(enabled(game, 'Homepage') is True, 'the focus on a mod did not select it: Homepage is off')
+        check(walked == every, f'the D-pad walked {walked}')
+        check(label not in every and game.focus() is not None, f'the D-pad never left the list: on {label}')
+        check(game.menu()['actions'], 'Back declares no button')
+    finally:
+        game.quit()
+    return check.failures
+
+
+# Destroy Item sits 20 px right of the hotbar's last slot (173 against 153 in the creative inventory's texture).
+DESTROY_SLOT_STEP = 20
+
+
+def near(a, b):
+    """Two GUI points within half a pixel."""
+    return abs(a[0] - b[0]) <= 0.5 and abs(a[1] - b[1]) <= 0.5
+
+
+def creative_destroy_slot(args, name):
+    """The creative inventory's Destroy Item slot is a target: a held D-pad stops at the hotbar's end before it, a
+    fresh press steps onto it, and A there destroys what the hand carries."""
+    game = Game(args, name, world=True)
+    check = Check()
+    try:
+        game.ctl('command', 'clear @s')
+        game.ctl('command', 'give @s dirt 16')
+        time.sleep(1)
+        game.ctl('key', 'e', 'tap')
+        time.sleep(SETTLE)
+        game.wait_targets()
+        game.pad('down')
+        # The survival inventory's tab: the one that shows the armour slots.
+        for _ in range(16):
+            if any(w['id'] == 'slot-500' for w in game.widgets()):
+                break
+            game.pad('rb')
+        slots = {w['id']: w['bounds'] for w in game.widgets() if w['kind'] == 'slot'}
+        check('slot-500' in slots, 'the bumpers never reached the inventory tab')
+        x, y, w, h = slots['slot-8']
+        destroy = (x + DESTROY_SLOT_STEP, y, w, h)
+        check(destroy in game.rects(), f'no target on Destroy Item at {destroy}')
+        last = (x + w / 2, y + h / 2)
+        first = slots['slot-0']
+        crosshair_walk(game, first[0] + w / 2, first[1] + h / 2)
+        game.ctl('pad', 'right', 'down')
+        time.sleep(2.5)
+        stopped = tuple(game.menu()['pointer'])
+        game.ctl('pad', 'right', 'up')
+        time.sleep(SETTLE)
+        check(near(stopped, last), f'the held D-pad stopped at {stopped}, not on the last hotbar slot at {last}')
+        game.pad('right')
+        on_destroy = (destroy[0] + w / 2, destroy[1] + h / 2)
+        at = tuple(game.menu()['pointer'])
+        check(near(at, on_destroy), f'a fresh press went to {at}, not onto Destroy Item at {on_destroy}')
+        shot(game, 'creative-destroy-slot')
+        hotbar = game.ctl('inventory')['hotbar']
+        held = next((i for i, s in enumerate(hotbar) if s and s.get('count')), None)
+        check(held is not None, f'no dirt in the hotbar: {hotbar}')
+        if held is not None:
+            game.ctl('click-slot', held)
+            time.sleep(SETTLE)
+            check(game.ctl('inventory')['carried'], 'the stack was not picked up')
+            game.pad('south')
+            inventory = game.ctl('inventory')
+            check(not inventory['carried'] and not inventory['counts'].get('minecraft:dirt'),
+                  f"A on Destroy Item kept the stack: {inventory['carried']}, {inventory['counts']}")
+    finally:
+        game.quit()
+    return check.failures
+
+
 def server_list_bumpers(args, name):
     """The bumpers move the selected server, and the list saves it."""
     game = Game(args, name, seed=seed_servers)
@@ -4757,6 +4950,9 @@ CASES = {'idle_a': idle_a, 'idle_b': idle_b, 'idle_x': idle_x, 'release': releas
          'osk_chat_suggestions': osk_chat_suggestions,
          'recipe_search_keyboard': recipe_search_keyboard,
          'chat_suggestion_rows': chat_suggestion_rows,
+         'chat_log_links': chat_log_links,
+         'mods_list_rows': mods_list_rows,
+         'creative_destroy_slot': creative_destroy_slot,
          'server_list_bumpers': server_list_bumpers,
          'osk_sign': osk_sign,
          'osk_debug_options': osk_debug_options,

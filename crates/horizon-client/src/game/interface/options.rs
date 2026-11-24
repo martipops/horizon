@@ -347,9 +347,14 @@ impl Game<'_> {
     pub(super) fn options_scroll(&mut self, amount: f32) -> Result<()> {
         if self.pad_stick_scroll() {
             let size = self.gui_size();
-            self.ui
-                .options
-                .scroll_at(&self.settings, size, self.cursor, amount);
+            // The Mods screen scrolls what the pointer is over, and a controller's sits on the
+            // focused widget: the stick scrolls the list or the panel that widget goes with.
+            let options = &self.ui.options;
+            let at = match &options.mods_screen {
+                Some(mods) if options.page() == Page::Mods => mods.stick_scroll_point(self.cursor),
+                _ => self.cursor,
+            };
+            self.ui.options.scroll_at(&self.settings, size, at, amount);
             return Ok(());
         }
         let framebuffer = self.renderer.as_ref().map_or([1280, 720], |r| {

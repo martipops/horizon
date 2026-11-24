@@ -1780,12 +1780,37 @@ impl Game<'_> {
         }
         Some(horizon_protocol::crypto::uuid_string(bits))
     }
+    /// The open chat's links, its row of held-back messages and, with copy on click, its
+    /// messages are focus targets, named by their text: the chat box registers, so a controller
+    /// has no crosshair here to press them with (`Chat::press_targets`). Rows, as the
+    /// suggestions are: text has no highlighted sprite, and a focused row gets the outline.
+    fn register_chat_log_targets(&self, height: i32) {
+        use horizon_client::widgets::{self, Kind};
+        let font = &self.gui.atlas.font;
+        let copy = self.pvp_chat().copy;
+        for (text, rect) in self.ui.chat.press_targets(font, height, copy) {
+            widgets::record_as(&text, rect, true, Kind::Row);
+            widgets::target_as(rect, Kind::Row);
+        }
+    }
+    /// The Leave Bed button's bounds while the chat is the sleeper's (`InBedChatScreen`).
+    pub(super) fn leave_bed_rect(&self) -> Option<[f32; 4]> {
+        if !(self.ui.in_bed_chat && self.sleeping.is_some()) {
+            return None;
+        }
+        let (w, h) = self.gui_size();
+        let (x, y, w, h) = self
+            .built_chat(w, h)
+            .map_or_else(|| Self::leave_bed_button(w, h), |l| l.leave_bed);
+        Some([x as f32, y as f32, w as f32, h as f32])
+    }
     pub(super) fn draw_chat_screen(&mut self, batch: &mut HudBatch) {
         // A change no key was pressed after (a click, a paste, the chat opening
         // on a draft) reaches mods by the next frame.
         self.ask_chat_suggestions();
         self.draw_screen_phase(batch, horizon_client::screen_draw::RenderPhase::Background);
         self.gui_layer("minecraft:chat", batch, |g, batch| g.draw_chat(batch));
+        self.register_chat_log_targets(batch.height as i32);
         let Some(mut screen) = self.ui.chat_screen.take() else {
             self.draw_screen_phase(batch, horizon_client::screen_draw::RenderPhase::Foreground);
             return;

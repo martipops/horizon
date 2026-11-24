@@ -352,7 +352,8 @@ on it is out of the pad's reach. Moving the real mouse hands control back at onc
 
 A screen registers what it draws as focus targets with their kind
 (`widgets::target_as`): classic buttons, sliders, edit
-boxes and list rows (worlds, servers, languages, superflat layers and presets, biomes), icon buttons (the title's,
+boxes and list rows (worlds, servers, languages, superflat layers and presets, biomes, the Mods screen's mods,
+the open chat's links), icon buttons (the title's,
 the pause menu's and Realms'), inventory and container slots, creative and recipe-book
 tabs, and the stations' own buttons (trades, loom patterns, beacon effects,
 enchantments, stonecutter recipes, the recipe book's recipes, pages and
@@ -395,6 +396,10 @@ the crafting result, armour to the player's grid.
   `widgets::steps_value`. Stepping at once rather than after A, as sliders do, keeps A's step and adds no
   mode to find: passing over a choice with up and down never changes it.
 - **The server list**: the bumpers move the selected server up or down, as its arrows do.
+- **The Mods screen**: the focus on a row of the list selects that mod, as the arrow keys do, so the panel beside
+  it and its Homepage, Issues and Config buttons follow the focus. The screen scrolls what the pointer is over,
+  and the pad's sits on the focused widget: the right stick scrolls the list from the search box or the sort
+  button, and the panel from its buttons.
 - **Lists** follow focus: a step out of a list that can still scroll that way
   scrolls it and lands on the next row once it is drawn, so every row can be
   reached; the buttons below or above come after its last or first row.
@@ -486,6 +491,9 @@ Approximations:
   numbers live in one place (`horizon_client_input::snap`).
 - D-pad hops to the nearest target that way (a slot, a button). Held, it stops
   at the edge of the slots it is on; a fresh press crosses.
+- The creative inventory's **Destroy Item** is a target one step right of the hotbar. A held direction stops at
+  the hotbar's last slot, so only a fresh press reaches it. There A or X empties the hand and Y, the pad's
+  Shift + click, empties the whole inventory, as the mouse does.
 - A = left click, X = right click, Y = quick move, B = back; View and the left
   stick click throw, as in focus mode.
 - LB / RB switch tabs (creative, Statistics, Advancements); with the recipe book
@@ -575,7 +583,11 @@ Done, which is Enter there. Over chat, RT is Tab: it fills in the selected comma
 the next one (`CommandSuggestions`); the right stick pushed up or down picks the suggestion before or after
 (the arrow keys), so the suggestions are reached without closing the keyboard. It opens by itself when the pad opens chat or a
 sign, but not over the chat a sleeper gets (the game opens that one): there
-it waits for A on the chat box. It types into chat (local and server), signs, books being written, the title screens' fields,
+it waits for A on the chat box. With the keyboard closed (B), up from the chat box goes to the log: each stretch
+of text with a click event in the lines in view is a row (a link, a player's name, a server's `[click here]`, a
+screenshot's file name, the row of messages Chat Delay holds back), and A on the focused one is a click there.
+The right stick scrolls the log. With PvP & HUD's copy on click, the rest of each line is a row too, which
+copies its message. The chat still opens on its box, or on Leave Bed in a bed. It types into chat (local and server), signs, books being written, the title screens' fields,
 every options page's fields (searches, the packs', the language list's,
 splitscreen profiles), the creative and recipe-book searches, the mod browser's search, the anvil, the
 LAN screen's port and its game rules, a server dialog's inputs, command blocks, the game master blocks'
