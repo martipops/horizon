@@ -1355,8 +1355,8 @@ pub(super) fn station_inputs(gs: &GuestStation) -> Vec<ItemStack> {
 }
 
 #[cfg(test)]
+#[path = "lan_stations/answer_tests.rs"]
+mod answer_tests;
+#[cfg(test)]
 #[path = "lan_stations/portable_anvil_tests.rs"]
 mod portable_anvil_tests;
-#[cfg(test)]
-#[path = "lan_stations/station_answer_tests.rs"]
-mod station_answer_tests;
