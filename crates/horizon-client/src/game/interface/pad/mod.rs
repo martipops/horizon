@@ -255,9 +255,6 @@ mod hardware {
         ) {
         }
         pub(in crate::game) fn report_status(&self, _: &mut Pads, _: Option<PadId>) {}
-        pub(in crate::game) fn connected(&self, _: PadId) -> bool {
-            false
-        }
         pub(in crate::game) fn uuid(&self, _: PadId) -> [u8; 16] {
             [0; 16]
         }

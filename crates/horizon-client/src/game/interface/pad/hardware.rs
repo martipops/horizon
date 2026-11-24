@@ -742,12 +742,6 @@ impl PadRouter {
         events
     }
 
-    pub(in crate::game) fn connected(&self, id: PadId) -> bool {
-        self.gilrs
-            .as_ref()
-            .is_some_and(|g| g.connected_gamepad(id).is_some())
-    }
-
     /// The kind of controller (its maker, model and bus; two of one model share it), to know it
     /// back when it reconnects under a new id; zero when the system doesn't say.
     pub(in crate::game) fn uuid(&self, id: PadId) -> [u8; 16] {

@@ -6,7 +6,7 @@ use super::owners::{Effect, Identity, P1, Rules};
 use super::*;
 use crate::game::pad::{PadEvent, PadId};
 use horizon_client::controller_notice::{Notice, NoticeId, Priority};
-use horizon_client::gamepad::{Button, MenuJob, PadState};
+use horizon_client::gamepad::{MenuJob, PadState};
 
 /// The `turn` index of the guest found at `seat`, if any: `turn(i)` selects guest `i - 1`.
 fn guest_turn(seats: impl IntoIterator<Item = usize>, seat: usize) -> Option<usize> {
