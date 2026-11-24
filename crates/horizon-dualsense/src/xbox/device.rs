@@ -2,6 +2,8 @@
 //! (a Bluetooth report can take milliseconds), so the game only hands over what the pad should
 //! do.
 use crate::dualshock;
+#[cfg(not(target_os = "ios"))]
+use crate::rescan::Rescan;
 #[cfg(windows)]
 use crate::xbox::wgi;
 use crate::xbox::{Motors, Target};
@@ -352,9 +354,13 @@ pub struct Link {
 }
 
 impl Link {
-    /// Start the thread and look for the pad `target` names.
+    /// Start the thread and look for the pad `target` names. Where the output is turned off
+    /// ([`crate::output_allowed`]) no thread starts and the Link stays closed.
     #[cfg(not(target_os = "ios"))]
     pub fn start(target: Target) -> Link {
+        if !crate::output_allowed() {
+            return Link::closed();
+        }
         let (tx, rx) = mpsc::channel();
         let open = Arc::new(AtomicU8::new(0));
         let shown = open.clone();
@@ -373,6 +379,11 @@ impl Link {
     /// No output on iOS: hidapi has no backend there. The Link never opens.
     #[cfg(target_os = "ios")]
     pub fn start(_target: Target) -> Link {
+        Link::closed()
+    }
+
+    /// A Link with no thread: it never opens a pad, and what it is told goes nowhere.
+    fn closed() -> Link {
         Link {
             tx: None,
             open: Arc::new(AtomicU8::new(0)),
@@ -423,11 +434,6 @@ impl Drop for Link {
     }
 }
 
-/// Looks for the pad this many times, a second apart, after a scan finds nothing (its hidraw
-/// node may appear after the controller does).
-#[cfg(not(target_os = "ios"))]
-const SCAN_TRIES: u32 = 5;
-
 #[cfg(not(target_os = "ios"))]
 struct Writer {
     api: Option<HidApi>,
@@ -443,8 +449,8 @@ struct Writer {
     /// The DualShock 4 lightbar's colour, once the game set one: every report carries it, and a
     /// pad that comes back gets it again.
     light: Option<[u8; 3]>,
-    scans_left: u32,
-    next_scan: Instant,
+    /// When to look for the pad again.
+    rescan: Rescan,
 }
 
 /// What the writer needs from an open pad. It is a trait so the state machine can be tested
@@ -473,20 +479,19 @@ impl Writer {
             step_end: None,
             sent: None,
             light: None,
-            scans_left: 1,
-            next_scan: Instant::now(),
+            rescan: Rescan::new(Instant::now()),
         }
     }
 
     fn run(mut self, rx: mpsc::Receiver<Message>) {
         loop {
             let now = Instant::now();
-            if self.pad.is_none() && self.scans_left > 0 && now >= self.next_scan {
+            if self.pad.is_none() && self.rescan.due(now) {
                 self.scan();
             }
             let wake = [
                 self.step_end,
-                (self.pad.is_none() && self.scans_left > 0).then_some(self.next_scan),
+                self.rescan.wake().filter(|_| self.pad.is_none()),
             ]
             .into_iter()
             .flatten()
@@ -508,8 +513,7 @@ impl Writer {
                     // read reports ERROR_BUSY instead of "no report yet"), so keep the handle and
                     // let the write judge it.
                     if self.pad.is_none() {
-                        self.scans_left = SCAN_TRIES;
-                        self.next_scan = Instant::now();
+                        self.rescan.asked(Instant::now());
                     }
                     continue;
                 }
@@ -525,8 +529,7 @@ impl Writer {
     }
 
     fn scan(&mut self) {
-        self.scans_left -= 1;
-        self.next_scan = Instant::now() + Duration::from_secs(1);
+        self.rescan.look(Instant::now());
         let api = match self.api.as_mut() {
             Some(api) => api.refresh_devices().map(|()| &*api),
             None => HidApi::new().map(|api| &*self.api.insert(api)),
@@ -541,20 +544,25 @@ impl Writer {
         match found {
             Some(Ok(pad)) => {
                 log::info!("Xbox output over {:?}", pad.transport());
-                self.open
-                    .store(1 + pad.transport() as u8, Ordering::Relaxed);
-                self.pad = Some(Box::new(pad));
-                self.sent = None;
-                self.scans_left = 0;
-                self.flush();
+                let transport = pad.transport();
+                self.take(Box::new(pad), transport);
             }
             Some(Err(e)) => {
                 // No access (Linux without a udev rule): vibration stays with gilrs.
                 log::info!("Horizon: the Xbox pad can't be opened for output: {e}");
-                self.scans_left = 0;
+                self.rescan.stop();
             }
             None => {}
         }
+    }
+
+    /// A pad that just opened: its motors are stopped, and it is told the lightbar's colour.
+    fn take(&mut self, pad: Box<dyn Handle>, transport: Transport) {
+        self.open.store(1 + transport as u8, Ordering::Relaxed);
+        self.pad = Some(pad);
+        self.sent = None;
+        self.rescan.opened(Instant::now());
+        self.flush();
     }
 
     /// Keep a new lightbar colour (`None`: stop setting one): the motors may not have changed, so
@@ -615,14 +623,19 @@ impl Writer {
         }
     }
     /// Drop a handle that hidapi failed on, and look for the pad again: one that slept or was
-    /// unplugged may come back. Nothing is written through the old handle.
+    /// unplugged may come back. Nothing is written through the old handle. A pad that fails as
+    /// soon as it opens is not opened again at once, and not for ever ([`Rescan::lost`]).
     fn lost(&mut self, why: &str) {
         log::info!("Xbox output closed: {why}");
         self.pad = None;
         self.sent = None;
         self.open.store(0, Ordering::Relaxed);
-        self.scans_left = SCAN_TRIES;
-        self.next_scan = Instant::now();
+        if self.rescan.lost(Instant::now()) {
+            log::warn!(
+                "Horizon: the pad opens for output and fails straight away; \
+                 it is left alone until a controller connects"
+            );
+        }
     }
 }
 
@@ -676,10 +689,35 @@ mod tests {
         assert!(writer.pad.is_none());
         assert_eq!(open.load(Ordering::Relaxed), 0);
         assert!(writer.sent.is_none());
-        assert_eq!(writer.scans_left, SCAN_TRIES);
+        assert!(writer.rescan.wake().is_some());
         // The handle that failed is not written through again.
         writer.flush();
         assert_eq!(writes.lock().unwrap().len(), 1);
+    }
+
+    /// A pad that opens and fails its first write. The writer used to open it again at once, in
+    /// a loop; it waits now, and after a few of them it stops until the game asks.
+    #[test]
+    fn a_pad_that_fails_as_it_opens_is_not_opened_again_at_once() {
+        use crate::rescan::{EVERY, TRIES};
+        let open = Arc::new(AtomicU8::new(0));
+        let mut writer = Writer::new(open.clone(), Target::ANY);
+        let dead = || {
+            Box::new(FakePad {
+                writes: Arc::default(),
+                write_fails: true,
+            })
+        };
+        for _ in 1..TRIES {
+            let before = Instant::now();
+            writer.take(dead(), Transport::Usb);
+            assert!(writer.pad.is_none());
+            assert_eq!(open.load(Ordering::Relaxed), 0);
+            assert!(writer.rescan.wake() >= Some(before + EVERY));
+        }
+        writer.take(dead(), Transport::Usb);
+        assert!(writer.pad.is_none());
+        assert_eq!(writer.rescan.wake(), None);
     }
 
     #[test]

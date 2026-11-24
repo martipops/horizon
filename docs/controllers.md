@@ -45,6 +45,28 @@ once per loop iteration next to winit's events.
 - The pad last touched is the active one. Several pads are not merged.
 - `horizon-ctl pad ...` injects a virtual pad (buttons, sticks, triggers) into
   a running game, for tests without hardware.
+- **The log says what the reader saw**, so a player's `logs/latest.log` is
+  enough to read a "my controller does nothing" report:
+  - `Controller reader started: N connected` when gilrs opens (the Gamepad
+    option is on and this build has controllers). Without it, the game never
+    looked for a pad.
+  - `Controller connected: <name> (<vendor>:<product>, mapping sdl|driver|none,
+    uuid <id>)` for each pad there at that moment and each one that connects
+    later: what `horizon-ctl pad status` lists. `mapping` is where the layout
+    came from (an SDL row, the driver's own, or nothing), `uuid` the id an SDL
+    mapping row for this pad starts with, and `listed as <name>` follows when
+    the row gave the pad another name than the system's. Without this line,
+    the system (or gilrs) never handed the pad over.
+  - `Controller first input: <the same>` at the first press, or the first
+    stick or trigger pushed far enough to make it the active pad. With the
+    line before and not this one, the pad is listed and nothing it does
+    reaches the game.
+- `HORIZON_CONTROLLER_OUTPUT=0` in the environment keeps the game from writing
+  to any pad: no HID handle to a DualSense, an Xbox One pad or a DualShock 4
+  is opened ("DualSense output" and "Xbox One and DualShock 4 output" below),
+  the log says so once, and vibration goes through gilrs' force feedback. It
+  is for a pad whose input stops after a press or two: if it keeps working
+  with the switch set, the game's own writes are what stops it.
 
 ## Default mapping
 
@@ -822,6 +844,14 @@ shared, so gilrs keeps reading the same pad), the HID API on Windows.
   pad reconnects. It opens the pad once this window has the pad in hand (the
   pad is active and the window has focus), and looks again whenever gilrs
   sees a controller come or go.
+- **A pad that fails as it opens.** A handle hidapi fails on is dropped, and
+  the thread looks for the pad again: at once when the pad had been open for a
+  second (it slept or was unplugged), a second later when it failed sooner,
+  on its first read or write. After five of those in a row the thread stops
+  (`the DualSense opens for output and fails straight away` in the log) until
+  gilrs sees a controller come or go. It used to reopen such a pad in a loop
+  with no wait, listing every HID device and writing two log lines each time.
+  The Xbox writer follows the same rule (`rescan.rs` holds it for both).
 - **Off-safe.** Quitting (and the thread ending any other way) frees the
   triggers and stops the motors before the pad is closed. Another game on the
   same pad is left alone: nothing is written while this window is unfocused.
@@ -1127,7 +1157,9 @@ ids.
 - **Thread.** A report can block for milliseconds, so a thread of its own owns
   the pad, as the DualSense's does: the game hands it the vibration's steps, it
   writes the motors and ends them, and it looks for the pad again when it goes.
-- **Failures.** A failed write drops the handle and the thread scans again. The
+- **Failures.** A failed write drops the handle and the thread scans again, a
+  second later and five times at most when the pad failed as it opened (the
+  DualSense's "A pad that fails as it opens"). The
   writer does *not* probe with a zero-timeout read first: on Windows hidapi's
   overlapped read answers `ERROR_BUSY` (0xAA) whenever no input report is
   waiting, which closed the link on the first vibration over Bluetooth. A

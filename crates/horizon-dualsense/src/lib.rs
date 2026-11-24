@@ -18,12 +18,16 @@ pub mod haptics;
 #[cfg(target_os = "ios")]
 #[path = "haptics_stub.rs"]
 pub mod haptics;
+#[cfg(not(target_os = "ios"))]
+mod rescan;
 pub mod trigger;
 /// An Xbox One pad's output: its two handle motors and its two impulse triggers
 /// (docs/controllers.md "Xbox One and DualShock 4 output").
 pub mod xbox;
 
 pub use device::{Link, Transport};
+use std::ffi::OsStr;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Sony's vendor ID and the DualSense's product IDs (the plain pad and the Edge).
 pub const SONY: u16 = 0x054c;
@@ -33,6 +37,29 @@ pub const DUALSENSE_EDGE: u16 = 0x0df2;
 /// Whether a USB vendor / product pair is a DualSense.
 pub fn is_dualsense(vendor: u16, product: u16) -> bool {
     vendor == SONY && matches!(product, DUALSENSE | DUALSENSE_EDGE)
+}
+
+/// The environment switch that turns every pad's output off.
+const OUTPUT_SWITCH: &str = "HORIZON_CONTROLLER_OUTPUT";
+
+/// Whether the game may open a pad to write to it. `HORIZON_CONTROLLER_OUTPUT=0` says no: both
+/// links ([`Link`], [`xbox::Link`]) stay closed, so no HID handle to a DualSense, an Xbox One pad
+/// or a DualShock 4 is opened and nothing is written to one. Gilrs keeps reading the pads, and
+/// vibration falls back to its force feedback. It tells a pad whose input stops because of the
+/// game's own writes from one whose input never arrives (docs/controllers.md "Input layer").
+pub fn output_allowed() -> bool {
+    static SAID: AtomicBool = AtomicBool::new(false);
+    let off = output_off(std::env::var_os(OUTPUT_SWITCH).as_deref());
+    if off && !SAID.swap(true, Ordering::Relaxed) {
+        log::info!(
+            "Horizon: controller output is off ({OUTPUT_SWITCH}=0): no pad is opened for writing"
+        );
+    }
+    !off
+}
+
+fn output_off(switch: Option<&OsStr>) -> bool {
+    switch.is_some_and(|value| value == "0")
 }
 
 pub const USB_REPORT_ID: u8 = 0x02;
@@ -234,6 +261,14 @@ mod tests {
 
     fn crc32(data: &[u8]) -> u32 {
         !data.iter().fold(!0, |crc, b| crc32_update(crc, *b))
+    }
+
+    /// Unset, the pads' output is on; only `0` turns it off.
+    #[test]
+    fn the_output_switch_is_off_at_zero_only() {
+        assert!(output_off(Some(OsStr::new("0"))));
+        assert!(!output_off(None));
+        assert!(!output_off(Some(OsStr::new("1"))));
     }
 
     #[test]

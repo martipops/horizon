@@ -27,6 +27,8 @@ pub(super) struct Devices {
     known: Vec<gilrs::GamepadId>,
     /// The pad last touched; only its input counts.
     active: Option<gilrs::GamepadId>,
+    /// The pads whose first input the log has named.
+    heard: Vec<gilrs::GamepadId>,
     /// Vibrations playing (an effect stops when dropped) and when they end.
     rumbles: Vec<(gilrs::ff::Effect, Instant)>,
     /// The active pad is a DualSense.
@@ -65,20 +67,95 @@ fn controller_status(
     pad: &gilrs::Gamepad,
     active: Option<gilrs::GamepadId>,
 ) -> Value {
-    let mapping_source = match pad.mapping_source() {
-        gilrs::MappingSource::SdlMappings => "sdl",
-        gilrs::MappingSource::Driver => "driver",
-        gilrs::MappingSource::None => "none",
-    };
-    let uuid: String = pad.uuid().iter().map(|b| format!("{b:02x}")).collect();
     json!({
         "name": pad.name(),
         "vendor": pad.vendor_id(),
         "product": pad.product_id(),
-        "mapping_source": mapping_source,
-        "uuid": uuid,
+        "mapping_source": mapping_source(pad),
+        "uuid": uuid_hex(pad.uuid()),
         "active": active == Some(id),
     })
+}
+
+/// Where gilrs took a pad's layout from, as `pad status` and the log name it.
+fn mapping_source(pad: &gilrs::Gamepad) -> &'static str {
+    match pad.mapping_source() {
+        gilrs::MappingSource::SdlMappings => "sdl",
+        gilrs::MappingSource::Driver => "driver",
+        gilrs::MappingSource::None => "none",
+    }
+}
+
+fn uuid_hex(uuid: [u8; 16]) -> String {
+    uuid.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// A pad as the log names it: what `pad status` lists for it, so a player's `latest.log` alone
+/// says which pads the system handed the game and whether a mapping row was found for each.
+fn describe(pad: &gilrs::Gamepad) -> String {
+    pad_line(
+        pad.name(),
+        pad.os_name(),
+        pad.vendor_id().zip(pad.product_id()),
+        mapping_source(pad),
+        pad.uuid(),
+    )
+}
+
+fn pad_line(
+    name: &str,
+    os_name: &str,
+    ids: Option<(u16, u16)>,
+    mapping: &str,
+    uuid: [u8; 16],
+) -> String {
+    let ids = ids.map_or_else(
+        || "no ids".to_owned(),
+        |(vendor, product)| format!("{vendor:04x}:{product:04x}"),
+    );
+    // A mapping row gives the pad its own name: the system's says what was plugged in.
+    let listed = if os_name == name {
+        String::new()
+    } else {
+        format!(", listed as {os_name}")
+    };
+    format!(
+        "{name} ({ids}, mapping {mapping}, uuid {}{listed})",
+        uuid_hex(uuid)
+    )
+}
+
+/// Open gilrs and say in the log what it sees: that the reader started, then a `Controller
+/// connected:` line for each pad already there. A log with the first line and none of the second
+/// is a pad the system never handed over. `None` on a platform without gilrs (or a Linux without
+/// udev): controllers stay off and the game runs as before.
+fn open_reader() -> Option<gilrs::Gilrs> {
+    match gilrs_builder().build() {
+        Ok(gilrs) => {
+            log::info!(
+                "Controller reader started: {} connected",
+                gilrs.gamepads().count()
+            );
+            for (_, pad) in gilrs.gamepads() {
+                log::info!("Controller connected: {}", describe(&pad));
+            }
+            Some(gilrs)
+        }
+        Err(gilrs::Error::NotImplemented(_)) => None,
+        Err(e) => {
+            log::warn!("Horizon: controllers are unavailable: {e}");
+            None
+        }
+    }
+}
+
+/// The log's line for the first input a pad sends: with `Controller connected:` and no such
+/// line, the pad is listed and nothing it does reaches the game.
+fn log_first_input(heard: &mut Vec<gilrs::GamepadId>, id: gilrs::GamepadId, pad: &gilrs::Gamepad) {
+    if !heard.contains(&id) {
+        heard.push(id);
+        log::info!("Controller first input: {}", describe(pad));
+    }
 }
 
 impl Devices {
@@ -307,20 +384,12 @@ impl Pads {
             return;
         }
         self.devices.started = true;
-        self.devices.gilrs = match gilrs_builder().build() {
-            Ok(g) => {
-                for (id, pad) in g.gamepads() {
-                    log::info!("Controller connected: {}", pad.name());
-                    self.devices.known.push(id);
-                }
-                Some(g)
-            }
-            Err(gilrs::Error::NotImplemented(_)) => None,
-            Err(e) => {
-                log::warn!("Horizon: controllers are unavailable: {e}");
-                None
-            }
-        };
+        self.devices.gilrs = open_reader();
+        if let Some(gilrs) = &self.devices.gilrs {
+            self.devices
+                .known
+                .extend(gilrs.gamepads().map(|(id, _)| id));
+        }
     }
 
     /// Splitscreen reads the pads for every player (`PadRouter`): this game's own gilrs closes, or
@@ -333,6 +402,7 @@ impl Pads {
             self.devices.started = false;
             self.devices.active = None;
             self.devices.known.clear();
+            self.devices.heard.clear();
             self.device = None;
             self.devices.rumbles.clear();
             self.devices.dualsense = false;
@@ -361,7 +431,7 @@ impl Pads {
             }
             match event {
                 E::Connected => {
-                    log::info!("Controller connected: {}", gilrs.gamepad(id).name());
+                    log::info!("Controller connected: {}", describe(&gilrs.gamepad(id)));
                     // Some backends report the controllers already there as they open.
                     if !self.devices.known.contains(&id) {
                         self.devices.known.push(id);
@@ -381,6 +451,7 @@ impl Pads {
                 E::Disconnected => {
                     log::info!("Controller disconnected: {}", gilrs.gamepad(id).name());
                     self.devices.known.retain(|known| *known != id);
+                    self.devices.heard.retain(|heard| *heard != id);
                     self.connections.push(Connection::Disconnected {
                         active: self.devices.active == Some(id),
                     });
@@ -414,6 +485,9 @@ impl Pads {
             // The output follows the pad in use: a new one must not keep writing to the old.
             self.devices.xbox_output = None;
             self.devices.shown_light = None;
+        }
+        if let Some(id) = self.devices.active {
+            log_first_input(&mut self.devices.heard, id, &gilrs.gamepad(id));
         }
         let Some(pad) = self
             .devices
@@ -546,6 +620,8 @@ pub(in crate::game) struct PadRouter {
     /// motors, so a guest's vibration would move the grips alone. One link per pad, dropped
     /// when the pad goes or the router hands the reader back.
     xbox: Vec<(PadId, xbox::Link)>,
+    /// The pads whose first input the log has named.
+    heard: Vec<PadId>,
 }
 
 /// The pad `id` as the Xbox writer names it, if the Xbox path takes it (a DualSense has its own
@@ -641,6 +717,7 @@ impl PadRouter {
         self.started = false;
         // Its players' own outputs stop with it: dropping a link stops its motors.
         self.xbox.clear();
+        self.heard.clear();
         pads.devices.routed = None;
         if let Some(gilrs) = self.gilrs.take() {
             pads.devices.gilrs = Some(gilrs);
@@ -701,7 +778,7 @@ impl PadRouter {
     pub(in crate::game) fn events(&mut self) -> Vec<PadEvent> {
         if !self.started {
             self.started = true;
-            self.gilrs = gilrs_builder().build().ok();
+            self.gilrs = open_reader();
         }
         let Some(gilrs) = self.gilrs.as_mut() else {
             return Vec::new();
@@ -718,6 +795,7 @@ impl PadRouter {
             }
             match event {
                 gilrs::EventType::ButtonPressed(pressed, _) => {
+                    log_first_input(&mut self.heard, id, &gilrs.gamepad(id));
                     let crossed = face_buttons::crossed(&gilrs.gamepad(id));
                     if let Some(button) = Button::ALL
                         .into_iter()
@@ -730,9 +808,13 @@ impl PadRouter {
                     log::info!("Controller disconnected: {}", gilrs.gamepad(id).name());
                     // Its own output goes with it: a link on the old one buzzes nothing.
                     self.xbox.retain(|(pad, _)| *pad != id);
+                    self.heard.retain(|heard| *heard != id);
                     events.push(PadEvent::Gone(id));
                 }
-                gilrs::EventType::Connected => events.push(PadEvent::Back(id)),
+                gilrs::EventType::Connected => {
+                    log::info!("Controller connected: {}", describe(&gilrs.gamepad(id)));
+                    events.push(PadEvent::Back(id));
+                }
                 _ => {}
             }
         }
@@ -1268,5 +1350,29 @@ mod direct_output_tests {
         assert!(motors.strong >= 178, "the heavy handle: {}", motors.strong);
         assert!(motors.weak >= 153, "the light handle: {}", motors.weak);
         assert_eq!([motors.left_trigger, motors.right_trigger], [166, 166]);
+    }
+
+    /// The log's line for a pad carries what `pad status` lists (the ids, where the layout came
+    /// from, the id a mapping row starts with), and the system's own name when a row renamed it.
+    #[test]
+    fn the_log_names_a_pad_as_pad_status_does() {
+        let uuid = [
+            0x03, 0, 0, 0, 0x4c, 0x05, 0, 0, 0xe6, 0x0c, 0, 0, 0x11, 0x81, 0, 0,
+        ];
+        assert_eq!(
+            pad_line(
+                "PS5 Controller",
+                "DualSense Wireless Controller",
+                Some((0x054c, 0x0ce6)),
+                "sdl",
+                uuid
+            ),
+            "PS5 Controller (054c:0ce6, mapping sdl, uuid 030000004c050000e60c000011810000, \
+             listed as DualSense Wireless Controller)"
+        );
+        assert_eq!(
+            pad_line("Some Pad", "Some Pad", None, "none", [0; 16]),
+            "Some Pad (no ids, mapping none, uuid 00000000000000000000000000000000)"
+        );
     }
 }

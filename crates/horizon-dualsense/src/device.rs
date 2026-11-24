@@ -1,6 +1,8 @@
 //! The pad over hidapi, and the thread that writes to it: writes block (a Bluetooth report can
 //! take milliseconds), so the game only hands over what the pad should do.
 #[cfg(not(target_os = "ios"))]
+use crate::rescan::Rescan;
+#[cfg(not(target_os = "ios"))]
 use crate::{DEFAULT_LIGHTBAR, Output, PLAYER_1, Vibration, is_dualsense};
 use crate::{TRIGGER_OFF, TriggerEffect};
 #[cfg(not(target_os = "ios"))]
@@ -147,9 +149,13 @@ pub struct Link {
 }
 
 impl Link {
-    /// Start the thread and look for a DualSense.
+    /// Start the thread and look for a DualSense. Where the output is turned off
+    /// ([`crate::output_allowed`]) no thread starts and the Link stays closed.
     #[cfg(not(target_os = "ios"))]
     pub fn start() -> Link {
+        if !crate::output_allowed() {
+            return Link::closed();
+        }
         let (tx, rx) = mpsc::channel();
         let open = Arc::new(AtomicU8::new(0));
         let shown = open.clone();
@@ -168,6 +174,11 @@ impl Link {
     /// No output on iOS: hidapi has no backend there. The Link never opens.
     #[cfg(target_os = "ios")]
     pub fn start() -> Link {
+        Link::closed()
+    }
+
+    /// A Link with no thread: it never opens a pad, and what it is told goes nowhere.
+    fn closed() -> Link {
         Link {
             tx: None,
             open: Arc::new(AtomicU8::new(0)),
@@ -216,11 +227,6 @@ impl Drop for Link {
     }
 }
 
-/// Looks for the pad this many more times, a second apart, after a scan finds nothing (its
-/// hidraw node may appear after the controller does).
-#[cfg(not(target_os = "ios"))]
-const SCAN_TRIES: u32 = 5;
-
 #[cfg(not(target_os = "ios"))]
 struct Writer {
     api: Option<HidApi>,
@@ -235,8 +241,8 @@ struct Writer {
     rumble: Rumble,
     /// When the vibration's current step ends.
     step_end: Option<Instant>,
-    scans_left: u32,
-    next_scan: Instant,
+    /// When to look for the pad again.
+    rescan: Rescan,
 }
 
 #[cfg(not(target_os = "ios"))]
@@ -254,6 +260,10 @@ enum Lights {
 /// `HIDAPI_DriverPS5_CheckPendingLEDReset`).
 #[cfg(not(target_os = "ios"))]
 const ANIMATION_OVER: u32 = 10_200_000;
+
+/// How long the lights wait for that animation on a pad that sends no clock.
+#[cfg(not(target_os = "ios"))]
+const ANIMATION_WAIT: Duration = Duration::from_secs(1);
 
 /// The sensor clock of a Bluetooth input report 0x31: its state block starts at byte 2 and
 /// holds the clock at 27..31, little-endian (SDL's `PS5StatePacketCommon_t`, the kernel's
@@ -300,21 +310,20 @@ impl Writer {
             lights: Lights::Ready,
             rumble: Vec::new(),
             step_end: None,
-            scans_left: 1,
-            next_scan: Instant::now(),
+            rescan: Rescan::new(Instant::now()),
         }
     }
 
     fn run(mut self, rx: mpsc::Receiver<Message>) {
         loop {
             let now = Instant::now();
-            if self.pad.is_none() && self.scans_left > 0 && now >= self.next_scan {
+            if self.pad.is_none() && self.rescan.due(now) {
                 self.scan();
             }
             let waiting = matches!(self.lights, Lights::Waiting(_)) && self.pad.is_some();
             let wake = [
                 self.step_end,
-                (self.pad.is_none() && self.scans_left > 0).then_some(self.next_scan),
+                self.rescan.wake().filter(|_| self.pad.is_none()),
                 waiting.then(|| now + Duration::from_millis(250)),
             ]
             .into_iter()
@@ -337,8 +346,7 @@ impl Writer {
                         self.probe();
                     }
                     if self.pad.is_none() {
-                        self.scans_left = SCAN_TRIES;
-                        self.next_scan = Instant::now();
+                        self.rescan.asked(Instant::now());
                     }
                     continue;
                 }
@@ -363,8 +371,7 @@ impl Writer {
     }
 
     fn scan(&mut self) {
-        self.scans_left -= 1;
-        self.next_scan = Instant::now() + Duration::from_secs(1);
+        self.rescan.look(Instant::now());
         let api = match self.api.as_mut() {
             Some(api) => api.refresh_devices().map(|()| &*api),
             None => HidApi::new().map(|api| &*self.api.insert(api)),
@@ -379,26 +386,30 @@ impl Writer {
         match found {
             Some(Ok(pad)) => {
                 log::info!("DualSense output over {:?}", pad.transport());
-                self.open
-                    .store(1 + pad.transport() as u8, Ordering::Relaxed);
-                self.lights = match pad.transport() {
-                    Transport::Usb => Lights::Ready,
-                    Transport::Bluetooth => {
-                        Lights::Waiting(Instant::now() + Duration::from_secs(1))
-                    }
-                };
-                self.pad = Some(Box::new(pad));
-                self.sent = None;
-                self.scans_left = 0;
-                self.flush();
+                let transport = pad.transport();
+                self.take(Box::new(pad), transport);
             }
             Some(Err(e)) => {
                 // No access (Linux without a udev rule): vibration stays with gilrs.
                 log::info!("Horizon: the DualSense can't be opened for output: {e}");
-                self.scans_left = 0;
+                self.rescan.stop();
             }
             None => {}
         }
+    }
+
+    /// A pad that just opened: it is told everything the game shows.
+    fn take(&mut self, pad: Box<dyn Handle>, transport: Transport) {
+        let now = Instant::now();
+        self.open.store(1 + transport as u8, Ordering::Relaxed);
+        self.lights = match transport {
+            Transport::Usb => Lights::Ready,
+            Transport::Bluetooth => Lights::Waiting(now + ANIMATION_WAIT),
+        };
+        self.pad = Some(pad);
+        self.sent = None;
+        self.rescan.opened(now);
+        self.flush();
     }
 
     /// Over Bluetooth, read the pad's clock until its connection animation is over.
@@ -539,15 +550,20 @@ impl Writer {
     }
 
     /// Drop a handle that hidapi failed on, and look for the pad again: one that slept or was
-    /// unplugged may come back. Nothing is written through the old handle.
+    /// unplugged may come back. Nothing is written through the old handle. A pad that fails as
+    /// soon as it opens is not opened again at once, and not for ever ([`Rescan::lost`]).
     fn lost(&mut self, why: &str) {
         log::info!("DualSense output closed: {why}");
         self.pad = None;
         self.sent = None;
         self.lights = Lights::Ready;
         self.open.store(0, Ordering::Relaxed);
-        self.scans_left = SCAN_TRIES;
-        self.next_scan = Instant::now();
+        if self.rescan.lost(Instant::now()) {
+            log::warn!(
+                "Horizon: the DualSense opens for output and fails straight away; \
+                 it is left alone until a controller connects"
+            );
+        }
     }
 }
 
@@ -615,7 +631,7 @@ mod tests {
         assert_eq!(writes.load(Ordering::Relaxed), 0);
         assert!(writer.pad.is_none());
         assert_eq!(open.load(Ordering::Relaxed), 0);
-        assert_eq!(writer.scans_left, SCAN_TRIES);
+        assert!(writer.rescan.wake().is_some());
     }
 
     #[test]
@@ -627,10 +643,37 @@ mod tests {
         assert!(writer.pad.is_none());
         assert_eq!(open.load(Ordering::Relaxed), 0);
         assert!(writer.sent.is_none());
-        assert_eq!(writer.scans_left, SCAN_TRIES);
+        assert!(writer.rescan.wake().is_some());
         // The handle that failed is not written through again.
         writer.flush();
         assert_eq!(writes.load(Ordering::Relaxed), 1);
+    }
+
+    /// A pad that opens and fails its first write. The writer used to open it again at once, in
+    /// a loop; it waits now, and after a few of them it stops until the game asks.
+    #[test]
+    fn a_pad_that_fails_as_it_opens_is_not_opened_again_at_once() {
+        use crate::rescan::{EVERY, TRIES};
+        let open = Arc::new(AtomicU8::new(0));
+        let mut writer = Writer::new(open.clone());
+        let dead = || {
+            Box::new(FakePad {
+                writes: Arc::default(),
+                reads: Arc::default(),
+                read_fails: false,
+                write_fails: true,
+            })
+        };
+        for _ in 1..TRIES {
+            let before = Instant::now();
+            writer.take(dead(), Transport::Usb);
+            assert!(writer.pad.is_none());
+            assert_eq!(open.load(Ordering::Relaxed), 0);
+            assert!(writer.rescan.wake() >= Some(before + EVERY));
+        }
+        writer.take(dead(), Transport::Usb);
+        assert!(writer.pad.is_none());
+        assert_eq!(writer.rescan.wake(), None);
     }
 
     #[test]
