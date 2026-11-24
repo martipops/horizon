@@ -96,9 +96,8 @@ pub(super) struct Pads {
     /// A key or mouse button was pressed in play since the pad was last touched: the keyboard and
     /// mouse have it, though only moving the mouse takes the pad out of use.
     pub(super) keyboard_took_over: bool,
-    /// The last press while playing (no screen open) was the pad's, not the keyboard's or mouse's:
-    /// whether splitscreen, turned on, leaves the pad to P1. Menu clicks and keys don't count.
-    pub(super) plays: bool,
+    /// What the last press while playing came from: the pad splitscreen, turned on, leaves to P1.
+    pub(super) played: Played<PadId>,
     pub(super) style: GlyphStyle,
     /// The controller driving this player, or else the first one its own reader sees.
     pub(super) device: Option<Device>,
@@ -215,6 +214,33 @@ pub(in crate::game) enum PadEvent {
     Back(PadId),
 }
 
+/// What the last press while playing (no screen open) came from. Menu clicks and keys, held keys
+/// repeating, sticks and presses the game doesn't get (another window's) don't count.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(super) enum Played<Id> {
+    #[default]
+    KeyboardMouse,
+    /// Which pad; none for the virtual one.
+    Pad(Option<Id>),
+}
+
+impl<Id: Copy + Eq> Played<Id> {
+    /// The pad that plays, whichever was touched since.
+    pub(super) fn pad(self) -> Option<Id> {
+        match self {
+            Played::KeyboardMouse => None,
+            Played::Pad(id) => id,
+        }
+    }
+
+    /// `id` disconnected: back under that id, it may be another.
+    pub(super) fn gone(&mut self, id: Id) {
+        if self.pad() == Some(id) {
+            *self = Played::Pad(None);
+        }
+    }
+}
+
 /// A build without the `controllers` feature (the server build, which must not need libudev): no
 /// hardware pads, only `horizon-ctl pad`'s virtual one.
 #[cfg(not(feature = "controllers"))]
@@ -228,6 +254,9 @@ mod hardware {
             PadState::default()
         }
         pub(in crate::game) fn release_hardware(&mut self) {}
+        pub(super) fn active(&self) -> Option<PadId> {
+            None
+        }
     }
 
     pub(in crate::game) type PadId = usize;
@@ -322,6 +351,13 @@ impl Pads {
             self.menu.stop_craft();
         }
         self.feed = Some(state);
+    }
+    /// The pad the last poll's state came from: splitscreen's for this player, else its own.
+    fn source(&self) -> Option<PadId> {
+        match self.feed {
+            Some(_) => self.feed_source,
+            None => self.active(),
+        }
     }
     /// The device the controller settings name: a real one, else `horizon-ctl`'s virtual pad.
     pub(super) fn device_or_virtual(&self) -> Option<Device> {
@@ -492,8 +528,9 @@ impl Game<'_> {
             }
         }
         let edges = self.pad.edges.update(&state, threshold);
-        if edges.iter().any(|(_, down)| *down) {
-            self.pressed_in_play(Source::Pad);
+        if edges.iter().any(|(_, down)| *down) && self.pad_focused() {
+            let pad = self.pad.source().filter(|_| !self.pad.virtual_input);
+            self.pressed_in_play(Played::Pad(pad));
         }
         if activity && self.pad_focused() {
             self.last_input = Instant::now();

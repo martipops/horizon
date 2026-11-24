@@ -330,7 +330,10 @@ impl Pads {
     /// gets adaptive triggers or the lightbar: it has no output path for those yet.
     pub(in crate::game) fn release_hardware(&mut self) {
         if self.devices.started {
-            self.devices.gilrs = None;
+            // Its ids mean nothing to the next reader; the router's outlive this.
+            if let Some(id) = self.devices.gilrs.take().and(self.played.pad()) {
+                self.played.gone(id);
+            }
             self.devices.started = false;
             self.devices.active = None;
             self.devices.known.clear();
@@ -343,6 +346,11 @@ impl Pads {
             self.devices.drop_xbox_output();
             self.devices.shown = None;
         }
+    }
+
+    /// The pad last touched.
+    pub(super) fn active(&self) -> Option<PadId> {
+        self.devices.active
     }
 
     /// Drain gilrs' events and read the active pad (opening gilrs the first time).
@@ -382,6 +390,7 @@ impl Pads {
                 E::Disconnected => {
                     log::info!("Controller disconnected: {}", gilrs.gamepad(id).name());
                     self.devices.known.retain(|known| *known != id);
+                    self.played.gone(id);
                     self.connections.push(Connection::Disconnected {
                         active: self.devices.active == Some(id),
                     });
@@ -561,15 +570,15 @@ impl PadRouter {
     /// first. A compositor can count who holds a pad to pause its own use of it (KWin's pointer
     /// emulation), and that count goes wrong when readers overlap: gilrs opens a pad twice at
     /// once, which inotify can merge into one event, and closes it twice apart (#9730).
-    /// The pad P1 plays with, as it takes over: still P1's. None with P1 on the keyboard and mouse,
-    /// whatever pad it touched before: that one is offered to join.
+    /// The pad P1 plays with (`Played`), as it takes over: still P1's, whichever was touched in a
+    /// menu since. None with P1 on the keyboard and mouse: its pad is offered to join.
     pub(in crate::game) fn adopt(&mut self, pads: &mut Pads) -> Option<PadId> {
         if self.started {
             return None;
         }
         self.gilrs = Some(pads.devices.gilrs.take()?);
         self.started = true;
-        pads.devices.active.filter(|_| pads.plays)
+        pads.played.pad().filter(|id| self.connected(*id))
     }
 
     /// Play on pad `id` what its player's turn asked for, and let finished vibrations go.
@@ -741,6 +750,12 @@ impl PadRouter {
             }
         }
         events
+    }
+
+    fn connected(&self, id: PadId) -> bool {
+        self.gilrs
+            .as_ref()
+            .is_some_and(|g| g.connected_gamepad(id).is_some())
     }
 
     /// The kind of controller (its maker, model and bus; two of one model share it), to know it

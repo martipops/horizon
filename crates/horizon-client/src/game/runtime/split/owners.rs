@@ -27,6 +27,8 @@ struct Lost<Id> {
     seat: usize,
     id: Option<Id>,
     uuid: [u8; 16],
+    /// Connected again, that id is this controller (`Owners::back`).
+    known: bool,
 }
 
 /// A controller P1 gave away (Give Up Pad). Until its new player is in the world, a hand-off that
@@ -41,6 +43,8 @@ struct HandOff<Id> {
 struct Away<Id> {
     uuid: [u8; 16],
     offer: Option<Instant>,
+    /// Connected again, its id is this controller (`Owners::back`).
+    known: bool,
     /// The controllers of its kind connected since: it may be one of them, under another id.
     arrived: Vec<Id>,
 }
@@ -50,6 +54,7 @@ impl<Id> Away<Id> {
         Self {
             uuid,
             offer,
+            known: true,
             arrived: Vec::new(),
         }
     }
@@ -370,6 +375,7 @@ impl<Id: Copy + Eq> Owners<Id> {
                 seat,
                 id: Some(id),
                 uuid,
+                known: true,
             });
             self.effects.push(Effect::Waits(seat));
         }
@@ -377,17 +383,27 @@ impl<Id: Copy + Eq> Owners<Id> {
 
     /// A controller connected. One whose id says nothing (`Identity`) waits for a press.
     pub(super) fn back(&mut self, id: Id, uuid: [u8; 16], rules: &Rules) {
-        // Before its own is off the list: whether another could have this id.
-        let shared = self.absent.iter().filter(|(_, u)| *u == uuid).count() > 1;
+        // With several of a model disconnected, none of their ids says which it is any more, to
+        // the last of them: a press does.
+        if self.absent.iter().filter(|(_, u)| *u == uuid).count() > 1 {
+            for lost in self.lost.iter_mut().filter(|l| l.uuid == uuid) {
+                lost.known = false;
+            }
+            let away = self.given_up.iter_mut().filter_map(|h| h.away.as_mut());
+            for away in away.filter(|a| a.uuid == uuid) {
+                away.known = false;
+            }
+        }
         self.absent.retain(|(p, _)| *p != id);
         let away = self.given_up.iter_mut().filter_map(|h| h.away.as_mut());
         for away in away.filter(|a| a.uuid == uuid && !a.arrived.contains(&id)) {
             away.arrived.push(id);
         }
-        if self.hold(id).is_some() || shared {
+        if self.hold(id).is_some() {
             return;
         }
-        if let Some(seat) = self.lost.iter().find(|l| l.id == Some(id)).map(|l| l.seat) {
+        let lost = self.lost.iter().find(|l| l.known && l.id == Some(id));
+        if let Some(seat) = lost.map(|l| l.seat) {
             self.seat(id, seat);
             self.effects.push(Effect::Found { seat, id });
         } else if let Some(k) = self.returning(id, uuid, Identity::Id) {
@@ -423,7 +439,7 @@ impl<Id: Copy + Eq> Owners<Id> {
             let matches = |h: &HandOff<Id>| h.away.as_ref().is_some_and(|away| by(h, away));
             self.given_up.iter().position(matches)
         };
-        away(&|h, _| h.id == id).or_else(|| away(&|_, away| by_model(away)))
+        away(&|h, away| away.known && h.id == id).or_else(|| away(&|_, away| by_model(away)))
     }
 
     /// This kind of controller is known, and one player or hand-off waits for one.
@@ -868,7 +884,43 @@ mod tests {
         owners.press(A, same, South, &linux);
         assert_eq!(owners.pad_of(2), Some(A), "its player said so");
         owners.back(B, same, &linux);
-        assert_eq!(owners.pad_of(3), Some(B), "only one left: that one");
+        assert_eq!(owners.pad_of(3), None, "nor is the second");
+        owners.press(B, same, South, &linux);
+        assert_eq!(owners.pad_of(3), Some(B));
+    }
+
+    /// The second of them back before anyone says whose the first is: P2's player has the first,
+    /// in the unused one's slot.
+    #[test]
+    fn the_second_of_one_model_back_is_not_guessed_either() {
+        let linux = Rules {
+            identity: Identity::Slot,
+            ..rules()
+        };
+        let same = [7; 16];
+        let mut owners = guests(&[B]);
+        owners.gone(A, same, false, &linux);
+        owners.gone(B, same, false, &linux);
+        owners.back(A, same, &linux);
+        owners.back(B, same, &linux);
+        assert_eq!(owners.pad_of(2), None, "B's id is the unused one's now");
+        owners.press(A, same, South, &linux);
+        assert_eq!(owners.pad_of(2), Some(A));
+        // Lost again alone, its id says enough.
+        owners.gone(A, same, false, &linux);
+        owners.back(A, same, &linux);
+        assert_eq!(owners.pad_of(2), Some(A));
+
+        // The same for a hand-off.
+        let mut owners = p1_with(B);
+        owners.gone(A, same, false, &linux);
+        owners.give_up(linux.now);
+        owners.gone(B, same, false, &linux);
+        owners.back(A, same, &linux);
+        owners.back(B, same, &linux);
+        assert_eq!((owners.pad_of(P1), offers(&owners)), (None, vec![]));
+        owners.press(A, same, West, &linux);
+        assert_eq!(offers(&owners), [A], "its press says it is");
     }
 
     #[test]

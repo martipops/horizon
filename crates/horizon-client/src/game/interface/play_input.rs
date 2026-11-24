@@ -1,5 +1,6 @@
 //! Key and mouse mappings in play: toggled sneak and sprint, keys after rebinding, keys held
 //! across screens, the hotbar's wheel and bumper steps, and mouse buttons while playing.
+use super::pad::{PadId, Played};
 use super::*;
 use horizon_client::input_source::{Factory, InputHost, InputSource};
 use horizon_client::{held::HeldKeys, keymapping::ToggleKeys};
@@ -215,6 +216,9 @@ impl Game<'_> {
         pressed: bool,
         repeat: bool,
     ) -> Result<()> {
+        if pressed && !repeat {
+            self.pressed_in_play(Played::KeyboardMouse);
+        }
         for mapped in self.settings.keys.translate_all(key) {
             match mapped {
                 Ok(k) => {
@@ -236,7 +240,7 @@ impl Game<'_> {
                     ) {
                         if self.shared_default_acts(button, horizon_client::keybinds::key_name(key))
                         {
-                            self.mouse_mapping(button, pressed, Source::Keyboard)?;
+                            self.apply_mouse_mapping(button, pressed, Source::Keyboard)?;
                         }
                     } else if container_key_clones(button, action) {
                         self.inventory_pick_key();
@@ -246,15 +250,15 @@ impl Game<'_> {
         }
         Ok(())
     }
-    /// A press from `source`: while playing, whether the pad is what plays (`Pads::plays`).
-    pub(super) fn pressed_in_play(&mut self, source: Source) {
+    /// A button went down, not a repeat: while playing, it says what plays (`Pads::played`).
+    pub(super) fn pressed_in_play(&mut self, with: Played<PadId>) {
         let playing = gameplay_has_keyboard(
             self.screen,
             self.title.is_some(),
             self.screen_over_playing(),
         );
-        if playing && source != Source::Mod {
-            self.pad.plays = source == Source::Pad;
+        if playing {
+            self.pad.played = with;
         }
     }
     /// A key event after rebinding, as the default key of its mapping (the
@@ -272,9 +276,6 @@ impl Game<'_> {
         raw: KeyCode,
         source: Source,
     ) -> Result<()> {
-        if pressed {
-            self.pressed_in_play(source);
-        }
         if self.screen == Screen::Playing && self.replay.playing() {
             if !pressed {
                 self.keys.release(&key, source);
@@ -438,9 +439,18 @@ impl Game<'_> {
         pressed: bool,
         source: Source,
     ) -> Result<()> {
-        if pressed {
-            self.pressed_in_play(source);
+        if pressed && matches!(source, Source::Keyboard | Source::Agent) {
+            self.pressed_in_play(Played::KeyboardMouse);
         }
+        self.apply_mouse_mapping(button, pressed, source)
+    }
+    /// `mouse_mapping`, for a key bound to it too: that one repeats while held.
+    fn apply_mouse_mapping(
+        &mut self,
+        button: MouseButton,
+        pressed: bool,
+        source: Source,
+    ) -> Result<()> {
         if let Some(slot) = mouse_hold_index(button) {
             if ![self.left, self.right][slot] {
                 self.agent_mouse_holds[slot] = false;

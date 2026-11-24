@@ -83,6 +83,7 @@ impl Split<'_> {
                 PadEvent::Press(..) => {}
                 PadEvent::Gone(id) => {
                     self.fresh.retain(|&p| p != id);
+                    self.host.pad.played.gone(id);
                     let choosing = self
                         .guests
                         .iter()

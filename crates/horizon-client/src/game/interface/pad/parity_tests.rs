@@ -301,6 +301,9 @@ fn keyboard_handoff_keeps_the_attack_the_pad_holds() {
 #[test]
 #[ignore = "daily"]
 fn the_last_press_while_playing_says_whether_the_pad_plays() {
+    use super::Played;
+    const PAD: Played<super::PadId> = Played::Pad(None);
+    const KEYS: Played<super::PadId> = Played::KeyboardMouse;
     playing(|game| {
         let tap = |game: &mut Game| {
             game.pad.inject_button(Button::South, true);
@@ -308,32 +311,47 @@ fn the_last_press_while_playing_says_whether_the_pad_plays() {
             game.pad.inject_button(Button::South, false);
             game.poll_pads(&NoEventLoop);
         };
-        let key = |game: &mut Game| {
-            let w = KeyCode::KeyW;
-            game.mapped_key(w, true, false, w, Source::Keyboard)
-                .unwrap();
-            game.mapped_key(w, false, false, w, Source::Keyboard)
-                .unwrap();
+        let w = KeyCode::KeyW;
+        let click = |game: &mut Game| {
+            for down in [true, false] {
+                game.mouse_mapping(MouseButton::Left, down, Source::Keyboard)
+                    .unwrap();
+            }
         };
-        assert!(!game.pad.plays, "untouched");
+        assert_eq!(game.pad.played, KEYS, "untouched");
         tap(game);
-        assert!(game.pad.plays);
-        key(game);
-        assert!(!game.pad.plays);
+        assert_eq!(game.pad.played, PAD);
+
+        // Held since before the pad's press, W only repeats.
+        game.mapped_key_event(w, true, false).unwrap();
+        assert_eq!(game.pad.played, KEYS);
         tap(game);
-        game.mouse_mapping(MouseButton::Left, true, Source::Keyboard)
-            .unwrap();
-        game.mouse_mapping(MouseButton::Left, false, Source::Keyboard)
-            .unwrap();
-        assert!(!game.pad.plays, "the mouse too");
+        game.mapped_key_event(w, true, true).unwrap();
+        assert_eq!(game.pad.played, PAD);
+        click(game);
+        assert_eq!(game.pad.played, KEYS, "the mouse too");
+        // The pad's held drop repeats its key.
+        let q = KeyCode::KeyQ;
+        game.mapped_key(q, true, true, q, Source::Pad).unwrap();
+        assert_eq!(game.pad.played, KEYS);
 
         // In a menu neither says anything.
-        tap(game);
         game.screen = Screen::Paused;
-        key(game);
-        assert!(game.pad.plays);
-        game.pad.plays = false;
         tap(game);
-        assert!(!game.pad.plays);
+        assert_eq!(game.pad.played, KEYS);
+        game.pad.played = PAD;
+        game.mapped_key_event(w, true, false).unwrap();
+        assert_eq!(game.pad.played, PAD);
     });
+}
+
+#[test]
+fn the_pad_that_plays_is_not_the_last_one_touched() {
+    use super::Played;
+    let mut played = Played::Pad(Some(1));
+    played.gone(2);
+    assert_eq!(played.pad(), Some(1), "another one going says nothing");
+    played.gone(1);
+    assert_eq!(played.pad(), None, "its id may be another's now");
+    assert_eq!(Played::<usize>::KeyboardMouse.pad(), None);
 }

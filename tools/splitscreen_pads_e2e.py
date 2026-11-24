@@ -145,6 +145,19 @@ def keyboard_last(s, a):
     s.becomes('Y: P1\'s', lambda: s.pad_of(1), 'A', 5)
 
 
+def other_in_menu(s, a, b):
+    """P1 plays with A and B is pressed in the menu: A stays P1's, B asks to join"""
+    a.tap('west')
+    s.game.page()
+    b.tap('rb')
+    s.game.press(1, 'Splitscreen: Off')
+    time.sleep(1)
+    s.game.close_page()
+    check('P1 plays with A', s.pad_of(1), 'A')
+    b.tap('rb')
+    s.becomes('B asks', lambda: s.prompt(), 'Test pad B wants to join', 3)
+
+
 def accept_twice(s, a):
     """accept, another button and accept in one poll: one player"""
     a.tap('rb')
@@ -233,7 +246,10 @@ def same_model(s, a, b):
     b.tap('south')
     s.becomes('A on it: P2\'s', lambda: s.pad_of(2), 'B', 5)
     a.plug()
-    s.becomes('the other: P3\'s', lambda: s.pad_of(3), 'A', 5)
+    time.sleep(2)
+    check('the other: not guessed either', s.pad_of(3), '')
+    a.tap('south')
+    s.becomes('A on it: P3\'s', lambda: s.pad_of(3), 'A', 5)
 
 
 def other_slot(s, a, b):
@@ -268,6 +284,7 @@ CASES = {
     'keep': (keep, 1, {'splitscreen': False}),
     'keyboard': (keyboard, 1, {'splitscreen': False}),
     'keyboard_last': (keyboard_last, 1, {'splitscreen': False}),
+    'other_in_menu': (other_in_menu, 2, {'splitscreen': False}),
     'accept_twice': (accept_twice, 1, {}),
     'accept_and_claim': (accept_and_claim, 1, {}),
     'lost_seat': (lost_seat, 2, {}),
