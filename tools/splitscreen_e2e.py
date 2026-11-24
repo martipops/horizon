@@ -1091,34 +1091,59 @@ def scenario_packs():
 
 def scenario_pack_overlay():
     print("pack_overlay: a player's pack reload leaves P1's selected pack and vanilla's files in place")
+    meta = {'pack': {'pack_format': 9999, 'supported_formats': {'min_inclusive': 6, 'max_inclusive': 9999},
+                     'description': 'pack_overlay'}}
+
+    def write_pack(home, words):
+        """P1's pack: it renames the pause menu's Back to Game to `words`."""
+        with zipfile.ZipFile(home / 'resourcepacks/overlay.zip', 'w') as z:
+            z.writestr('pack.mcmeta', json.dumps(meta))
+            z.writestr('assets/minecraft/lang/en_us.json', json.dumps({'menu.returnToGame': words}))
 
     def seed(home):
         (home / 'resourcepacks').mkdir()
-        meta = {'pack': {'pack_format': 9999, 'supported_formats': {'min_inclusive': 6, 'max_inclusive': 9999},
-                         'description': 'pack_overlay'}}
-        with zipfile.ZipFile(home / 'resourcepacks/overlay.zip', 'w') as z:
-            z.writestr('pack.mcmeta', json.dumps(meta))
+        write_pack(home, 'Pack One')
         (home / 'options.txt').write_text('resourcePacks:["vanilla","file/overlay.zip"]\n')
-        (home / 'shaderpacks').mkdir()
-        with zipfile.ZipFile(home / 'shaderpacks/shader.zip', 'w') as z:
-            z.writestr('shaders/final.fsh', 'void main() {}\n')
 
     g = Game(2, seed=seed, args=('--offscreen',))
+
+    def back(n):
+        """What player n's pause menu calls Back to Game: the pack's words, read from the pack."""
+        if g.ctl(n, 'ui').get('screen') != 'paused':
+            g.ctl(n, 'key', 'esc', 'tap')
+            g.wait(lambda: g.ctl(n, 'ui').get('screen') == 'paused', f"P{n}'s pause menu", seconds=10)
+        return next((l for l in g.labels(n) if l.startswith('Pack ')), None)
+
+    def reload(n):
+        """F3 + T: player n reloads its resource packs."""
+        g.close_page(n)
+        g.ctl(n, 'key', 'f3', 'down')
+        g.ctl(n, 'key', 't', 'tap')
+        g.ctl(n, 'key', 'f3', 'up')
+
     try:
         log = g.home / 'logs/latest.log'
-        # What a player would see, not how the cache is laid out: the game reads a selection
-        # through its own source now and builds no overlay folder for this pack.
         selected = lambda: g.ctl(1, 'options-get', 'resourcePacks')['options']['resourcePacks']['value']  # noqa: E731
-        check("P1's pack is selected", 'file/overlay.zip' in selected(), True)
-        # The first shader pack of a session turns material maps on, which reloads the packs.
-        g.ctl(2, 'options', 'shader-packs')
-        g.press(2, 'shader.zip')
-        g.wait(lambda: 'shader pack shader.zip' in log.read_text(errors='replace'), "P2's shader pack", seconds=60)
-        text = log.read_text(errors='replace')
+        g.wait(lambda: g.ctl(2, 'state').get('player') is not None, 'P2 playing')
+        check("P1 reads its pack's text", back(1), 'Pack One')
+        # The pack changes on disk, so a reload that really ran shows: P2's first.
+        write_pack(g.home, 'Pack Two')
+        reload(2)
+        g.wait(lambda: back(2) == 'Pack Two', "P2's reload to finish", seconds=60)
+        check("P2's reload read the pack again", back(2), 'Pack Two')
         check("P1's pack is still selected", 'file/overlay.zip' in selected(), True)
-        check('the reload succeeded', 'resource reload failed' in text, False)
+        # P1 reloads after it, the pack changed once more so that its own reload shows: its pack
+        # and vanilla's files are all still there to read.
+        write_pack(g.home, 'Pack Three')
+        reload(1)
+        g.wait(lambda: back(1) == 'Pack Three', "P1's reload to finish", seconds=60)
+        check("P1's reload after P2's reads its pack", back(1), 'Pack Three')
+        text = log.read_text(errors='replace')
+        check('no reload failed', 'resource reload failed' in text, False)
         # The reload that deleted P1's files left "No such file or directory" for every texture.
         check('no file went missing', 'No such file or directory' in text, False)
+        check("P1's pack is selected at the end", 'file/overlay.zip' in selected(), True)
+        g.close_page(1)
         check('P1 plays on', g.ctl(1, 'state').get('player') is not None, True)
     finally:
         g.quit()
@@ -1375,9 +1400,10 @@ def scenario_launcher():
     session.write_text(json.dumps({'name': 'Ann', 'uuid': '069a79f444e94726a5befca90e38aaf5',
                                    'access_token': 'not-a-real-token', 'user_type': 'msa'}))
     session.chmod(0o600)
-    os.environ['HORIZON_ACCOUNT_SESSIONS'] = json.dumps(
+    accounts = json.dumps(
         [{'name': 'Ann', 'uuid': '069a79f444e94726a5befca90e38aaf5', 'file': str(session)}, {'name': 'Cal', 'uuid': '00000000000000000000000000000001', 'skipped': 'Sign in again'}])
-    g = Game(3, pick=True, seed=lambda home: (home / 'splitscreen/profiles/Bea').mkdir(parents=True))
+    g = Game(3, pick=True, seed=lambda home: (home / 'splitscreen/profiles/Bea').mkdir(parents=True),
+             HORIZON_ACCOUNT_SESSIONS=accounts)
     try:
         menu = lambda n: g.ctl(n, 'state').get('menu') or {}  # noqa: E731
         g.wait(lambda: menu(2).get('mode') == 'splitscreen-profiles', 'the picker')
@@ -1396,7 +1422,6 @@ def scenario_launcher():
               (g.home / 'splitscreen/profiles/Dan').is_dir(), True)
     finally:
         g.quit()
-        os.environ.pop('HORIZON_ACCOUNT_SESSIONS', None)
 
 
 def scenario_custom_skin():
@@ -1513,13 +1538,14 @@ def main():
         sys.exit(f'{CTL} is missing: cargo build --profile fast -p horizon-game')
     if not (RESOURCES / 'assets').exists():
         sys.exit(f'no prepared resources in {RESOURCES}')
-    skipped = []
+    skipped, ran = [], 0
     for name in args.only or [n for n in SCENARIOS if n != 'native_pointer']:
         print(f'[{name}]')
         if OFFSCREEN and name in NEEDS_WINDOW:
             print(f'  skip {name}: needs a real window (run it without --offscreen)')
             skipped.append(name)
             continue
+        ran += 1
         try:
             SCENARIOS[name]()
         except RuntimeError as e:
@@ -1530,11 +1556,14 @@ def main():
             # the ones after it still run.
             print(f'  FAIL {name}: {type(e).__name__}: {e}')
             failures.append(name)
-    if skipped:
-        print(f'skipped: {", ".join(skipped)}')
     if failures:
         sys.exit(f'{len(failures)} check(s) failed: {", ".join(failures)}')
-    print('splitscreen: every check passed')
+    if skipped and not ran:
+        sys.exit(f'nothing ran: every selected scenario needs a real window ({", ".join(skipped)}); run without --offscreen')
+    if skipped:
+        print(f'splitscreen: every check that ran passed; not run (they need a real window): {", ".join(skipped)}')
+    else:
+        print('splitscreen: every check passed')
 
 
 if __name__ == '__main__':

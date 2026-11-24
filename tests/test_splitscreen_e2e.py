@@ -1,4 +1,5 @@
 """Unit tests for tools/splitscreen_e2e.py's runner: no game is started, `Game.ctl` is faked."""
+import os
 import shutil
 import sys
 import tempfile
@@ -51,11 +52,36 @@ class Runner(unittest.TestCase):
         }
         self.run_main(scenarios, '--offscreen')
         self.assertEqual(ran, ['join'])
-        self.assertIn('skipped: fullscreen', self.lines)
-        self.assertEqual(self.lines[-1], 'splitscreen: every check passed')
-        # Without the option the same scenario runs.
+        # A run that left something out never says "every check passed".
+        self.assertIn('fullscreen', self.lines[-1])
+        self.assertNotEqual(self.lines[-1], 'splitscreen: every check passed')
+        # Without the option the same scenario runs, and the run is whole.
         self.run_main(scenarios)
         self.assertEqual(ran, ['join', 'fullscreen', 'join'])
+        self.assertEqual(self.lines[-1], 'splitscreen: every check passed')
+
+    def test_a_selection_that_only_skipped_is_not_a_pass(self):
+        ran = []
+        with self.assertRaises(SystemExit) as stopped:
+            self.run_main({'fullscreen': lambda: ran.append('fullscreen')}, '--offscreen', '--only', 'fullscreen')
+        self.assertEqual(ran, [])
+        self.assertNotIn(stopped.exception.code, (0, None))
+
+    def test_a_launcher_scenario_that_fails_leaves_no_accounts_for_the_next_one(self):
+        folder = Path(tempfile.mkdtemp(prefix='hz-split-e2e-test-'))
+        self.addCleanup(shutil.rmtree, folder, ignore_errors=True)
+        given = {}
+
+        def game(*args, **env):
+            given.update(env)
+            raise KeyError('pid')
+
+        with mock.patch.object(e, 'Game', game), mock.patch.object(e.tempfile, 'mkdtemp', return_value=str(folder)):
+            with self.assertRaises(KeyError):
+                e.scenario_launcher()
+        # The fake accounts went to that game, and the next scenario's game inherits none.
+        self.assertIn('Ann', given['HORIZON_ACCOUNT_SESSIONS'])
+        self.assertNotIn('HORIZON_ACCOUNT_SESSIONS', os.environ)
 
     def launch_words(self, **kwargs):
         """The words of the `launch` a `Game` sends, with horizon-ctl faked."""
