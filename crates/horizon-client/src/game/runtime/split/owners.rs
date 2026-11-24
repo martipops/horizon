@@ -451,6 +451,7 @@ mod tests {
     const A: usize = 10;
     const B: usize = 11;
     const C: usize = 12;
+    const NONE: [usize; 0] = [];
 
     fn rules() -> Rules {
         Rules {
@@ -509,7 +510,7 @@ mod tests {
         assert_eq!(owners.pad_of(P1), None);
         press(&mut owners, A, North, &rules);
         assert_eq!(owners.pad_of(P1), Some(A), "Y: it is P1's");
-        assert_eq!(offers(&owners), []);
+        assert_eq!(offers(&owners), NONE);
     }
 
     #[test]
@@ -552,7 +553,7 @@ mod tests {
             press(&mut owners, A, button, &rules);
         }
         assert_eq!(owners.joining(), [A]);
-        assert_eq!(offers(&owners), []);
+        assert_eq!(offers(&owners), NONE);
     }
 
     #[test]
@@ -577,7 +578,7 @@ mod tests {
         owners.seat(B, 2);
         owners.seat(A, 3);
         assert_eq!((owners.pad_of(2), owners.pad_of(3)), (Some(B), Some(A)));
-        assert_eq!(owners.joining(), []);
+        assert_eq!(owners.joining(), NONE);
     }
 
     #[test]
@@ -592,7 +593,7 @@ mod tests {
         assert_eq!(offers(&owners), [A], "one seat, one question");
         press(&mut owners, A, South, &rules);
         press(&mut owners, B, West, &rules);
-        assert_eq!(offers(&owners), [], "the seat is spoken for");
+        assert_eq!(offers(&owners), NONE, "the seat is spoken for");
     }
 
     #[test]
@@ -602,7 +603,7 @@ mod tests {
         press(&mut owners, A, West, &rules);
         press(&mut owners, A, South, &rules);
         gone(&mut owners, A, &rules);
-        assert_eq!(owners.joining(), []);
+        assert_eq!(owners.joining(), NONE);
         assert_eq!(owners.effects(), []);
     }
 
@@ -614,7 +615,7 @@ mod tests {
         let late = later(rules);
         owners.expire(&late);
         press(&mut owners, A, South, &late);
-        assert_eq!(owners.joining(), [], "the press asks again");
+        assert_eq!(owners.joining(), NONE, "the press asks again");
         assert_eq!(offers(&owners), [A]);
     }
 
@@ -638,7 +639,7 @@ mod tests {
             assert_eq!((owners.pad_of(P1), offers(&owners)), (None, vec![A]));
             end(&mut owners);
             assert_eq!(owners.pad_of(P1), Some(A), "end {k}");
-            assert_eq!(offers(&owners), [], "end {k}");
+            assert_eq!(offers(&owners), NONE, "end {k}");
             assert_eq!(owners.effects(), [Effect::Fresh(A)], "end {k}");
         }
     }
@@ -675,7 +676,7 @@ mod tests {
         gone(&mut owners, B, &rules);
         press(&mut owners, A, South, &rules);
         assert_eq!(owners.pad_of(2), Some(A));
-        assert_eq!(offers(&owners), [], "nobody is asked about it any more");
+        assert_eq!(offers(&owners), NONE, "nobody is asked about it any more");
         owners.entered(2);
         owners.expire(&later(rules));
         assert_eq!(owners.pad_of(2), Some(A), "and it stays P2's");
@@ -689,7 +690,7 @@ mod tests {
         owners.give_up(rules.now);
         gone(&mut owners, A, &rules);
         owners.expire(&rules);
-        assert_eq!(offers(&owners), [], "nobody can answer it meanwhile");
+        assert_eq!(offers(&owners), NONE, "nobody can answer it meanwhile");
         owners.back(A, model(A), &rules);
         assert_eq!(offers(&owners), [A]);
         press(&mut owners, A, East, &rules);
