@@ -729,9 +729,10 @@ impl Game<'_> {
         let Some(stick) = self.input_move() else {
             return false;
         };
-        // The keys the stick held at the last tick, as that tick moved and sent them, with their
-        // margin; a mod's vector by its own heading.
-        let [forward, backward, left, right] = match self.pad_stick_keys() {
+        // The stock pad's keys as the last tick moved and sent them, with their margin; another
+        // source's vector, or a mod's, by its own heading.
+        let held = if self.input_source.is_none() { self.pad_stick_keys() } else { [false; 4] };
+        let [forward, backward, left, right] = match held {
             [false, false, false, false] => horizon_client::gamepad::eight_direction_keys(stick),
             held => held,
         };

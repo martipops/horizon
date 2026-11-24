@@ -2443,7 +2443,10 @@ bind_key.hotbar.2:north
             seen.push(keys);
         }
         let forward_left = [true, false, true, false];
-        assert_eq!(seen, [[true, false, false, false], forward_left, forward_left]);
+        assert_eq!(
+            seen,
+            [[true, false, false, false], forward_left, forward_left]
+        );
         // A strafe that swings near the forward-left edge keeps one heading: 60, 71, 67 degrees.
         let mut keys = [false; 4];
         let mut forward = Vec::new();

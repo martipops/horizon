@@ -375,3 +375,52 @@ fn native_controller_sticks_shape_real_movement_and_camera() {
         },
     );
 }
+
+/// A stock stick on a server, through the real client tick: the input packet's movement keys stay
+/// on through a light turn across a sector's edge, nothing double-taps into a sprint, and a real
+/// double tap of the stick still sprints.
+#[test]
+#[ignore = "daily"]
+fn a_stock_stick_on_a_server_sends_steady_keys_and_sprints_only_on_a_double_tap() {
+    with_client_game(|game| {
+        let mut server = Connection::local(connect(game));
+        server
+            .reader
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        finish_login(&mut server);
+        game.focused = true;
+        game.settings.controller.enabled = true;
+        game.settings.controller.move_deadzone = 0.15;
+        game.remote.as_mut().unwrap().external_server = true;
+        reset_player(game, 20);
+        // The raw stick for a rescaled tilt `degrees` from forward, towards the left.
+        let raw = |degrees: f32, tilt: f32| {
+            let radius = 0.15 + tilt * 0.85;
+            let (s, c) = degrees.to_radians().sin_cos();
+            [-s * radius, c * radius]
+        };
+        let drive = |game: &mut Game<'_>, stick: [f32; 2]| {
+            game.pad.state.left = stick;
+            tick(game);
+            let keys = game.remote.as_ref().unwrap().last_input & 0b1111;
+            (keys, game.player.as_ref().unwrap().sprinting)
+        };
+        let turn = [raw(20.0, 0.31), raw(27.0, 0.29), raw(27.0, 0.31)];
+        let sent: Vec<_> = turn.iter().map(|&stick| drive(game, stick)).collect();
+        // Forward, then forward and left: never no key, never a sprint.
+        assert_eq!(sent, [(0b0001, false), (0b0101, false), (0b0101, false)]);
+        // Centred past vanilla's double-tap window, so the strafe starts from rest.
+        for _ in 0..8 {
+            drive(game, [0.0; 2]);
+        }
+        let strafe = [raw(60.0, 0.6), raw(71.0, 0.6), raw(67.0, 0.6)];
+        assert!(strafe.iter().all(|&stick| !drive(game, stick).1));
+        drive(game, [0.0; 2]);
+        reset_player(game, 20);
+        // Forward, centred, forward again within vanilla's window: a sprint.
+        let taps = [raw(0.0, 1.0), [0.0; 2], raw(0.0, 1.0)];
+        let last = taps.iter().map(|&stick| drive(game, stick)).last().unwrap();
+        assert_eq!(last, (0b0001, true));
+    });
+}
