@@ -1094,14 +1094,18 @@ impl Game<'_> {
         }
         // With A held over slots, the drag goes on to the next slot (a stack
         // spreads); on anything else (a slider grabbed), the D-pad nudges.
+        // Destroy Item is never reached by a held direction, nor by a drag.
+        let destroy = self.pad_destroy_slot();
         if self.pad.menu.held[0] {
             let slots: Vec<Target> = self
                 .pad_targets()
                 .into_iter()
                 .filter(|t| matches!(t.kind, Kind::Slot))
                 .collect();
-            let centres: Vec<(f32, f32)> = slots.iter().map(Target::center).collect();
-            if snap::nearest(self.cursor, &centres, 0.5).is_some() {
+            let on_slot = slots.iter().map(Target::center).collect::<Vec<_>>();
+            if snap::nearest(self.cursor, &on_slot, 0.5).is_some() {
+                let spread = slots.iter().filter(|t| Some(**t) != destroy);
+                let centres: Vec<(f32, f32)> = spread.map(Target::center).collect();
                 if let Some(i) = gamepad::focus_step(self.cursor, button, &centres)
                     && (self.pad.menu.repeats == 0
                         || !gamepad::repeat_crosses_slots(self.cursor, centres[i], true))
@@ -1140,7 +1144,7 @@ impl Game<'_> {
                 && (t.center().1 - from.1).abs() <= 0.5
         });
         // Destroy Item sits a slot's step past the hotbar: a held direction stops before it too.
-        let to_slot = targets[i].kind == Kind::Slot && Some(targets[i]) != self.pad_destroy_slot();
+        let to_slot = targets[i].kind == Kind::Slot && Some(targets[i]) != destroy;
         if self.pad.menu.repeats > 0
             && on_slot
             && gamepad::repeat_crosses_slots(from, centres[i], to_slot)
@@ -1299,19 +1303,31 @@ impl Game<'_> {
 
     /// `AbstractSelectionList.setFocused`, on the lists where selecting does no more.
     fn pad_focus_selects_row(&mut self, target: Target) {
-        if target.kind != Kind::Row {
+        if target.kind != Kind::Row || self.pad_focus_selects_mod(target) {
             return;
         }
         let size = self.gui_size();
         let (x, y) = target.center();
-        if self.screen == Screen::Options && self.ui.options.page() == Page::Mods {
-            // The Mods list: the panel beside it shows the mod the focus is on.
-            if let Some(mods) = self.ui.options.mods_screen.as_mut() {
-                mods.focus_row(x.into(), y.into());
-            }
-        } else if let Some(title) = self.title.as_mut().filter(|t| t.focus_selects_row()) {
+        if let Some(title) = self.title.as_mut().filter(|t| t.focus_selects_row()) {
             title.focus_world_row((x, y), size);
         }
+    }
+
+    /// On the Mods screen, the panel beside the list shows the mod the focus is on, the
+    /// controller's or the keyboard's. Whether that screen is open.
+    pub(super) fn pad_focus_selects_mod(&mut self, target: Target) -> bool {
+        if self.screen != Screen::Options || self.ui.options.page() != Page::Mods {
+            return false;
+        }
+        if target.kind == Kind::Row
+            && let Some(mods) = self.ui.options.mods_screen.as_mut()
+        {
+            // Where the last frame drew the row: a scroll since moves it in the next one.
+            let drawn = list_amount(&widgets::last_scroll_areas(), &target.rect).unwrap_or(0.0);
+            let (x, y) = target.center();
+            mods.focus_row(x.into(), y.into(), drawn.into());
+        }
+        true
     }
 
     /// `AbstractSelectionList.setSelected`: a settings row the focus lands on, or presses, while
@@ -1976,6 +1992,12 @@ impl Game<'_> {
                 } else {
                     gamepad::nearest(self.cursor, &centres, f32::INFINITY).map(|i| targets[i])
                 };
+            }
+            // The stick can scroll the focused mod's row away, and the focus goes to another.
+            if self.pad.menu.pos.is_some()
+                && let Some(focus) = self.pad.menu.focus
+            {
+                self.pad_focus_selects_mod(focus);
             }
         }
         self.pad.menu.focus_name = self.pad.menu.focus.and_then(|focus| {

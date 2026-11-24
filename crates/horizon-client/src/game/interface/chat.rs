@@ -1784,11 +1784,23 @@ impl Game<'_> {
     /// messages are focus targets, named by their text: the chat box registers, so a controller
     /// has no crosshair here to press them with (`Chat::press_targets`). Rows, as the
     /// suggestions are: text has no highlighted sprite, and a focused row gets the outline.
+    /// What Leave Bed, the suggestions or the box cover is none: a press there is theirs
+    /// (`chat_click`).
     fn register_chat_log_targets(&self, height: i32) {
         use horizon_client::widgets::{self, Kind};
         let font = &self.gui.atlas.font;
         let copy = self.pvp_chat().copy;
+        let leave_bed = self.leave_bed_rect();
+        let screen = self.ui.chat_screen.as_ref();
         for (text, rect) in self.ui.chat.press_targets(font, height, copy) {
+            let [x, y, w, h] = rect;
+            let (x, y) = (x + w / 2.0, y + h / 2.0);
+            let bed = leave_bed.is_some_and(|[bx, by, bw, bh]| {
+                (bx..bx + bw).contains(&x) && (by..by + bh).contains(&y)
+            });
+            if bed || screen.is_some_and(|s| s.takes_click(x.into(), y.into())) {
+                continue;
+            }
             widgets::record_as(&text, rect, true, Kind::Row);
             widgets::target_as(rect, Kind::Row);
         }

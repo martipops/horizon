@@ -2256,6 +2256,13 @@ impl ChatScreen {
         handled
     }
 
+    /// Whether a click at this point is the suggestions' or the chat box's, so the log under them
+    /// never gets it.
+    pub fn takes_click(&self, x: f64, y: f64) -> bool {
+        let suggestions = self.suggestions.as_ref();
+        suggestions.is_some_and(|l| l.contains(x as i32, y as i32)) || self.input.contains(x, y)
+    }
+
     /// `ChatScreen.mouseClicked`: the caller supplies the event's double-click flag.
     pub fn click_event(&mut self, m: &Measure, c: &Commands, x: f64, y: f64, double: bool) -> bool {
         if let Some(mut l) = self.suggestions.take() {

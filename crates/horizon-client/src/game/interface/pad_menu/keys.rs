@@ -185,7 +185,9 @@ impl Game<'_> {
             .map(|t| t.screen_key())
             .hash(&mut hasher);
         match self.active_editor_overlay() {
-            Some(super::EditorOverlay::Book) => self.book.as_ref().map(super::BookScreen::editor_id),
+            Some(super::EditorOverlay::Book) => {
+                self.book.as_ref().map(super::BookScreen::editor_id)
+            }
             Some(super::EditorOverlay::Sign) => self.sign_overlay_id(),
             None => None,
         }
@@ -229,8 +231,8 @@ impl Game<'_> {
     /// The keyboard's focus moved from `left` to `target`
     /// (`ComponentPath.applyFocus`): a slider's arrows don't change it yet,
     /// a text field takes the typing (a click at its end, where Tab leaves
-    /// the caret) and the one left behind lets go of it, and a world row is
-    /// selected (`AbstractSelectionList.setFocused`).
+    /// the caret) and the one left behind lets go of it, and a world or mod row
+    /// is selected (`AbstractSelectionList.setFocused`).
     pub(super) fn key_focus_landed(
         &mut self,
         event_loop: &dyn EventLoopCtl,
@@ -251,7 +253,7 @@ impl Game<'_> {
             Kind::Field => {
                 self.pad_click_at(event_loop, key_focus::field_click(target.rect), false);
             }
-            Kind::Row => {
+            Kind::Row if !self.pad_focus_selects_mod(target) => {
                 let size = self.gui_size();
                 if let Some(title) = self.title.as_mut() {
                     title.focus_world_row(target.center(), size);

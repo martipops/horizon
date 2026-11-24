@@ -396,7 +396,7 @@ the crafting result, armour to the player's grid.
   `widgets::steps_value`. Stepping at once rather than after A, as sliders do, keeps A's step and adds no
   mode to find: passing over a choice with up and down never changes it.
 - **The server list**: the bumpers move the selected server up or down, as its arrows do.
-- **The Mods screen**: the focus on a row of the list selects that mod, as the arrow keys do, so the panel beside
+- **The Mods screen**: the focus on a row of the list selects that mod, the controller's or the keyboard's, so the panel beside
   it and its Homepage, Issues and Config buttons follow the focus. The screen scrolls what the pointer is over,
   and the pad's sits on the focused widget: the right stick scrolls the list from the search box or the sort
   button, and the panel from its buttons.
@@ -492,7 +492,7 @@ Approximations:
 - D-pad hops to the nearest target that way (a slot, a button). Held, it stops
   at the edge of the slots it is on; a fresh press crosses.
 - The creative inventory's **Destroy Item** is a target one step right of the hotbar. A held direction stops at
-  the hotbar's last slot, so only a fresh press reaches it. There A or X empties the hand and Y, the pad's
+  the hotbar's last slot, so only a fresh press reaches it, and a drag never does. There A or X empties the hand and Y, the pad's
   Shift + click, empties the whole inventory, as the mouse does.
 - A = left click, X = right click, Y = quick move, B = back; View and the left
   stick click throw, as in focus mode.
@@ -587,7 +587,8 @@ it waits for A on the chat box. With the keyboard closed (B), up from the chat b
 of text with a click event in the lines in view is a row (a link, a player's name, a server's `[click here]`, a
 screenshot's file name, the row of messages Chat Delay holds back), and A on the focused one is a click there.
 The right stick scrolls the log. With PvP & HUD's copy on click, the rest of each line is a row too, which
-copies its message. The chat still opens on its box, or on Leave Bed in a bed. It types into chat (local and server), signs, books being written, the title screens' fields,
+copies its message. What the command suggestions or Leave Bed cover is no row: a press there is theirs. The
+chat still opens on its box, or on Leave Bed in a bed. It types into chat (local and server), signs, books being written, the title screens' fields,
 every options page's fields (searches, the packs', the language list's,
 splitscreen profiles), the creative and recipe-book searches, the mod browser's search, the anvil, the
 LAN screen's port and its game rules, a server dialog's inputs, command blocks, the game master blocks'

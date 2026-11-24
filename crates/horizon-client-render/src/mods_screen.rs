@@ -451,22 +451,23 @@ impl ModsScreen {
         let scrollable = Scroll::max(self.list_content(), g.list[3]) > 0;
         g.list[2] - 6 - if scrollable { SCROLLBAR_W } else { 0 }
     }
-    /// The mod whose row of the list is under a point, as an index into `entries`.
-    fn row_at(&self, g: &Geo, x: f64, y: f64) -> Option<usize> {
+    /// The mod whose row is under a point of the list scrolled by `amount`, as an index into
+    /// `entries`.
+    fn row_at(&self, g: &Geo, x: f64, y: f64, amount: f64) -> Option<usize> {
         let [lx, ly, ..] = g.list;
         let rows = f64::from(lx + 3)..f64::from(lx + 3 + self.row_width(g));
         if !hit(g.list, x, y) || !rows.contains(&x) {
             return None;
         }
-        let below = y - f64::from(ly + 2) + self.list.amount;
+        let below = y - f64::from(ly + 2) + amount;
         let row = (below >= 0.0).then(|| (below / f64::from(ROW_H)) as usize)?;
         self.shown.get(row).copied()
     }
-    /// `AbstractSelectionList.setFocused`: a controller's focus landed on the row at this point,
-    /// so that mod is selected, as the arrow keys select the row they reach, and the search box
-    /// lets go of the typing. Whether a row was there.
-    pub fn focus_row(&mut self, x: f64, y: f64) -> bool {
-        let Some(entry) = self.row_at(&self.geo(), x, y) else {
+    /// `AbstractSelectionList.setFocused`: the controller's or the keyboard's focus is on the row
+    /// at this point of the list drawn scrolled by `amount`, so that mod is selected and the
+    /// search box lets go of the typing. Whether a row was there.
+    pub fn focus_row(&mut self, x: f64, y: f64, amount: f64) -> bool {
+        let Some(entry) = self.row_at(&self.geo(), x, y, amount) else {
             return false;
         };
         self.search.focused = false;
@@ -762,7 +763,7 @@ impl ModsScreen {
                 self.list.held = Some(y);
                 return (Action::None, false);
             }
-            if let Some(entry) = self.row_at(&g, x, y) {
+            if let Some(entry) = self.row_at(&g, x, y, self.list.amount) {
                 self.select(entry);
             }
             return (Action::None, false);
@@ -1656,12 +1657,12 @@ mod tests {
         assert!(screen.current().is_none());
         let [x, y, w, h] = rows[2].1;
         let middle = (f64::from(x + w / 2.0), f64::from(y + h / 2.0));
-        assert!(screen.focus_row(middle.0, middle.1));
+        assert!(screen.focus_row(middle.0, middle.1, 0.0));
         assert_eq!(screen.current().map(|e| e.name.as_str()), Some("Mod 00"));
         assert!(screen.list_focused && !screen.search_focused());
         // The search box above the list is no row.
         let search = centre(screen.geo().search);
-        assert!(!screen.focus_row(search.0, search.1));
+        assert!(!screen.focus_row(search.0, search.1, 0.0));
         assert_eq!(screen.current().map(|e| e.name.as_str()), Some("Mod 00"));
 
         // Scrolled two rows and a half on, the six in view start at the third, half hidden, and
@@ -1671,10 +1672,16 @@ mod tests {
         assert_eq!(rows.first().map(|(name, _)| name.as_str()), Some("Mod 00"));
         assert_eq!(rows.len(), 6);
         let [x, y, w, h] = rows[0].1;
-        assert!(screen.focus_row((x + w / 2.0).into(), (y + h / 2.0).into()));
+        let drawn = screen.list.amount;
+        assert!(screen.focus_row((x + w / 2.0).into(), (y + h / 2.0).into(), drawn));
         assert_eq!(screen.current().map(|e| e.name.as_str()), Some("Mod 00"));
         let [x, y, w, h] = rows[5].1;
-        assert!(screen.focus_row((x + w / 2.0).into(), (y + h / 2.0).into()));
+        let at = (f64::from(x + w / 2.0), f64::from(y + h / 2.0));
+        assert!(screen.focus_row(at.0, at.1, drawn));
+        assert_eq!(screen.current().map(|e| e.name.as_str()), Some("Mod 05"));
+        // A scroll not drawn yet doesn't change which mod the drawn row is.
+        screen.scroll(at.0, at.1, -f64::from(ROW_H) * 2.0 / WHEEL_STEP);
+        assert!(screen.focus_row(at.0, at.1, drawn));
         assert_eq!(screen.current().map(|e| e.name.as_str()), Some("Mod 05"));
         assert!(crate::widgets::last_scroll_areas()[0].up);
     }
