@@ -1083,6 +1083,13 @@ pub(super) fn content_root(
         |id| horizon_client_core::potions::effect(id).map(|def| def.index),
     )
     .map_err(|errors| errors.join("\n"))?;
+    for def in horizon_client_core::potions::mod_effects() {
+        if let Some(owner) = def.owner
+            && let Some(key) = mod_api::__private::effect_key_by_index(def.index)
+        {
+            mod_api::__private::set_effect_owner(key, owner);
+        }
+    }
     let behavior: serde_json::Value =
         horizon_world::json_file::read(&overlay.root.prepared().join("block-behaviours.json"))?;
     let fluids = behavior["fluids"]
@@ -1248,6 +1255,12 @@ fn register_block_entity_types(
         if blocks.id(block).is_none() {
             return Err(format!("unknown block {block}").into());
         }
+        if block == block_entity_types::WATER_CAULDRON
+            && let Some(owner) = types.type_for(block)
+            && owner != kind
+        {
+            return Err(format!("block {block} is already owned by block entity type {owner}").into());
+        }
         if let Some(base) = bases.get(kind)
             && !classes
                 .get(block)
@@ -1289,18 +1302,18 @@ fn announced_entry(
 fn register_mob_effects(mods: &[horizon_client::mod_content::ContentMod]) {
     use horizon_client::brewing::{self, Category};
     use horizon_mod_package::content::EffectCategory;
-    let effects = horizon_client::mod_content::mob_effects(mods);
+    let effects = horizon_client::mod_content::mob_effects_with_owners(mods);
     if effects.is_empty() {
         return;
     }
-    let ids: Vec<String> = effects.iter().map(|e| e.id.clone()).collect();
-    let set = brewing::register_mod_effects(effects.into_iter().map(|e| {
+    let ids: Vec<String> = effects.iter().map(|(_, e)| e.id.clone()).collect();
+    let set = brewing::register_mod_effects_owned(effects.into_iter().map(|(owner, e)| {
         let category = match e.category {
             EffectCategory::Beneficial => Category::Beneficial,
             EffectCategory::Harmful => Category::Harmful,
             EffectCategory::Neutral => Category::Neutral,
         };
-        (e.id.clone(), e.color, category, e.sort_order)
+        (owner.to_owned(), e.id.clone(), e.color, category, e.sort_order)
     }));
     if !set
         && brewing::mod_effects()

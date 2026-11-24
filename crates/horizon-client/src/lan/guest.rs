@@ -71,6 +71,10 @@ pub struct SavedBody {
     /// tags the host's own save keeps.
     pub invulnerable: bool,
     pub invulnerable_time: i32,
+    /// `current_impulse_context_reset_grace_time` and `current_explosion_impact_pos`
+    /// (LivingEntity): a wind charge's launch goes on measuring its fall from the
+    /// impact point after a rejoin.
+    pub impulse: horizon_world::living_fall::ImpulseContext,
 }
 
 impl SavedBody {
@@ -87,6 +91,7 @@ impl SavedBody {
             ticks_frozen: motion.ticks_frozen,
             invulnerable: motion.health.permanently_invulnerable,
             invulnerable_time: motion.health.invulnerable_time,
+            impulse: motion.impulse,
         }
     }
     /// Put it on a new body.
@@ -101,6 +106,7 @@ impl SavedBody {
         motion.ticks_frozen = self.ticks_frozen;
         motion.health.permanently_invulnerable = self.invulnerable;
         motion.health.invulnerable_time = self.invulnerable_time;
+        motion.impulse = self.impulse;
     }
 }
 
@@ -592,6 +598,8 @@ pub struct Guest {
     pub advancements_changed: std::collections::BTreeSet<usize>,
     /// The server's scoreboard as this player's client has it (lan/scoreboard.rs).
     pub scoreboard: super::scoreboard::View,
+    /// Whether this guest has received its initial `updateEntireScoreboard` sync.
+    pub scoreboard_synced: bool,
     /// Recipes unlocked since the client was last told
     /// (`ServerRecipeBook.addRecipes` sends them).
     pub recipes_unlocked: Vec<String>,
@@ -942,6 +950,7 @@ impl Guest {
             advancements_visible: Vec::new(),
             advancements_changed: Default::default(),
             scoreboard: Default::default(),
+            scoreboard_synced: false,
             recipes_unlocked: Vec::new(),
         }
     }

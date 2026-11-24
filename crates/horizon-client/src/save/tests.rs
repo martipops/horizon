@@ -1899,13 +1899,17 @@ fn older_worlds_are_upgraded_on_opening() {
     };
     for &old in olds {
         super::write_dat(&dir.join("level.dat"), level(old)).unwrap();
+        assert!(super::needs_world_upgrade(&dir));
         super::upgrade_older_world(&dir).unwrap();
         assert_eq!(version(&dir), Some(i64::from(super::DATA_VERSION)));
+        assert!(!super::needs_world_upgrade(&dir));
     }
     // 1.21.1: upgraded to the current version.
     super::write_dat(&dir.join("level.dat"), level(3955)).unwrap();
+    assert!(super::needs_world_upgrade(&dir));
     super::upgrade_older_world(&dir).unwrap();
     assert_eq!(version(&dir), Some(i64::from(super::DATA_VERSION)));
+    assert!(!super::needs_world_upgrade(&dir));
     super::upgrade_older_world(&dir).unwrap();
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -2083,6 +2087,61 @@ fn session_lock_releases_while_a_descriptor_copy_lives() {
     drop(lock);
     assert!(super::SessionLock::acquire(&dir).is_ok());
     drop(copy);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+/// #20841: vanilla's `DirectoryLock` takes Java's `FileChannel.tryLock()`, a POSIX
+/// record lock (`fcntl` `F_SETLK` over the whole file). A world it holds is locked
+/// for Horizon, and a world Horizon holds is locked for it. A POSIX lock is the
+/// process's, and closing any descriptor of the file in the process drops it, so
+/// it is taken again after each of Horizon's probes; Java, another process, keeps it.
+#[cfg(target_os = "linux")]
+#[test]
+fn session_lock_and_javas_file_lock_exclude_each_other() {
+    use rustix::fs::{FlockOperation, fcntl_lock};
+    let dir = std::env::temp_dir().join(format!("horizon-lock-java-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let java = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(dir.join("session.lock"))
+        .unwrap();
+    let java_lock = || fcntl_lock(&java, FlockOperation::NonBlockingLockExclusive);
+    java_lock().unwrap();
+    assert!(super::SessionLock::acquire(&dir).is_err());
+    java_lock().unwrap();
+    assert!(super::SessionLock::is_locked(&dir));
+    fcntl_lock(&java, FlockOperation::Unlock).unwrap();
+    let horizon = super::SessionLock::acquire(&dir).expect("unlocked world");
+    assert!(java_lock().is_err());
+    drop(horizon);
+    assert!(java_lock().is_ok());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+/// A Horizon built before #20841 takes only `flock`, which Linux keeps apart from
+/// the OFD lock: an older and a newer build still exclude each other, in either order.
+#[cfg(target_os = "linux")]
+#[test]
+fn session_lock_and_an_older_horizons_flock_exclude_each_other() {
+    let dir = std::env::temp_dir().join(format!("horizon-lock-flock-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let older = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(dir.join("session.lock"))
+        .unwrap();
+    older.try_lock().unwrap();
+    assert!(super::SessionLock::acquire(&dir).is_err());
+    assert!(super::SessionLock::is_locked(&dir));
+    older.unlock().unwrap();
+    let newer = super::SessionLock::acquire(&dir).expect("unlocked world");
+    assert!(matches!(
+        older.try_lock(),
+        Err(std::fs::TryLockError::WouldBlock)
+    ));
+    drop(newer);
+    assert!(older.try_lock().is_ok());
     let _ = std::fs::remove_dir_all(&dir);
 }
 #[test]
@@ -4549,7 +4608,7 @@ fn write_old_record(save: &SaveDir, folder: &str, tag: Tag) {
         Folder::Entities => &save.entity_regions,
         Folder::Poi => &save.poi_regions,
     };
-    super::write_region_records(&save.root, cache, folder, &[((0, 0), &record)]).unwrap();
+    super::write_region_records(&save.root, cache, folder, None, &[((0, 0), &record)]).unwrap();
 }
 
 #[test]
@@ -4692,6 +4751,7 @@ fn old_chunks_are_found_in_the_saved_records_and_old_poi_upgrade() {
         &nether.root,
         &nether.regions,
         "region",
+        None,
         &[((1, 0), &current)],
     )
     .unwrap();

@@ -380,15 +380,21 @@ impl Game<'_> {
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut out = Vec::new();
-        for (item, (layer, slot)) in worn.into_iter().zip([
-            ("helmet", "head"),
-            ("chestplate", "chest"),
-            ("leggings", "legs"),
-            ("boots", "feet"),
+        // The entity drawn now, as a mod's `render_worn_equipment` lets its armour be drawn.
+        let shown = horizon_client::mobs::render::shown_equipment();
+        use mod_api::{EquipmentRenderPart as Drawn, EquipmentRenderSlot as Worn};
+        for (item, (layer, slot, worn_slot)) in worn.into_iter().zip([
+            ("helmet", "head", Worn::Head),
+            ("chestplate", "chest", Worn::Chest),
+            ("leggings", "legs", Worn::Legs),
+            ("boots", "feet", Worn::Feet),
         ]) {
             let Some((item, stack)) = item else {
                 continue;
             };
+            if shown.hides(worn_slot, Drawn::Base) {
+                continue;
+            }
             // HumanoidArmorLayer.renderArmorPiece: the stack's own
             // `equippable`, drawn when it has an asset and is worn in its slot.
             let equippable = match stack {
@@ -433,8 +439,18 @@ impl Game<'_> {
                 let Some(uv) = self.armor_layer_rect(cit, &asset, kind, texture) else {
                     continue;
                 };
-                let color = layer_color(*undyed, stack);
-                out.push((part, uv, color, if i == 0 { overlay } else { 0 }, false));
+                let first = if i == 0 { overlay } else { 0 };
+                let shown_layer = horizon_client::mobs::render::shown_draw(
+                    &shown,
+                    worn_slot,
+                    Drawn::Base,
+                    layer_color(*undyed, stack),
+                    first,
+                );
+                let Some((color, first)) = shown_layer else {
+                    continue;
+                };
+                out.push((part, uv, color, first, false));
                 // The layer's OptiFine emissive overlay, full bright without the glint.
                 if let Some(g) = emissive
                     .overlay(texture)
@@ -446,8 +462,15 @@ impl Game<'_> {
             if let Some(r) = stack
                 .and_then(|s| assets.trim_texture(&asset, kind, s))
                 .and_then(|t| self.gui.atlas.sprites.get(&t.sprite()))
+                && let Some((color, overlay)) = horizon_client::mobs::render::shown_draw(
+                    &shown,
+                    worn_slot,
+                    Drawn::Trim,
+                    0xFFFF_FFFF,
+                    overlay,
+                )
             {
-                out.push((part, [r.u0, r.v0, r.u1, r.v1], 0xFFFF_FFFF, overlay, false));
+                out.push((part, [r.u0, r.v0, r.u1, r.v1], color, overlay, false));
             }
         }
         out
@@ -625,6 +648,8 @@ impl Game<'_> {
         if let horizon_core::nbt::Tag::Compound(map) = &mut raw {
             map.remove(&"UUID".into());
         }
+        // The item's `entity_data` is a compound `Entity.load` reads, `Tags` included.
+        Self::normalize_loaded_tags(&mut raw);
         self.persist.raw.insert(stand.id, raw);
         let foot = stand.position;
         // EntityType.create's spawn yaw, `level.getRandom().nextFloat() * 360`, before
@@ -1012,6 +1037,12 @@ impl Game<'_> {
         always_kills: bool,
         by: Option<super::commands::Target>,
     ) -> bool {
+        let id = self.armor_stands[i].id;
+        self.stand_damaged(id, "minecraft:player_attack", self.own_entity_id() as u32);
+        // A damage listener may have removed this or another stand: find it again.
+        let Some(i) = self.armor_stands.iter().position(|a| a.id == id) else {
+            return true;
+        };
         let time = self.world.game_time;
         let at = self.armor_stands[i].position;
         let at = [at.x, at.y, at.z];
@@ -1279,7 +1310,7 @@ impl Game<'_> {
                     )
                 },
             ) {
-                dead.push((i, damage_type));
+                dead.push((id, damage_type));
             }
             // Thawing and powder snow act on the stand whatever its key: a stand they touched
             // is not at rest.
@@ -1300,8 +1331,11 @@ impl Game<'_> {
             let (id, from, to) = section_step;
             self.entity_section_step(id, [from.x, from.y, from.z], [to.x, to.y, to.z]);
         }
-        for (i, damage_type) in dead.into_iter().rev() {
-            self.break_armor_stand_by_anything(i, damage_type, 0);
+        // By id: a damage listener run for an earlier death may have removed a stand.
+        for (id, damage_type) in dead {
+            if let Some(i) = self.armor_stands.iter().position(|a| a.id == id) {
+                self.break_armor_stand_by_anything(i, damage_type, 0);
+            }
         }
         Ok(())
     }
@@ -1611,6 +1645,15 @@ impl Game<'_> {
             |_| None,
         );
     }
+    /// `entity_damaged_detail` for a stand `id` hit by `damage_type` from `causing`.
+    pub(in crate::game) fn stand_damaged(&mut self, id: u32, damage_type: &str, causing: u32) {
+        self.native_entity_damaged_detail(mod_api::__private::EntityDamagedDetailCall {
+            entity: id,
+            kind: "minecraft:armor_stand",
+            damage_type,
+            causing,
+        });
+    }
     /// `ArmorStand.brokenByAnything`, then `kill`, as burning out or a blast
     /// breaks a stand: its equipment pops above its block, the stand item does
     /// not drop.
@@ -1620,6 +1663,12 @@ impl Game<'_> {
         damage_type: &str,
         causing: u32,
     ) {
+        let id = self.armor_stands[i].id;
+        self.stand_damaged(id, damage_type, causing);
+        // A damage listener may have removed this or another stand: find it again.
+        let Some(i) = self.armor_stands.iter().position(|a| a.id == id) else {
+            return;
+        };
         let a = self.armor_stands.remove(i);
         let at = [a.position.x, a.position.y, a.position.z];
         self.armor_stand_death_drops(&a, damage_type, causing);

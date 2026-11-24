@@ -139,6 +139,10 @@ UTF-16 units, values of 32767 and signatures of 1024. A list past a limit is
 refused and the login's own properties are sent. `player_login` follows later and
 can still refuse the player.
 
+`player.send_resource_pack(host, url, sha1, required, prompt)` (`player_send_resource_pack`) offers one player a resource pack while they play, as Paper's `Player#setResourcePack` does. Its id is the name UUID of the url, so offering the same url again replaces the pack; the answer comes back through `resource_pack_status`. `player.set_view_distance(host, chunks)` (`player_set_view_distance`) sets one player's radius, from 2 up to the server's view distance, until their client sends its settings again. `host.log_file()` is the path of the server log.
+
+`player.select_entities(host, token)` (`player_select_entities`) resolves one selector such as `@a` or `@e[type=villager]` as that player's command would, and returns the entities it names, or `None` when the text is not exactly one selector. `player_spawn_location` lets a mod change where a joining player is placed (level, position, look) before the login is sent. `player_teleport_cause` and `player_game_mode_cause` tell the cause of a teleport (`command`, `spectate`, `ender_pearl`, `chorus_fruit`, `nether_portal`, `end_portal`, `end_gateway`) and of a game mode change (`command`, `switcher`, `plugin`, `hardcore_death`); `mob_effect_added_detail` hears every effect given to a mob or player, with its duration and cause. `player.is_collidable(host)` says whether others collide with a player (not a spectator, not on a `never` team), and `entity_damaged_detail` names an armor stand as the victim of a hit.
+
 `entity.set_swimming(host, swimming)` (`entity_set_swimming`) sets the swimming flag of a server player or a guest, the one the next water update reads, as Paper's `Entity#setSwimming` does. It returns `false` for a mob, which keeps its own swim, and for a stale handle.
 
 `entity.detonate(host)` (`entity_detonate`) explodes an entity now: a primed TNT explodes where it stands with its power, as `PrimedTnt.explode` does, and a creeper is lit and explodes at once, as `Creeper.explodeCreeper` does. The entity is gone after its explosion. It returns `false`, changing nothing, for a stale handle, a kind that does not explode, or when the explosion itself fails.
@@ -381,6 +385,7 @@ For mods that copy or edit a player whole (a player-data sync, `/invsee`, `/ende
 |---|---|
 | `inventory_slots(host)` | The non-empty slots by `Inventory`'s numbers, lowest first: 0 to 35 the main inventory (0 to 8 the hotbar), 36 feet, 37 legs, 38 chest, 39 head, 40 off hand, 41 body, 42 saddle. `None` when no online player is behind the handle. |
 | `set_inventory_slot(host, slot, stack)` | `Inventory.setItem`: `None` empties the slot; there is no item check, so a worn slot takes any item. The client is sent the slot with the tick's inventory sync, and an open inventory menu shows the written stack. Returns `Result<(), PlayerDataRefusal>`; each refusal writes nothing: `Stale` (no online player), `Client`, `Dead`, `SlotOutOfRange { slot, last: 42 }` (never a panic) and `Stack(StackWriteError)` (a count or damage the item does not allow, an item the world lacks). |
+| `update_inventory_slot(host, slot, stack)` | The slot's own stack changed in place, as code edits it (an energy item charged in an armour slot): when the slot holds the same item, it takes `stack` with no equip sound and no equip game event, so a worn stack rewritten every tick is not heard each tick; attribute modifiers and the client's slot follow. Another item or an empty slot is an equip, written as `set_inventory_slot` writes it. Refuses as `set_inventory_slot` does. |
 | `ender_chest(host)` / `set_ender_chest_slot(host, slot, stack)` | The same pair for the 27 ender chest slots, 0 to 26, with `SlotOutOfRange { last: 26 }`; an open ender chest menu shows the written stack. |
 | `give_stack(host, stack)` | Gives one stack as `/give` does: matching stacks, then empty slots, and what does not fit is thrown from the player's eyes for that player alone, with no pickup delay. Refuses with `Stale`, `Client`, `Dead` or `Stack`, giving nothing. |
 | `persistent_data(host)` / `set_persistent_data(host, data)` | The compound mods keep on a player (NeoForge's `getPersistentData`), saved with the player under `NeoForgeData`; an empty compound removes it. It is never sent to a client and a change raises no notification. On a death respawn and on the first exit from the End only its `PlayerPersisted` sub-compound is carried over, whatever its type, and every other key is lost; dimension changes, later End exits and teleports keep all of it. Refuses with `Stale`, `Client`, `Dead` and `TooDeep` (data 512 levels deep or more in the player's file). For ports; new mods use attachments. |
@@ -391,8 +396,8 @@ A stack in an inventory slot, the ender chest or `give_stack` keeps all its comp
 Player inventory writes use vanilla numbers: 0 to 35 main (0 to 8 hotbar),
 36 to 39 armour feet to head, 40 offhand, 41 body, 42 saddle.
 `ItemPlace::PlayerSlot` uses 100 to 103 for armour and -106 for offhand.
-The inventory menu has no slot for body or saddle. All four player data writes
-(`set_inventory_slot`, `set_ender_chest_slot`, `give_stack`, `set_persistent_data`)
+The inventory menu has no slot for body or saddle. The player data writes
+(`set_inventory_slot` and `update_inventory_slot`, `set_ender_chest_slot`, `give_stack`, `set_persistent_data`)
 are undone by an open transaction abort; equipment effects and overflow drops
 wait for the outermost commit.
 

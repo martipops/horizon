@@ -635,6 +635,9 @@ impl PlayerMotion {
                 .and_then(|t| crate::save::number(t.get("invulnerable_time")))
                 .unwrap_or(0) as i32;
             self.fall_distance = level.fall_distance;
+            // LivingEntity.readAdditionalSaveData: the impulse context, so a launch
+            // saved mid-air still measures its fall from the impact point.
+            self.impulse = crate::save::saved_impulse(extra);
             // LivingEntity.readAdditionalSaveData applies the saved attributes
             // before it reads the health (a raised max_health keeps its hearts).
             self.apply_saved_attributes(extra.and_then(|t| t.get("attributes")))?;
@@ -1262,7 +1265,22 @@ impl MotionWorld<'_, '_, '_> {
         keys: crate::sprint::Keys,
         sprint_window: i32,
     ) -> Result<()> {
-        self.local_tick(keys, |world, keys, in_water| {
+        self.local_tick(keys, false, |world, keys, in_water| {
+            let conditions = world
+                .player
+                .sprint_conditions_for_swim(in_water, world.eyes_in_swimmable_fluid());
+            world
+                .player
+                .run_sprint_tick(keys, conditions, sprint_window)
+        })
+    }
+    /// Local controller override that retains the analog shape, with the same gameplay multipliers.
+    pub fn controlled_simulation_tick_with_linear_stick(
+        &mut self,
+        keys: crate::sprint::Keys,
+        sprint_window: i32,
+    ) -> Result<()> {
+        self.local_tick(keys, true, |world, keys, in_water| {
             let conditions = world
                 .player
                 .sprint_conditions_for_swim(in_water, world.eyes_in_swimmable_fluid());
@@ -1278,7 +1296,7 @@ impl MotionWorld<'_, '_, '_> {
         self.player.replaying = true;
         let result = match self.try_fast_stationary_replayed_tick(keys, sprinting) {
             Ok(true) => Ok(()),
-            Ok(false) => self.local_tick(keys, |world, _, _| {
+            Ok(false) => self.local_tick(keys, false, |world, _, _| {
                 if world.player.sprinting == sprinting {
                     Ok(())
                 } else {
@@ -1612,6 +1630,7 @@ impl MotionWorld<'_, '_, '_> {
     fn local_tick(
         &mut self,
         keys: crate::sprint::Keys,
+        linear_stick: bool,
         sprint: impl FnOnce(&mut Self, crate::sprint::Keys, bool) -> Result<()>,
     ) -> Result<()> {
         // The base tick (fluids, swimming) precedes LocalPlayer.aiStep.
@@ -1638,7 +1657,11 @@ impl MotionWorld<'_, '_, '_> {
         } else {
             None
         };
-        let modified = crate::input::modify_input(direction, self.player.item_use_speed, sneak);
+        let modified = if linear_stick {
+            crate::input::modify_input_linear(direction, self.player.item_use_speed, sneak)
+        } else {
+            crate::input::modify_input(direction, self.player.item_use_speed, sneak)
+        };
         self.player.applied_input = modified;
         self.simulation_tick_with_fluids(modified, keys.jump)
     }

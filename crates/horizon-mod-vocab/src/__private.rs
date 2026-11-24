@@ -220,6 +220,11 @@ pub mod built {
             biome,
         }
     }
+    /// What a mod may still create of its dynamic textures, constructed by the game and only read
+    /// by mods.
+    pub fn dynamic_texture_budget(images: u32, bytes: u64) -> crate::DynamicTextureBudget {
+        crate::DynamicTextureBudget { images, bytes }
+    }
     /// The loaded client surface snapshot, constructed by the game and only read by mods.
     pub fn surface_column(
         height: i32,
@@ -298,6 +303,24 @@ pub mod built {
             speed,
             paused,
             ended,
+        }
+    }
+    /// The session's recording status, constructed by the game and only read by mods.
+    pub fn recording_status(
+        active: bool,
+        recording: String,
+        elapsed_ms: u64,
+        bytes: u64,
+        failed: bool,
+        finalizing: bool,
+    ) -> crate::RecordingStatus {
+        crate::RecordingStatus {
+            active,
+            recording,
+            elapsed_ms,
+            bytes,
+            failed,
+            finalizing,
         }
     }
     /// The mod export's status snapshot, constructed by the game.

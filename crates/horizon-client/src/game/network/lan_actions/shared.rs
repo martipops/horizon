@@ -25,6 +25,8 @@ pub(in crate::game) struct GuestPlay {
     pub(super) chat_spam: u32,
     /// `commandSpamThrottler`: 20 for each command, one less each tick.
     pub(super) command_spam: u32,
+    /// The log lines of the guest's quiet command batches (`lan_quiet.rs`).
+    pub(in crate::game) quiet_log: crate::game::lan_quiet::QuietLog,
     /// The recipe viewer's transfer checks (`horizon:recipe_check`): 20 for
     /// each, one less each tick; one from 200 goes unanswered.
     pub(super) recipe_checks: u32,
@@ -137,7 +139,10 @@ pub(super) struct GuestSwap {
     i: usize,
     play: GuestPlay,
     player: Option<PlayerMotion>,
-    player_save_projection: (Option<i32>, Option<bool>),
+    player_save_projection: (
+        Option<horizon_world::living_fall::ImpulseContext>,
+        Option<bool>,
+    ),
     /// The guest's eye height and the game's.
     eye: (f32, f32),
     yaw: f32,

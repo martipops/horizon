@@ -904,7 +904,15 @@ impl Links {
                 ("official_server", &mut links.official_server),
             ] {
                 if let Some(url) = map.get(key).and_then(|v| v.as_str()) {
-                    *slot = url.trim().to_string();
+                    let url = url.trim();
+                    // The links are opened by the OS: only https (or empty, to hide) is taken.
+                    // The official server is a host address, not a link.
+                    if key == "official_server"
+                        || url.is_empty()
+                        || crate::browser::details::https(url).is_some()
+                    {
+                        *slot = url.to_string();
+                    }
                 }
             }
             links.min_launcher = min_launcher_in(map.get("min_launcher"));
@@ -2985,14 +2993,15 @@ pub fn switch_after_start_crash(
 /// (`preferredGraphicsBackend:"opengl"` or `"vulkan"`), which the game runs when `graphicsApi` is
 /// unset or `auto` (the game's `settings.rs`).
 fn options_choose_api(home: &Path) -> bool {
-    fs::read_to_string(home.join("options.txt")).is_ok_and(|text| {
-        text.lines().any(|line| {
-            line.split_once(':').is_some_and(|(key, value)| {
-                key.trim() == "preferredGraphicsBackend"
-                    && matches!(value.trim().trim_matches('"'), "opengl" | "vulkan")
+    crate::instances::read_text_capped(&home.join("options.txt"), crate::instances::MAX_TEXT_FILE)
+        .is_ok_and(|text| {
+            text.lines().any(|line| {
+                line.split_once(':').is_some_and(|(key, value)| {
+                    key.trim() == "preferredGraphicsBackend"
+                        && matches!(value.trim().trim_matches('"'), "opengl" | "vulkan")
+                })
             })
         })
-    })
 }
 
 /// Sets `graphicsApi:<api>` in `home`'s graphics settings when it is unset or `auto` and options.txt
@@ -3002,7 +3011,7 @@ pub fn switch_from_auto(home: &Path, api: &str) -> Result<bool, String> {
         return Ok(false);
     }
     let path = home.join(GRAPHICS_FILE);
-    let text = match fs::read_to_string(&path) {
+    let text = match crate::instances::read_text_capped(&path, crate::instances::MAX_TEXT_FILE) {
         Ok(text) => text,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(e) => return Err(format!("{}: {e}", path.display())),
@@ -7187,6 +7196,21 @@ pub fn {f}("
                 .as_deref(),
             Some("0.2.80")
         );
+        // A link the OS would open as another scheme keeps the built-in one.
+        for bad in [
+            "file:///etc/passwd",
+            "smb://host/share",
+            "javascript:alert(1)",
+            "http://x.y",
+            "x://y",
+        ] {
+            assert_eq!(
+                Links::parse(&format!(
+                    r#"{{"discord": "{bad}", "sponsor": "{bad}", "website": "{bad}", "roadmap": "{bad}", "docs": "{bad}"}}"#
+                )),
+                defaults
+            );
+        }
         // A key that is missing keeps its default; a new address replaces it; empty hides it.
         assert_eq!(
             Links::parse(r#"{"discord": "https://x.y/z"}"#),

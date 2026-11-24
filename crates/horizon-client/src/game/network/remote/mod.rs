@@ -486,6 +486,8 @@ enum OwnProfile {
 pub(super) struct Remote {
     pub(super) professions: Arc<horizon_client::mobs::villager::ResolvedProfessions>,
     pub session: Session,
+    /// A network session, not the integrated server's memory connection or a replay.
+    pub(super) external_server: bool,
     pub brand: String,
     pub(super) recipe_viewer: crate::game::recipe_book::ViewerChannels,
     /// This connection's configured feature flags, carried through reconfiguration.
@@ -511,6 +513,12 @@ pub(super) struct Remote {
     /// pack's), from their synced data; `None` when the server has none.
     pub(super) enchantments: Option<Arc<horizon_client::enchant::Enchantments>>,
     pub(super) joined: bool,
+    /// The connection follows a `/transfer` (`ConnectScreen.startConnecting` with a
+    /// `TransferState`): a failed join is titled `connect.failed.transfer`.
+    pub(super) transferred: bool,
+    /// Quick play opened the connection (`QuickPlay.joinMultiplayerWorld`): one that never
+    /// opens is titled `quickplay.error.title`.
+    pub(super) quick_play: bool,
     /// `ServerReconfigScreen` is up since this tick.
     pub(super) reconfiguring: Option<u64>,
     /// `handleLogin` ran: vanilla's `Minecraft.player` exists from then on,
@@ -728,7 +736,7 @@ pub(super) struct Remote {
     /// The player's own shared flag 0 (`Entity.isOnFire`) as the server last
     /// set it: its fire (blaze fireballs, fire aspect, lightning) never
     /// reaches the window's own `fire_ticks` otherwise.
-    own_on_fire: bool,
+    pub(in crate::game) own_on_fire: bool,
     /// `LivingEntity.DATA_ARROW_COUNT_ID` and `DATA_STINGER_COUNT_ID` of the
     /// own player, as the server synced them.
     pub(super) own_arrows: i32,
@@ -886,6 +894,9 @@ impl Game<'_> {
     pub(super) fn connect_server(&mut self, address: &str, name: &str) -> Result<()> {
         self.connect_server_body(address, name)
     }
+    pub(super) fn connect_quick_play(&mut self, address: &str, name: &str) -> Result<()> {
+        self.connect_quick_play_body(address, name)
+    }
     pub(super) fn connect_server_with_cookies(
         &mut self,
         address: &str,
@@ -938,7 +949,7 @@ impl Game<'_> {
     fn send_action(&self, action: i32) {
         self.send_action_body(action)
     }
-    fn remote_shift_down(&self) -> bool {
+    pub(in crate::game) fn remote_shift_down(&self) -> bool {
         self.remote_shift_down_body()
     }
     fn next_sequence(&mut self) -> i32 {
@@ -2081,6 +2092,9 @@ impl horizon_client::interaction_input::TargetUseWorld for RemoteUseWorld<'_, '_
 impl horizon_client::interaction_input::InteractionWorld for RemoteInputWorld<'_, '_> {
     fn pick_hit_result(&mut self) {
         self.0.pick_tick_targets();
+    }
+    fn queued_keys(&mut self) {
+        self.0.remote_queued_keys();
     }
     fn release_hit_result(&mut self) {
         self.0.release_tick_targets();

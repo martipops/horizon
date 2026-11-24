@@ -489,6 +489,13 @@ pub trait PlayersBackend {
     /// None for stale, offline or unavailable players (including displaced outer players).
     #[access(WorldOnly)]
     fn player_game_mode(&self, player: PlayerRef) -> Option<GameMode>;
+    /// Side: server.
+    /// Whether other entities collide with and push the player (Paper's `Player.isCollidable`),
+    /// by the rule `EntitySelector.pushableBy` applies: a spectator never does, and neither does a
+    /// player on a team whose collision rule is `never`. The team's `pushOwnTeam` and
+    /// `pushOtherTeams` rules still count as collidable. `None` for a stale or unavailable player.
+    #[access(WorldOnly)]
+    fn player_is_collidable(&self, player: PlayerRef) -> Option<bool>;
     /// Side: both.
     /// `Player.isCreative`; Paper `HumanEntity#getGameMode`.
     #[access(WorldOnly)]
@@ -1095,6 +1102,18 @@ pub trait PlayersBackendMut {
         pos: [i32; 3],
         original: &ItemStack,
     ) -> Result<(), TriggerCriterionError>;
+    /// Side: server. Fires `minecraft:consume_item` for `player` with `stack`
+    /// (`CriteriaTriggers.CONSUME_ITEM.trigger`).
+    /// An invalid stack returns `Stack(StackWriteError)` before the trigger fires.
+    /// Evaluates vanilla predicates and rewards in the player's own level; never reads inventory.
+    /// `Ok(())` means reached, even if nothing matched. Refuses remote clients (`NotServer`)
+    /// and stale/offline/displaced players (`PlayerUnavailable`).
+    #[access(WorldOnly)]
+    fn player_trigger_consume_item(
+        &mut self,
+        player: PlayerRef,
+        stack: &ItemStack,
+    ) -> Result<(), TriggerCriterionError>;
     /// Side: server.
     /// `Player.setLastDeathLocation`: stores where the player died, or
     /// forgets it for None. The client hears of it with the player's next
@@ -1158,6 +1177,16 @@ pub trait PlayersBackendMut {
     /// held `slot`.
     #[access(WorldOnly)]
     fn player_set_selected_slot(&mut self, player: PlayerRef, slot: usize) -> bool;
+    /// Side: server.
+    /// Makes the player's crafting results again from their grids, as
+    /// `AbstractContainerMenu.slotsChanged` does after a change to a grid, and tells their client:
+    /// for a mod whose `crafting_recipe_choice` answer changed while the grid did not (Polymorph's
+    /// selection packet). Covers the inventory's grid, an open crafting table and an open mod
+    /// crafting menu; the mods' `prepare_item_craft` has its say as after a click. Returns false
+    /// for a stale or unavailable player and one whose state is swapped in for a turn (code
+    /// running in that player's own turn): call it from the next `server_tick` instead.
+    #[access(WorldOnly)]
+    fn player_crafting_changed(&mut self, player: PlayerRef) -> bool;
     /// Side: server.
     /// `Player.drop(stack, false, thrown_by_player)`: `stack` is thrown from the player's eyes
     /// along their view as an item entity, with the main hand swinging and `item_toss` asked
@@ -1441,6 +1470,25 @@ pub trait PlayersBackendMut {
         stack: Option<ItemStack>,
     ) -> Result<(), PlayerDataRefusal>;
     /// Side: server.
+    /// The stack in inventory slot `slot` (`player_inventory_slots`' numbers) changed in place,
+    /// as vanilla's and NeoForge mods' code edits the slot's own stack (`ItemStack.set`,
+    /// `hurtAndBreak`, an energy item being charged in an armour slot): when the slot holds the
+    /// same item as `stack`, the slot takes `stack` with no equip sound and no equip game event,
+    /// those being `setItemSlot`'s `onEquipItem`, so a worn stack rewritten every tick is not
+    /// heard or felt by sculk sensors every tick; its attribute modifiers and the client's slot
+    /// follow as `player_set_inventory_slot`'s do. A slot that holds another item or nothing is
+    /// not a change in place: `stack` goes in as `player_set_inventory_slot` puts it, equip
+    /// sound and game event included. Refuses as `player_set_inventory_slot` does. An open
+    /// transaction journals this write; an abort restores the previous value, and the
+    /// equipment modifiers wait for the outermost commit.
+    #[access(WorldOnly)]
+    fn player_update_inventory_slot(
+        &mut self,
+        player: PlayerRef,
+        slot: u32,
+        stack: ItemStack,
+    ) -> Result<(), PlayerDataRefusal>;
+    /// Side: server.
     /// `PlayerEnderChestContainer.setItem(slot, stack)`: `stack` (None empties it) in ender
     /// chest slot `slot` (0 to 26). A player looking into their ender chest is sent the slot
     /// with the open menu's sync. Refuses as `player_set_inventory_slot` does, with
@@ -1546,4 +1594,39 @@ pub trait PlayersBackendMut {
     /// that is not finite.
     #[access(WorldOnly)]
     fn player_set_velocity(&mut self, player: PlayerRef, velocity: [f64; 3]) -> bool;
+    /// Side: server.
+    /// Offers the player a resource pack (`ClientboundResourcePackPushPacket` in play, Paper's
+    /// `Player.setResourcePack(url, hash, required, prompt)`). The pack's id is the name UUID of
+    /// `url`, as the server's own `resource-pack` setting makes it, so offering the same url again
+    /// replaces the pack. `sha1` is 40 hex digits, or empty when the client should compare nothing;
+    /// `required` makes the client refuse to stay without it; `prompt` is the plain text of the
+    /// confirmation screen. The answer comes back through `resource_pack_status`. False, with
+    /// nothing sent, for a stale, unavailable or fake player, an empty `url` or one longer than
+    /// 32767 characters, and a `sha1` that is neither empty nor 40 hex digits.
+    #[access(WorldOnly)]
+    fn player_send_resource_pack(
+        &mut self,
+        player: PlayerRef,
+        url: &str,
+        sha1: &str,
+        required: bool,
+        prompt: Option<&str>,
+    ) -> bool;
+    /// Side: server.
+    /// Sets how many chunks around the player the server sends and keeps them (Paper's
+    /// `Player.setViewDistance`), from 2 up to the server's view distance; a value outside is
+    /// clamped, as `ChunkMap.getPlayerViewDistance` clamps what a client asks for. Their chunks
+    /// follow from the next tick. The value lasts until the client sends its settings again or the
+    /// server's own view distance changes, which set it back to what the client asked for. False for
+    /// a stale, unavailable or fake player.
+    #[access(WorldOnly)]
+    fn player_set_view_distance(&mut self, player: PlayerRef, chunks: i32) -> bool;
+    /// Side: server.
+    /// Resolves the selector `token` (`@a`, `@e[type=villager]`, `@p`, a player name) as a command
+    /// the player ran would: `@s` and `@p` are them, a `distance` is from them (Paper's
+    /// `Server.selectEntities(sender, token)`). The token must be exactly one selector; the answer
+    /// is the entities it names now, possibly none. `None` for a token that does not parse, a
+    /// stale, unavailable or fake player and a client.
+    #[access(WorldOnly)]
+    fn player_select_entities(&mut self, player: PlayerRef, token: &str) -> Option<Vec<EntityRef>>;
 }

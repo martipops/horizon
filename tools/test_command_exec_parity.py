@@ -144,6 +144,7 @@ def main():
     parser.add_argument('--item-contents-fixture', action='store_true')
     parser.add_argument('--item-contents-provider-empty-control', action='store_true')
     parser.add_argument("--boat-item-hit-fixture", action="store_true")
+    parser.add_argument("--boat-void-fixture", action="store_true")
     parser.add_argument("--stand-entity-collision-fixture", action="store_true")
     parser.add_argument("--reference-only", action="store_true")
     parser.add_argument("--boat-leash-view-fixture", action="store_true")
@@ -520,6 +521,9 @@ def main():
     if args.merchant_gate_fixture:
         from merchant_gate_corpus import cases
         groups = [('setup', [corpus_module.cmd('/tick freeze', False), *corpus_module.group_setup()]), ('merchant reputation AI gate', cases())]
+    if args.boat_void_fixture:
+        from test_boat_void_parity import program as boat_void_program
+        groups = [('Boat load and void removal', boat_void_program())]
     if args.groups_file:
         # Generated scripts (tools/parity_fuzz.py): the common setup, then the file's [name, ops] groups only.
         groups = [('setup', corpus_module.group_setup()),
@@ -554,11 +558,24 @@ def main():
         from pufferfish_contact_corpus import advancements as contact_advancements
         advancements.update(contact_advancements())
 
+    try:
+        from .command_exec_groups.crossbow_effects import ENCHANTMENT, GROUP
+    except ImportError:
+        from command_exec_groups.crossbow_effects import ENCHANTMENT, GROUP
+
+    def install_world_fixtures(world):
+        if any(name == GROUP for name, _ in groups):
+            functions['crossbow_test:ready'] = 'return 1\n'
+            path = world / 'datapacks/command-selector-fixture/data/crossbow_test/enchantment/volley.json'
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(ENCHANTMENT), encoding='utf-8')
+        install_datapack_fixtures(world, predicates, functions, jars['server'], advancements, loot_tables, recipes=recipes)
+
     run(['javac', '--release', lock['minecraft']['java_major'], '-proc:none', '-cp', str(jars['server']) + os.pathsep + dependency_path, '-d', classes, oracle], 'compile-java')
     vanilla_dir = build / 'vanilla'
     shutil.rmtree(vanilla_dir, ignore_errors=True)
     vanilla_dir.mkdir()
-    install_datapack_fixtures(vanilla_dir / 'universe/harness', predicates, functions, jars['server'], advancements, loot_tables, recipes=recipes)
+    install_world_fixtures(vanilla_dir / 'universe/harness')
     java_options = ['-DMC_DEBUG_ENABLED=true', '-DMC_DEBUG_DEV_COMMANDS=true'] if args.raid_village_fixture else []
     if args.merchant_gate_fixture:
         java_options.append('-Dhorizon.merchantFixture=true')
@@ -619,7 +636,7 @@ def main():
     rust_dir = build / 'rust'
     shutil.rmtree(rust_dir, ignore_errors=True)
     rust_dir.mkdir()
-    install_datapack_fixtures(rust_dir / 'saves/harness', predicates, functions, jars['server'], advancements, loot_tables, recipes=recipes)
+    install_world_fixtures(rust_dir / 'saves/harness')
     if any(op['op'] == 'crafter_max_map_fixture' for op in script):
         source = vanilla_dir / 'universe/harness/data/minecraft/maps/31.dat'
         target = rust_dir / 'saves/harness/data/minecraft/maps/31.dat'
@@ -655,7 +672,7 @@ def main():
         java = json.loads((build / 'client_config.json').read_text())
         if java.get('server_view') != 2 or java.get('server_simulation') != 2 or not java.get('client_loaded'):
             sys.exit(f'Java server/client-loaded prerequisite failed: {java}')
-        if not args.merchant_gate_fixture:
+        if any(name == 'loaded ticket removal' for name, _ in groups):
             for name in ['java.log', 'rust.log']:
                 waits = re.findall(r'harness paced wait: (\d+) ticks, (\d+) ms', (build / name).read_text())
                 if len(waits) != 2 or any(int(n) != ticks or not ticks * 50 <= int(ms) <= upper

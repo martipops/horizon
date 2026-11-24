@@ -361,12 +361,14 @@ impl Enchantments {
                 raw_tags.entry(id.clone()).or_default().push(&v);
             }
         }
-        let tags: HashMap<String, Vec<Arc<str>>> = TagLayers::resolve_all(raw_tags)
+        // The enchantments are a data-driven registry: only the `#tag`
+        // references are checked, not the elements.
+        let tags: HashMap<String, Vec<Arc<str>>> = TagLayers::resolve_all(raw_tags, |_| true)
             .into_iter()
             .map(|(id, members)| (id, members.into_iter().map(Arc::from).collect()))
             .collect();
         let unordered = |raw| {
-            TagLayers::resolve_all(raw)
+            TagLayers::resolve_all(raw, |_| true)
                 .into_iter()
                 .map(|(id, members)| (id, members.into_iter().collect()))
                 .collect::<HashMap<String, HashSet<String>>>()
@@ -937,12 +939,53 @@ impl Enchantments {
         component: &str,
         ctx: &EffectContext<'_>,
         random: &mut LegacyRandom,
-        mut value: f32,
+        value: f32,
     ) -> f32 {
         let Some(e) = self.get(id) else { return value };
-        for effect in e.effects[component].as_array().into_iter().flatten() {
+        self.apply_filtered_value(&e.effects[component], level, ctx, (random, None), value)
+    }
+
+    /// `Enchantment.modifyEntityFilteredValue`: requirements use the loot
+    /// context's level random and the value effect uses the entity's random.
+    pub fn modify_entity_value(
+        &self,
+        stack: &ItemStack,
+        component: &str,
+        ctx: &EffectContext<'_>,
+        level_random: &mut horizon_core::random::LevelRandom,
+        entity_random: &mut horizon_core::random::EntityRandom,
+        mut value: f32,
+    ) -> f32 {
+        for (id, level) in stack.all_enchantments().iter() {
+            if let Some(e) = self.get(id) {
+                value = self.apply_filtered_value(
+                    &e.effects[component],
+                    *level,
+                    ctx,
+                    (entity_random, Some(level_random)),
+                    value,
+                );
+            }
+        }
+        value
+    }
+
+    fn apply_filtered_value(
+        &self,
+        effects: &Value,
+        level: u32,
+        ctx: &EffectContext<'_>,
+        (random, mut requirement_random): (&mut LegacyRandom, Option<&mut LegacyRandom>),
+        mut value: f32,
+    ) -> f32 {
+        for effect in effects.as_array().into_iter().flatten() {
             if let Some(req) = effect.get("requirements")
-                && !self.condition(req, level, ctx, random)
+                && !self.condition(
+                    req,
+                    level,
+                    ctx,
+                    requirement_random.as_deref_mut().unwrap_or(&mut *random),
+                )
             {
                 continue;
             }
@@ -950,6 +993,42 @@ impl Enchantments {
         }
         value
     }
+    /// `Enchantment.modifyUnfilteredValue`: the component itself is a value
+    /// effect, with no requirements or loot context.
+    pub fn modify_unfiltered_value(
+        &self,
+        stack: &ItemStack,
+        component: &str,
+        random: &mut horizon_core::random::EntityRandom,
+        mut value: f32,
+    ) -> f32 {
+        for (id, level) in stack.all_enchantments().iter() {
+            if let Some(effect) = self.get(id).and_then(|e| e.effects.get(component)) {
+                value = apply_value_effect(effect, *level, random, value);
+            }
+        }
+        value
+    }
+
+    /// `EnchantmentHelper.pickHighestLevel`: choose the highest-level
+    /// enchantment providing the component, then clamp the level to its list.
+    /// The lookup reads the stack's own enchantment component.
+    pub fn pick_highest_level(&self, stack: &ItemStack, component: &str) -> Option<&Value> {
+        let mut highest = None;
+        for (id, level) in stack.enchantments() {
+            if highest.is_none_or(|(_, best)| *level > best)
+                && let Some(list) = self
+                    .get(id)
+                    .and_then(|e| e.effects[component].as_array())
+                    .filter(|list| !list.is_empty())
+            {
+                highest = Some((list, *level));
+            }
+        }
+        let (list, level) = highest?;
+        list.get((level as usize).min(list.len()).checked_sub(1)?)
+    }
+
     /// Evaluate damage with a gameplay-owned callback for resolved custom nodes.
     pub fn modify_damage(
         &self,
@@ -1218,7 +1297,19 @@ pub fn level_value(v: &Value, level: u32) -> f32 {
             match o.get("type").and_then(Value::as_str).unwrap_or("") {
                 "minecraft:linear" => f("base") + f("per_level_above_first") * (l - 1.0),
                 "minecraft:levels_squared" => l * l + f("added"),
-                "minecraft:clamped" => level_value(&o["value"], level).clamp(f("min"), f("max")),
+                "minecraft:clamped" => {
+                    let value = level_value(&o["value"], level);
+                    let (min, max) = (f("min"), f("max"));
+                    // Mth.clamp compares the lower bound first and uses Math.min.
+                    // Unlike f32::clamp it cannot panic when decoding missed bad bounds.
+                    if value < min {
+                        min
+                    } else if value.is_nan() || value.total_cmp(&max).is_le() {
+                        value
+                    } else {
+                        max
+                    }
+                }
                 "minecraft:fraction" => {
                     let d = level_value(&o["denominator"], level);
                     if d == 0.0 {
@@ -1287,6 +1378,110 @@ pub fn apply_value_effect(
 pub mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn level_value_clamping_uses_the_lower_bound_first() {
+        let value =
+            |min, max| json!({"type":"minecraft:clamped", "value":3.0, "min":min, "max":max});
+        assert_eq!(level_value(&value(4.0, 5.0), 1), 4.0);
+        assert_eq!(level_value(&value(1.0, 2.0), 1), 2.0);
+        // Vanilla's codec rejects inverted bounds. If one arrives anyway, the
+        // evaluator follows the comparison order without panicking.
+        assert_eq!(level_value(&value(4.0, 2.0), 1), 4.0);
+    }
+
+    #[test]
+    fn entity_filtered_values_draw_requirements_and_effects_from_their_owners() {
+        use horizon_core::random::{EntityRandom, LevelRandom};
+
+        let component = "minecraft:projectile_count";
+        // Seed 42 draws about 0.728 and 0.055. Both requirements pass in this
+        // order, but the removal requirement would fail if checked first.
+        let add = json!({"effects":{component:[{
+            "requirements":{"condition":"minecraft:random_chance","chance":0.8},
+            "effect":{"type":"minecraft:add","value":2}
+        }]}});
+        let remove = json!({"effects":{component:[{
+            "requirements":{"condition":"minecraft:random_chance","chance":0.1},
+            "effect":{"type":"minecraft:remove_binomial","chance":1.0}
+        }]}});
+        let enchantments = Enchantments::default()
+            .with_entries([("test:add", &add), ("test:remove", &remove)])
+            .unwrap()
+            .unwrap();
+        let mut stack = ItemStack::new("minecraft:crossbow", 1);
+        stack.data_mut().enchantments.extend([
+            ("test:add".into(), 1),
+            ("test:unresolved".into(), 1),
+            ("test:remove".into(), 1),
+        ]);
+        let mut level = LevelRandom::for_level(LegacyRandom::new(42));
+        let mut entity = EntityRandom::own(LegacyRandom::new(17));
+        assert_eq!(
+            enchantments.modify_entity_value(
+                &stack,
+                component,
+                &EffectContext::default(),
+                &mut level,
+                &mut entity,
+                3.0,
+            ),
+            0.0
+        );
+        let mut expected_level = LegacyRandom::new(42);
+        for _ in 0..2 {
+            expected_level.next_float();
+        }
+        let mut expected_entity = LegacyRandom::new(17);
+        for _ in 0..5 {
+            expected_entity.next_float();
+        }
+        assert_eq!(level.state(), expected_level.state());
+        assert_eq!(entity.state(), expected_entity.state());
+    }
+
+    #[test]
+    fn unfiltered_value_effects_use_the_level_on_the_stack() {
+        let component = "minecraft:trident_spin_attack_strength";
+        let definition = json!({"effects":{component:{
+            "type":"minecraft:add","value":{"type":"minecraft:linear","base":1.5,"per_level_above_first":0.75}
+        }}});
+        let id = "test:spin";
+        let enchantments = Enchantments::default()
+            .with_entries([(id, &definition)])
+            .unwrap()
+            .unwrap();
+        let mut stack = ItemStack::new("minecraft:trident", 1);
+        stack.data_mut().enchantments.push((id.into(), 4));
+        let mut random = horizon_core::random::EntityRandom::own(LegacyRandom::new(17));
+        assert_eq!(
+            enchantments.modify_unfiltered_value(&stack, component, &mut random, 0.0),
+            3.75
+        );
+    }
+
+    #[test]
+    fn level_indexed_components_use_the_highest_provider_and_clamp_to_its_last_entry() {
+        let component = "minecraft:trident_sound";
+        let lower = json!({"effects":{component:["minecraft:item.trident.throw"]}});
+        let higher = json!({"effects":{component:["minecraft:item.trident.riptide_1","minecraft:item.trident.riptide_2"]}});
+        let enchantments = Enchantments::default()
+            .with_entries([("test:lower", &lower), ("test:higher", &higher)])
+            .unwrap()
+            .unwrap();
+        let mut stack = ItemStack::new("minecraft:trident", 1);
+        stack.data_mut().enchantments.extend([
+            ("minecraft:unrelated".into(), 255),
+            ("test:lower".into(), 2),
+            ("test:higher".into(), 3),
+        ]);
+        assert_eq!(
+            enchantments
+                .pick_highest_level(&stack, component)
+                .and_then(Value::as_str),
+            Some("minecraft:item.trident.riptide_2")
+        );
+    }
 
     #[test]
     fn custom_damage_output_is_bounded_before_builtin_nodes() {

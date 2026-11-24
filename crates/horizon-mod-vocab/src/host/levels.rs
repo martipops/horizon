@@ -250,6 +250,19 @@ pub trait LevelsBackend {
     #[access(WorldOnly)]
     fn chunk_status(&self, chunk: ChunkRef) -> Option<ChunkStatus>;
     /// Side: server.
+    /// `ChunkHolder.getFullStatus`: the resident chunk's propagated loading status, independent
+    /// of its simulation level. Reads active and parked levels and never loads a chunk.
+    /// None on a client, for a stale or unavailable level, or when the chunk is not loaded.
+    #[access(WorldOnly)]
+    fn chunk_full_status(&self, chunk: ChunkRef) -> Option<FullChunkStatus>;
+    /// Side: server.
+    /// `TicketStorage.getTickets`: the direct tickets on this loaded chunk, sorted by kind
+    /// then level. Propagated tickets from other chunks are not listed. A loaded chunk with
+    /// no direct tickets gives an empty list. Reads active and parked levels without loading
+    /// chunks. None on a client, for a stale or unavailable level, or for an unloaded chunk.
+    #[access(WorldOnly)]
+    fn chunk_tickets(&self, chunk: ChunkRef) -> Option<Vec<ChunkTicket>>;
+    /// Side: server.
     /// Whether the chunk passes vanilla's seeded slime-chunk test, independent of
     /// dimension, height, biome and other spawn conditions. Works for unloaded chunks
     /// in active or parked open levels. None for a stale level, a client or a chunk
@@ -265,6 +278,15 @@ pub trait LevelsBackend {
     /// watches gives an empty list. None on a client and for a stale handle.
     #[access(WorldOnly)]
     fn chunk_watchers(&self, chunk: ChunkRef) -> Option<Vec<PlayerRef>>;
+    /// Side: server.
+    /// The section Y coordinates (bottom up, `min_y / 16` upward) of this loaded chunk
+    /// whose palette may contain any state of `block` (`PalettedContainer.maybeHas`).
+    /// Lets mods skip sections that cannot hold `block` without reading every block.
+    /// A section whose palette is global or retains an unused entry for `block` may be
+    /// included even if no block in it currently has that state. Returns `None` on a
+    /// client, for a stale handle, or when the chunk is not loaded.
+    #[access(WorldOnly)]
+    fn chunk_sections_with_block(&self, chunk: ChunkRef, block: BlockKey) -> Option<Vec<i32>>;
     /// Side: server.
     /// Match and assemble through the engine's recipe matcher, without consuming inputs.
     /// Covers minecraft:crafting, smelting, blasting, smoking, campfire_cooking,
@@ -995,6 +1017,8 @@ pub trait LevelsBackendMut {
     /// Set a block (`Level.setBlock`). Stale/unavailable levels and invalid states return
     /// typed errors without mutation. Ok(false) means vanilla refused an unchanged,
     /// unloaded or out-of-height write. Notification follows the supplied update flags.
+    /// An opted-in water cauldron's level or replacement, and filling an empty cauldron
+    /// into that holder, join the current storage transaction, if any.
     #[access(WorldOnly)]
     fn level_set_block(
         &mut self,
@@ -1007,6 +1031,15 @@ pub trait LevelsBackendMut {
     /// Remove a block in place (`Level.removeBlock`), preserving its fluid.
     #[access(WorldOnly)]
     fn level_remove_block(&mut self, level: LevelRef, pos: [i32; 3], moved: bool) -> bool;
+    /// Side: server.
+    /// Remove the block entity at `pos` and keep its block (`Level.removeBlockEntity`). What
+    /// it stores (a chest's items, a sign's text) is discarded for good once the removal is
+    /// committed: nothing drops into the world, no neighbour is updated, and the block state
+    /// stays as it is. An open transaction puts it back on abort. True when one was removed;
+    /// false off the level in place, for a position that isn't loaded and for one without a
+    /// block entity, or with one out for its own tick.
+    #[access(WorldOnly)]
+    fn level_remove_block_entity(&mut self, level: LevelRef, pos: [i32; 3]) -> bool;
     /// Side: server.
     /// Check the block light at `pos` again (`LevelLightEngine.checkBlock`), at the level's
     /// next light update, as an edit there is checked; checking the same position again before

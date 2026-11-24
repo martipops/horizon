@@ -10,7 +10,10 @@ use horizon_client::{
         Chat, ChatAbilities, ChatAction, ChatScreen, ChatSource, ChatVisibility, Commands,
         QUEUE_EXPAND_ID, SYSTEM_INDICATOR, normalize_chat_message,
     },
-    command::{ArgType, Dispatcher, MOD_COMMAND, Registries},
+    command::{
+        ArgType, Context, Dispatcher, MOD_COMMAND, Registries, Suggestion, SuggestionsBuilder,
+        Suggests,
+    },
     gamerules::GameRules,
     hud::HudBatch,
     screen_draw::Measure,
@@ -33,6 +36,21 @@ pub(super) fn chat_tree(
         Some(server) => &server.chat_tree,
         None => horizon_client::command::vanilla::game_dispatcher(),
     }
+}
+/// `SharedSuggestionProvider.suggest` of `TagCommand.getTags`: the tags
+/// `SharedSuggestionProvider.matchesSubStr` matches the word at `start`.
+pub(in crate::game) fn tag_suggestions(
+    command: &str,
+    start: usize,
+    tags: &[String],
+) -> Vec<Suggestion> {
+    let mut builder = SuggestionsBuilder::new(command, start);
+    builder.suggest_matching(
+        tags.iter()
+            .map(String::as_str)
+            .filter(|tag| tag.encode_utf16().count() <= 32767),
+    );
+    builder.out
 }
 /// The arguments of a typed `/profiler` the client answers itself: only when the chat tree's `profiler` is Horizon's, else the server or mod that owns the name runs it.
 fn horizon_profiler_args<'a>(
@@ -985,6 +1003,54 @@ impl Game<'_> {
                 name: remote.profile_name.clone(),
             });
     }
+    /// ServerCommandSuggestionsProvider: the completions of a guest's command.
+    /// `TagCommand`'s `tag remove` completes from `getTags`, the tags of the
+    /// parsed `targets`, which only the server can resolve and does as the
+    /// guest (`EntityArgument.getEntities(c, "targets")`).
+    pub(super) fn guest_command_suggestions(
+        &mut self,
+        conn: u32,
+        d: &Dispatcher,
+        command: &str,
+    ) -> ((usize, usize), Vec<Suggestion>) {
+        let parse = d.parse(command, &self.ui.registries);
+        let ((start, end), mut suggestions) =
+            d.client_suggestions(&parse, command.len(), &self.ui.registries);
+        let mut range = (start, end);
+        if matches!(
+            d.suggests_at(&parse, command.len(), self.ui.registries.permission),
+            Some(Suggests::EntityTags)
+        ) {
+            let (_, at, context) = parse.context.suggestion_context(command.len());
+            let at = at.min(command.len());
+            let tags = self
+                .as_guest(conn, |g| g.tag_suggestion_values(context))
+                .unwrap_or_default();
+            let tags = tag_suggestions(command, at, &tags);
+            if !tags.is_empty() {
+                suggestions.extend(tags);
+                // `Suggestions.merge`: the word the tags complete, not the
+                // empty range an answer-less local list leaves.
+                range = (at, command.len());
+            }
+        }
+        (range, suggestions)
+    }
+    /// `TagCommand.getTags`: every tag of the parsed `targets`, each once.
+    pub(in crate::game) fn tag_suggestion_values(&mut self, ctx: &Context) -> Vec<String> {
+        let Ok(targets) = self.entities(ctx, "targets", false) else {
+            return Vec::new();
+        };
+        let mut tags: Vec<String> = Vec::new();
+        for target in targets {
+            for tag in self.tags_of(target) {
+                if !tags.contains(&tag) {
+                    tags.push(tag);
+                }
+            }
+        }
+        tags
+    }
     /// `ChatComponent.createScreen`: T or / opens the chat with the draft kept
     /// last time, when this method can restore it (a command draft only for
     /// /), else with its prefix.
@@ -1249,6 +1315,8 @@ impl Game<'_> {
     }
     /// A key (and the text it typed) while the chat screen is open.
     pub(super) fn chat_key_code(&mut self, key: KeyCode, typed_text: Option<&str>) {
+        // Tab shows the list with what mods add to the text so far.
+        self.ask_chat_suggestions();
         // The live modifiers, not `self.keys`: every ModifiersChanged runs
         // sync_toggle, which drops ShiftLeft and ControlLeft from `self.keys`
         // while a screen is open.
@@ -1339,6 +1407,27 @@ impl Game<'_> {
                 &completion.text,
                 &completion.input,
             );
+        }
+    }
+    /// `chat_suggestions`: mods' completions for the plain chat text the box
+    /// just worked out its list for (`ChatScreen::take_chat_query`), joined to
+    /// that list. With no mod listening nothing is asked or copied.
+    fn ask_chat_suggestions(&mut self) {
+        if !mod_api::__private::listened(mod_api::HookId::ChatSuggestions) {
+            return;
+        }
+        let Some((input, cursor)) = self
+            .ui
+            .chat_screen
+            .as_mut()
+            .and_then(ChatScreen::take_chat_query)
+        else {
+            return;
+        };
+        let mut suggestions = Vec::new();
+        self.native_chat_suggestions(&input, cursor, &mut suggestions);
+        if let Some(screen) = self.ui.chat_screen.as_mut() {
+            screen.add_chat_suggestions(&input, cursor, suggestions);
         }
     }
     /// The server's completions for an `ask_server` request
@@ -1758,6 +1847,9 @@ impl Game<'_> {
         Some(horizon_protocol::crypto::uuid_string(bits))
     }
     pub(super) fn draw_chat_screen(&mut self, batch: &mut HudBatch) {
+        // A change no key was pressed after (a click, a paste, the chat opening
+        // on a draft) reaches mods by the next frame.
+        self.ask_chat_suggestions();
         self.draw_screen_phase(batch, horizon_client::screen_draw::RenderPhase::Background);
         self.gui_layer("minecraft:chat", batch, |g, batch| g.draw_chat(batch));
         let Some(mut screen) = self.ui.chat_screen.take() else {

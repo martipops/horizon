@@ -9,8 +9,10 @@ pub(crate) mod client_reload;
 pub(crate) mod client_session;
 pub(crate) mod closing_save;
 pub(crate) mod debug_entries;
+pub(crate) mod dynamic_texture;
 pub(crate) mod entity_layers;
 pub(crate) mod entity_renderers;
+pub(crate) mod equipment_render;
 pub(crate) mod export;
 // hidden: a module of game-side types; mods use their re-exports
 #[doc(hidden)]
@@ -59,6 +61,7 @@ pub mod particles;
 #[doc(hidden)]
 pub mod player_chat;
 pub(crate) mod posed_parts;
+pub(crate) mod recording;
 pub(crate) mod render_pipeline;
 pub(crate) mod replay;
 pub(crate) mod scene;

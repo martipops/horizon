@@ -24,6 +24,7 @@ impl Startup {
 pub fn prepare() -> Startup {
     #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     horizon_mod_package::holder::enter();
+    game::exit_if_supervisor_is_gone();
     let result: crate::Result<_> = (|| {
         let mut command = std::process::Command::new(std::env::current_exe()?);
         command.args(std::env::args_os().skip(1));
@@ -468,6 +469,8 @@ pub(crate) fn install_client_hooks() {
         is_combine_repairable: crate::game::native_item_menu_parts::is_combine_repairable,
         can_fit_inside_container_items:
             crate::game::native_item_menu_parts::can_fit_inside_container_items,
+        crafting_recipe_choice_listens: crate::game::native_recipe_choice::listens,
+        crafting_recipe_choice: crate::game::native_recipe_choice::choose,
     }) {
         log::warn!("Native client hooks already installed; keeping the first callbacks");
     }

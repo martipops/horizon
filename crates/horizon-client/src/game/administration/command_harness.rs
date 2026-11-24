@@ -544,6 +544,9 @@ impl Game<'_> {
                 }
                 "player_state" => {
                     let state = self.harness_owner(|g| {
+                        if op["observe"] == "fishing_cast" {
+                            return Ok(json!(g.fishing_cast_settings()));
+                        }
                         let p = g.player.as_ref().ok_or("player state: no actor")?;
                         let mut loaded = Vec::new();
                         let mut done = std::collections::BTreeMap::new();
@@ -796,6 +799,12 @@ impl Game<'_> {
                                 },
                             ),
                         );
+                        Ok(())
+                    })?;
+                }
+                "release_item" => {
+                    self.harness_owner(|g| {
+                        g.release_using_item();
                         Ok(())
                     })?;
                 }

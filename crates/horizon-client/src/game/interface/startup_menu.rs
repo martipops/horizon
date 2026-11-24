@@ -66,6 +66,7 @@ fn quick_play_server(saves: &std::path::Path, address: &str, name: String) -> Pe
         cookies: None,
         lan: false,
         realm: false,
+        quick_play: true,
     }
 }
 
@@ -274,6 +275,7 @@ impl StartupMenu {
                 cookies: None,
                 lan,
                 realm,
+                quick_play: false,
             },
             _ => return,
         };
@@ -593,6 +595,12 @@ impl Loading {
             match event {
                 // No world debug list exists before Game construction.
                 Event::DebugEntriesChanged => {}
+                Event::GraphicsBenchmark(action) => {
+                    if super::graphics_tuning::action(action, &mut self.settings) {
+                        self.save_menu_settings();
+                        self.apply_menu_settings();
+                    }
+                }
                 Event::Changed => {
                     self.save_menu_settings();
                     self.settings.keys.sync_action_bindings();
@@ -1395,6 +1403,9 @@ impl Loading {
                 self.menu.win = None;
             }
         } else if self.menu.options_open {
+            self.menu
+                .options
+                .set_graphics_benchmark(super::graphics_tuning::view(&self.settings));
             let pack = (self.renderer.as_ref()).and_then(|r| r.native_pack_name());
             if self.settings.running_pack.as_deref() != pack {
                 self.settings.running_pack = pack.map(str::to_owned);

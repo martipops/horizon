@@ -68,6 +68,14 @@
 
 <p align="center">
   <a href="https://blacksmith.sh"><img src="docs/media/readme/blacksmith.png" alt="CI powered by Blacksmith" width="280"></a>
+  &nbsp;&nbsp;&nbsp;&nbsp;
+  <a href="https://coderabbit.link/horizon">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="docs/media/readme/coderabbit-dark.png">
+      <source media="(prefers-color-scheme: light)" srcset="docs/media/readme/coderabbit-light.png">
+      <img src="docs/media/readme/coderabbit-light.png" alt="Code reviews by CodeRabbit" width="220">
+    </picture>
+  </a>
 </p>
 
 <p align="center">
@@ -78,6 +86,6 @@
   <a href="https://opencollective.com/horizonrust"><b>Sponsor</b></a>
 </p>
 
-<sub>Horizon is released under the [GNU LGPL, version 3 or later](LICENSE), for the project's original work. Code merged before the move from MIT stays available under the [MIT licence](LICENSES/MIT.txt). Dependencies keep their own licences, see the [notices](THIRD_PARTY_NOTICES.md). Founded by [Ludovic Marie](https://lu4ovic.com) and built by the Horizon Team and [its contributors](https://github.com/horizon-rust/horizon/graphs/contributors). You can support it on [Open Collective](https://opencollective.com/horizonrust), where every income and expense is public.</sub>
+<sub>Horizon is released under the [GNU LGPL, version 3 or later](LICENSE), for the project's original work. Code merged before the move from MIT stays available under the [MIT licence](LICENSES/MIT.txt). Dependencies keep their own licences, see the [notices](THIRD_PARTY_NOTICES.md). Founded by [Ludovic Marie](https://lu4ovic.com) and built by the Horizon Team and [its contributors](https://github.com/horizon-rust/horizon/graphs/contributors). You can support it on [Open Collective](https://opencollective.com/horizonrust) (fiscally hosted by [Open Source Collective](https://opencollective.com/opensource)), where every income and expense is public.</sub>
 
 <sub>NOT AN OFFICIAL MINECRAFT PRODUCT. NOT APPROVED BY OR ASSOCIATED WITH MOJANG OR MICROSOFT. Minecraft is a trademark of Mojang Synergies AB; its code and assets belong to Mojang and Microsoft under the [Minecraft EULA](https://www.minecraft.net/en-us/eula).</sub>

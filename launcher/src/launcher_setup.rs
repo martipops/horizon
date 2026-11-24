@@ -263,7 +263,6 @@ impl Launcher {
             list_hover: None,
             list_menu: None,
             home_strip: Default::default(),
-            client_since: None,
             instance_mods: Default::default(),
             mod_preview: Default::default(),
             project_icons: Default::default(),
@@ -412,8 +411,13 @@ impl Launcher {
                                 .flex_1()
                                 .min_w_0()
                                 .child(
-                                    shell::text(theme::night::UI, t.danger)
-                                        .child(tr("Settings were not saved.")),
+                                    shell::text(theme::night::UI, t.danger).child(tr(
+                                        if self.settings.instance_versions_migrated {
+                                            "Settings were not saved."
+                                        } else {
+                                            "Horizon cannot start until instance settings are saved."
+                                        },
+                                    )),
                                 )
                                 .child(
                                     shell::text(theme::night::CAPTION, t.ink_soft).child(trf(
