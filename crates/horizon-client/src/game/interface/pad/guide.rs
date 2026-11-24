@@ -417,7 +417,9 @@ impl Game<'_> {
             } else if !secondary && ender_chest && !self.pad_guide_block_covered(&hit) {
                 // EnderChestBlock has no menu provider but opens one: nothing solid on top.
                 Some(Verb::Open)
-            } else if self.block_takes_click(&hit, held.as_ref()) {
+            } else if !secondary && self.block_takes_click(&hit, held.as_ref()) {
+                // Sneaking with something in a hand skips the block, as the click itself does
+                // (Player.isSecondaryUseActive): a door stays shut and the item is used instead.
                 Some(Verb::Use)
             } else {
                 None

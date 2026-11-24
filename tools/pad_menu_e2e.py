@@ -3441,6 +3441,14 @@ def gameplay_guide(args, name):
             rows = rows_on(block, item)
             shown = [c for b, c in rows if b == 'lt']
             check(shown == wanted, f'{item} on {block}: {rows}')
+        # Sneak latched (the stick click toggles it on a pad): with something in a hand the click
+        # skips the door and places the item, so the row says Place; an empty hand still uses it.
+        game.pad('rs')
+        for item, wanted in (('stone', ['place']), ('air', ['use'])):
+            rows = rows_on('oak_door', item)
+            shown = [c for b, c in rows if b == 'lt']
+            check(shown == wanted, f'sneaking, {item} on a door: {rows}')
+        game.pad('rs')
         give('air')
 
         game.ctl('command', 'gamemode survival')
