@@ -179,7 +179,10 @@ impl Split<'_> {
     /// Microsoft accounts require a valid session.
     fn can_join(&self, name: &str) -> std::result::Result<(), String> {
         if self.taken().iter().any(|n| n.eq_ignore_ascii_case(name)) {
-            return Err(format!("{name} is already playing."));
+            return Err(horizon_client::lang::tr(
+                "horizon.splitscreen.already_playing",
+                &[&name],
+            ));
         }
         let Some(address) = self.p1_server() else {
             return Ok(());
@@ -288,7 +291,9 @@ impl Split<'_> {
         // The page's names are player names; a test seat's (P2) isn't one, but no name leaves
         // the profiles folder.
         if !folder_name(&name) {
-            return Err(format!("{name:?} can't be a profile.").into());
+            return Err(
+                horizon_client::lang::tr("horizon.splitscreen.not_a_profile", &[&name]).into(),
+            );
         }
         let profiles = Self::folder()?.join("profiles");
         // A Microsoft account signs in as itself (its own connections and skin).
@@ -332,10 +337,12 @@ impl Split<'_> {
         settings.controller.enabled |= self.guests[i].pad.is_some();
         // P1's own world through memory (`Ok`), else P1's server over the network (`Err`).
         let via = match &self.host.integrated {
-            Some(server) => Ok(server
-                .join_split(&name)
-                .ok_or("P1's world does not let players in")?),
-            None => Err(self.p1_server().ok_or("P1 is not in a world")?),
+            Some(server) => Ok(server.join_split(&name).ok_or_else(|| {
+                horizon_client::lang::tr("horizon.splitscreen.world_closed", &[])
+            })?),
+            None => Err(self
+                .p1_server()
+                .ok_or_else(|| horizon_client::lang::tr("horizon.splitscreen.no_world", &[]))?),
         };
         self.guests[i].options = options;
         self.turn(i + 1);
@@ -389,7 +396,7 @@ impl Split<'_> {
                 let hidden = if signed_in
                     || self.taken().iter().any(|n| n.eq_ignore_ascii_case(&name))
                 {
-                    Err("This profile cannot be forgotten while it is playing or signed in.".into())
+                    Err(horizon_client::lang::tr("horizon.splitscreen.forget_in_use", &[]).into())
                 } else {
                     Self::folder().and_then(|f| {
                         Ok(horizon_client::split_profiles::store::hide(
@@ -569,7 +576,7 @@ impl Split<'_> {
                 self.host.split_hud.notice.raise(Notice::new(
                     NoticeId::PlayerLeft,
                     Priority::Attention,
-                    format!("{name} could not stay"),
+                    horizon_client::lang::tr("horizon.splitscreen.could_not_stay", &[&name]),
                     why.clone(),
                 ));
             } else if let Some(why) = why {

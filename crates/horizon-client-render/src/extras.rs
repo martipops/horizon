@@ -604,10 +604,6 @@ impl Cps {
         self.clicks.len()
     }
 }
-/// Two players sharing a window (`splitscreen_two`): halves this way.
-pub const SPLIT_TWO: [&str; 3] = ["Auto", "Side by side", "Top and bottom"];
-/// Three players sharing a window (`splitscreen_three`).
-pub const SPLIT_THREE: [&str; 3] = ["One wide on top", "One tall on the left", "Side by side"];
 
 /// The settings the Extras page shows, one per row.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -92,6 +92,11 @@ pub(super) struct Surface {
     pub(super) title: String,
 }
 
+/// Window `number`'s name, as Setup says it.
+pub(super) fn window_name(number: u8) -> String {
+    horizon_client::lang::tr("horizon.splitscreen.setup.window", &[&number])
+}
+
 impl<'a> Split<'a> {
     /// The window player `i` chose, by number.
     pub(super) fn window_number(&self, i: usize) -> u8 {
@@ -160,11 +165,9 @@ impl<'a> Split<'a> {
             .enumerate()
             .find(|(_, (n, _))| n == name)?;
         let size = m.size();
-        Some(format!(
-            "Monitor {} ({}x{})",
-            n + 1,
-            size.width,
-            size.height
+        Some(horizon_client::lang::tr(
+            "horizon.splitscreen.monitor_size",
+            &[&(n + 1), &size.width, &size.height],
         ))
     }
 
@@ -210,13 +213,16 @@ impl<'a> Split<'a> {
             }
             Some((self.monitor_label(name)?, Spot::Fill(name.clone())))
         });
-        std::iter::once((WINDOW_1.to_owned(), Spot::Window(1)))
+        std::iter::once((window_name(1), Spot::Window(1)))
             .chain(
                 open.into_iter()
                     .filter(|&n| n != 1)
                     .map(|n| (self.window_label(n), Spot::Window(n))),
             )
-            .chain(std::iter::once((NEW_WINDOW.to_owned(), Spot::New)))
+            .chain(std::iter::once((
+                horizon_client::lang::tr("horizon.splitscreen.setup.new_window", &[]),
+                Spot::New,
+            )))
             .chain(monitors)
             .collect()
     }
@@ -241,10 +247,12 @@ impl<'a> Split<'a> {
     pub(super) fn window_label(&self, number: u8) -> String {
         match self.placement(number) {
             Some(Placement::Fill(name)) if number != 1 => match self.monitor_label(name) {
-                Some(monitor) => format!("Window {number}, {monitor}"),
-                None => format!("Window {number}"),
+                Some(monitor) => {
+                    horizon_client::lang::tr("horizon.splitscreen.window_on", &[&number, &monitor])
+                }
+                None => window_name(number),
             },
-            _ => format!("Window {number}"),
+            _ => window_name(number),
         }
     }
 
@@ -336,7 +344,7 @@ impl<'a> Split<'a> {
                 window.focus_window();
             }
             if moved && before.get(i).is_some() {
-                let label = format!("Window {}", self.window_of(i));
+                let label = window_name(self.window_of(i));
                 self.tag(i, &label);
             }
             if let Some((player, id)) = self.player(i) {
@@ -361,7 +369,10 @@ impl<'a> Split<'a> {
                 continue;
             }
             for k in 0..=others {
-                let label = format!("{label} ({} of {})", k + 1, others + 1);
+                let label = horizon_client::lang::tr(
+                    "horizon.splitscreen.place_of",
+                    &[&label, &(k + 1), &(others + 1)],
+                );
                 stops.push((label, spot.clone(), k));
             }
         }
@@ -423,10 +434,7 @@ impl<'a> Split<'a> {
         self.choose(i, next);
         self.put_at(i, k);
         if let Some(game) = self.game_mut(i) {
-            game.split_hud.place = Some((
-                format!("LB < {shown} > RB"),
-                Instant::now() + Duration::from_secs(3),
-            ));
+            game.split_hud.place = Some(Place::now(shown, true));
         }
     }
 
@@ -462,7 +470,7 @@ impl<'a> Split<'a> {
             .collect();
         let name = match self.surfaces[k].key {
             1 if self.surfaces.len() == 1 => String::new(),
-            n => format!(" - Window {n}"),
+            n => format!(" - {}", window_name(n)),
         };
         if self.players() > 1 && !who.is_empty() {
             format!("Horizon{name} · {}", who.join(", "))

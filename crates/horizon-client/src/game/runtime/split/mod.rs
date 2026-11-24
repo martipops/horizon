@@ -82,8 +82,10 @@ impl Game<'_> {
     }
 }
 
-const WINDOW_1: &str = "Window 1";
-const NEW_WINDOW: &str = "New window";
+/// What a player still picking its profile is called.
+fn new_player() -> String {
+    horizon_client::lang::tr("horizon.splitscreen.new_player", &[])
+}
 
 struct Guest<'a> {
     game: Box<Game<'a>>,
@@ -312,10 +314,7 @@ impl<'a> Split<'a> {
     fn name(&self, i: usize) -> String {
         match i {
             0 => "P1".into(),
-            _ => self.guests[i - 1]
-                .name
-                .clone()
-                .unwrap_or_else(|| "New player".into()),
+            _ => self.guests[i - 1].name.clone().unwrap_or_else(new_player),
         }
     }
 
@@ -681,7 +680,10 @@ impl ApplicationHandler for Split<'_> {
                     && !holding
                 {
                     self.handoff(clicked);
-                    self.tag(clicked, "Keyboard and mouse");
+                    self.tag(
+                        clicked,
+                        &horizon_client::lang::tr("horizon.splitscreen.keyboard_mouse", &[]),
+                    );
                     let position = self.cursor_in_focus();
                     if let Some((player, id)) = self.player(clicked) {
                         player.window_event(
@@ -798,7 +800,7 @@ impl ApplicationHandler for Split<'_> {
         self.host.split_hud.badge = Some("P1".into());
         self.host.split_hud.names = names;
         for g in &mut self.guests {
-            g.game.split_hud.badge = Some(g.name.clone().unwrap_or_else(|| "New player".into()));
+            g.game.split_hud.badge = Some(g.name.clone().unwrap_or_else(new_player));
             g.game.split_hud.names = names;
         }
         let master = self.host.audio.master;

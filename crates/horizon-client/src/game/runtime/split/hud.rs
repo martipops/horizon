@@ -51,6 +51,12 @@ fn answers(
         .collect()
 }
 
+/// The badge's place between its bumpers' glyphs.
+const BADGE: hint::Look = hint::Look {
+    color: rgba(255, 255, 255, 230),
+    ..hint::GUIDE
+};
+
 /// How wide a prompt's answers draw on one line: each row, then `BETWEEN` after its words.
 fn line_width(atlas: &HudAtlas, rows: &[HintRow]) -> f32 {
     let drawn: f32 = rows.iter().map(|r| advance(atlas, r) + after(r)).sum();
@@ -78,9 +84,27 @@ pub(in crate::game) struct Hud {
     pub(in crate::game) badge: Option<String>,
     /// The badge's name stays (P1's Setup, Names); off, it shows only with a place.
     pub(super) names: bool,
-    pub(super) place: Option<(String, Instant)>,
+    pub(super) place: Option<Place>,
     pub(super) prompt: Option<Prompt>,
     pub(in crate::game) notice: NoticeSlot,
+}
+
+/// Where a player plays, or what it was just given: on its badge for a moment.
+pub(super) struct Place {
+    text: String,
+    until: Instant,
+    /// Its bumpers move it on: their glyphs on either side.
+    bumpers: bool,
+}
+
+impl Place {
+    pub(super) fn now(text: String, bumpers: bool) -> Self {
+        Self {
+            text,
+            until: Instant::now() + Duration::from_secs(3),
+            bumpers,
+        }
+    }
 }
 
 /// A question on a player's view, answered with its controller's buttons.
@@ -154,12 +178,30 @@ impl Game<'_> {
         // The badge, top left: who, and a moment where. F1 hides it with the rest of the HUD.
         if let (false, Some(badge)) = (hidden, &self.split_hud.badge) {
             let place = self.split_hud.place.as_ref();
-            let text = match place.filter(|(_, until)| Instant::now() < *until) {
-                Some((place, _)) => Some(format!("{badge} · {place}")),
-                None => self.split_hud.names.then(|| badge.clone()),
+            let place = place.filter(|place| Instant::now() < place.until);
+            let mut x = 2.0;
+            let say = |batch: &mut HudBatch, x: f32, text: &str| {
+                batch.text(atlas, text, x, 2.0, rgba(255, 255, 255, 230), true);
+                x + atlas.font.width(text)
             };
-            if let Some(text) = text {
-                batch.text(atlas, &text, 2.0, 2.0, rgba(255, 255, 255, 230), true);
+            match place {
+                Some(place) if place.bumpers => {
+                    x = say(batch, x, &format!("{badge} · "));
+                    for (job, text) in [
+                        (MenuJob::PagePrev, place.text.as_str()),
+                        (MenuJob::PageNext, ""),
+                    ] {
+                        let row = HintRow::new([self.menu_glyph(job)], text);
+                        x += hint::draw_hint(batch, atlas, &row, &BADGE, x, 2.0) + BADGE.gap;
+                    }
+                }
+                Some(place) => {
+                    say(batch, x, &format!("{badge} · {}", place.text));
+                }
+                None if self.split_hud.names => {
+                    say(batch, x, badge);
+                }
+                None => {}
             }
         }
         let below_strip = matches!(&self.split_hud.prompt, Some(p) if p.ask == Ask::Join);
@@ -234,7 +276,7 @@ impl<'a> Split<'a> {
 
     /// Player `i`'s badge says `note` for a few seconds.
     pub(super) fn tag(&mut self, i: usize, note: &str) {
-        let place = Some((note.to_owned(), Instant::now() + Duration::from_secs(3)));
+        let place = Some(Place::now(note.to_owned(), false));
         if let Some(game) = self.game_mut(i) {
             game.split_hud.place = place;
         }

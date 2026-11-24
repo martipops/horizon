@@ -135,7 +135,7 @@ impl<'a> Split<'a> {
             .map(|i| {
                 let name = self.name(i);
                 match self.lost.iter().any(|l| l.seat == self.seat_of(i)) {
-                    true => format!("{name} (no controller)"),
+                    true => horizon_client::lang::tr("horizon.splitscreen.no_controller", &[&name]),
                     false => name,
                 }
             })
@@ -176,10 +176,7 @@ impl<'a> Split<'a> {
         // Every view says where it is: after a change, or asked (Identify).
         if changed || identify {
             for i in 0..self.players() {
-                let label = horizon_client::lang::tr(
-                    "horizon.splitscreen.setup.window",
-                    &[&self.window_of(i)],
-                );
+                let label = window_name(self.window_of(i));
                 self.tag(i, &label);
             }
         }
