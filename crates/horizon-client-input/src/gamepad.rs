@@ -205,7 +205,7 @@ impl Seen {
 /// never turn into a combination, or an order, that the player didn't press.
 #[derive(Clone, Debug, Default)]
 pub struct Taps {
-    /// The buttons (by bit, triggers past the threshold too) held at the last read of this pad.
+    /// The buttons (by bit, triggers past the threshold too) the last read of this pad ended on.
     held: Option<u32>,
     /// The button (by bit) whose tap the last read showed: this one lets go of it.
     tapped: u32,
@@ -218,12 +218,14 @@ impl Taps {
         let was = self.held;
         let on_off = [threshold, (threshold - 0.1).max(0.05)];
         let bits = |buttons, triggers, was| held_bits(buttons, triggers, was, on_off);
-        let held = bits(live.buttons, live.triggers, was.unwrap_or(0));
+        // Let go of the last read's tap even if the button is down again: that press is the next
+        // read's, not more of the tap.
+        let held = bits(live.buttons, live.triggers, was.unwrap_or(0)) & !tapped;
         self.held = Some(held);
         let mut state = *live;
-        // `Edges` saw a tapped trigger go on: resting short of a press, it isn't held.
+        state.buttons &= !tapped;
         for (i, button) in TRIGGERS.into_iter().enumerate() {
-            if tapped == button.bit() && held & button.bit() == 0 {
+            if tapped == button.bit() {
                 state.triggers[i] = 0.0;
             }
         }
@@ -2609,6 +2611,39 @@ bind_key.hotbar.2:north
             [
                 [(Button::LeftTrigger, true)],
                 [(Button::LeftTrigger, false)]
+            ]
+        );
+    }
+
+    #[test]
+    fn a_press_held_after_a_tap_is_a_press_of_its_own() {
+        // Tapped in one poll, then down at the next poll's end and held: let go, then pressed.
+        let rest = holding(&[], 0.0);
+        for (down, button) in [
+            (holding(&[Button::South], 0.0), Button::South),
+            (holding(&[], 0.9), Button::LeftTrigger),
+        ] {
+            assert_eq!(
+                tap_edges(rest, &[&[down, rest], &[down], &[], &[], &[rest]]),
+                [
+                    vec![(button, true)],
+                    vec![(button, false)],
+                    vec![(button, true)],
+                    vec![],
+                    vec![(button, false)],
+                ]
+            );
+        }
+        // Another button's press in that poll doesn't wait.
+        let (a, b) = (
+            holding(&[Button::South], 0.0),
+            holding(&[Button::East], 0.0),
+        );
+        assert_eq!(
+            tap_edges(rest, &[&[a, rest], &[b]]),
+            [
+                vec![(Button::South, true)],
+                vec![(Button::South, false), (Button::East, true)],
             ]
         );
     }
