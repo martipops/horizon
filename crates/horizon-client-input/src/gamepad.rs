@@ -218,14 +218,17 @@ impl Taps {
         let was = self.held;
         let on_off = [threshold, (threshold - 0.1).max(0.05)];
         let bits = |buttons, triggers, was| held_bits(buttons, triggers, was, on_off);
+        let held = bits(live.buttons, live.triggers, was.unwrap_or(0));
         // Let go of the last read's tap even if the button is down again: that press is the next
-        // read's, not more of the tap.
-        let held = bits(live.buttons, live.triggers, was.unwrap_or(0)) & !tapped;
+        // read's, not more of the tap. Unless another button changed too: they stay together.
+        let others = (held ^ was.unwrap_or(0)) & !tapped;
+        let tapped_up = if others != 0 { tapped & !held } else { tapped };
+        let held = held & !tapped_up;
         self.held = Some(held);
         let mut state = *live;
-        state.buttons &= !tapped;
+        state.buttons &= !tapped_up;
         for (i, button) in TRIGGERS.into_iter().enumerate() {
-            if tapped == button.bit() {
+            if tapped_up == button.bit() {
                 state.triggers[i] = 0.0;
             }
         }
@@ -2634,16 +2637,26 @@ bind_key.hotbar.2:north
                 ]
             );
         }
-        // Another button's press in that poll doesn't wait.
-        let (a, b) = (
-            holding(&[Button::South], 0.0),
-            holding(&[Button::East], 0.0),
-        );
+    }
+
+    #[test]
+    fn a_combination_after_a_tap_stays_together() {
+        let rest = holding(&[], 0.0);
+        let rs = holding(&[Button::RightStick], 0.0);
+        let rs_lt = holding(&[Button::RightStick], 0.9);
+        // Tapped, then down at the next poll's end together with another button.
+        let (mut taps, mut edges) = (Taps::default(), Edges::default());
+        taps.read(&Seen::default(), &rest, 0.4);
+        edges.update(&taps.read(&seen(&[rs, rest]), &rest, 0.4), 0.4);
+        edges.update(&taps.read(&seen(&[rs, rs_lt]), &rs_lt, 0.4), 0.4);
+        assert!(edges.is_held(Button::RightStick) && edges.is_held(Button::LeftTrigger));
+        // A tapped trigger short of a press is let go whatever else goes down.
+        let (lt, a) = (holding(&[], 0.9), holding(&[Button::South], 0.35));
         assert_eq!(
-            tap_edges(rest, &[&[a, rest], &[b]]),
+            tap_edges(rest, &[&[lt, rest], &[a]]),
             [
-                vec![(Button::South, true)],
-                vec![(Button::South, false), (Button::East, true)],
+                vec![(Button::LeftTrigger, true)],
+                vec![(Button::South, true), (Button::LeftTrigger, false)],
             ]
         );
     }
